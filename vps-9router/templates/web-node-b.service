@@ -1,0 +1,21 @@
+[Unit]
+Description=Node Web service B
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/apps/web-node-b
+Environment=NODE_ENV=production
+Environment=PORT=3002
+Environment=HOST=127.0.0.1
+ExecStart=/usr/bin/npm run start
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
