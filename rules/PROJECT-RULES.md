@@ -87,3 +87,14 @@ These rules define how this project should evolve. Human contributors and AI age
   - Update relevant docs in `docs/` and rules in `rules/` **before** or together with code changes.
 - Documentation is part of the contract; code must match it.
 
+### 11. Phase execution source of truth
+
+- `docs/ROADMAP.md` is the phase overview and backlog map.
+- `docs/PHASE-01-IMPLEMENTATION-SPEC.md` to `docs/PHASE-04-IMPLEMENTATION-SPEC.md` are the execution source of truth for:
+  - task IDs
+  - task order
+  - verify gates
+  - review checklists
+  - acceptance criteria
+- Contributors and AI agents must not invent alternate task numbering or execution order without updating the corresponding phase spec.
+

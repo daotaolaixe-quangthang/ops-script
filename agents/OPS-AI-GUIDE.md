@@ -18,7 +18,14 @@ When a task involves the `ops/` directory, AI agents must first read:
 - `rules/PROJECT-RULES.md`
 - `rules/BASH-STYLE.md`
 
-Do not skip this step; these documents contain project‑level contracts.
+When the task is implementation planning or execution by phase, AI agents must also read the corresponding phase spec:
+
+- `docs/PHASE-01-IMPLEMENTATION-SPEC.md`
+- `docs/PHASE-02-IMPLEMENTATION-SPEC.md`
+- `docs/PHASE-03-IMPLEMENTATION-SPEC.md`
+- `docs/PHASE-04-IMPLEMENTATION-SPEC.md`
+
+Do not skip this step; these documents contain project-level contracts.
 
 ### 2. Default responsibilities
 
@@ -63,12 +70,15 @@ AI agents must **not**:
 - Where possible, add or reuse verification commands (e.g. `verify_stack` functions).
 - Never print secrets to logs or commit them into the repo.
 
-### 6. Documentation‑driven changes
+### 6. Documentation-driven changes
 
 - For any non‑trivial change:
   - Update or extend docs in `docs/` first (or alongside code) to describe the new behaviour.
   - Only then modify scripts to match the updated spec.
 - If a requested change conflicts with existing docs, clarify in the docs and then implement the new direction.
+- For phase execution:
+  - treat `docs/ROADMAP.md` as overview only
+  - treat the corresponding `docs/PHASE-0x-IMPLEMENTATION-SPEC.md` as the source of truth for task IDs, order, verify, and acceptance
 - If the task is about cloning or porting OPS logic to another stack, also read:
   - `docs/PLATFORM-AGNOSTIC-CAPABILITIES.md`
   - `docs/PORTING-MAP-NODE-FIRST.md`

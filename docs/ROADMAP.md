@@ -2,6 +2,21 @@
 
 This document describes the planned phases for OPS and the major tasks in each phase. It helps humans and AI agents know what is in scope now and what is planned for later.
 
+Important contract:
+
+- `ROADMAP.md` is the phase overview.
+- `PHASE-01-IMPLEMENTATION-SPEC.md` to `PHASE-04-IMPLEMENTATION-SPEC.md` are the execution source of truth for task IDs, task order, verification, and acceptance.
+- If task numbering or ordering differs, the phase implementation spec wins.
+
+Use together with:
+
+- `docs/PHASE-01-IMPLEMENTATION-SPEC.md`
+- `docs/PHASE-02-IMPLEMENTATION-SPEC.md`
+- `docs/PHASE-03-IMPLEMENTATION-SPEC.md`
+- `docs/PHASE-04-IMPLEMENTATION-SPEC.md`
+- `docs/RUNBOOKS.md`
+- `docs/RUNTIME-ARTEFACT-INVENTORY.md`
+
 ### Phase 0 – Legacy 9router VPS kit (cleanup completed)
 
 Status: **Deprecated and removed from active architecture**.
@@ -95,6 +110,10 @@ Phase 1 “done” criteria:
   - Install and expose 9router behind Nginx.
   - Obtain SSL via Certbot.
 
+Detailed execution spec:
+
+- `docs/PHASE-01-IMPLEMENTATION-SPEC.md`
+
 ---
 
 ### Phase 2 – Advanced monitoring and quality of life
@@ -121,7 +140,21 @@ Potential tasks:
      - Archive Nginx and OPS configs.
    - Restore guidance (manual but scripted support where reasonable).
 
+Suggested task groups:
+
+- runtime observation and health signals
+- advanced monitoring integration
+- alerts and thresholds
+- unified verify stack
+- backup helpers
+- runtime artefact inventory expansion
+- rollback playbooks expansion
+
 Phase 2 is optional and can be scoped per actual needs.
+
+Detailed execution spec:
+
+- `docs/PHASE-02-IMPLEMENTATION-SPEC.md`
 
 Additional Phase 2 docs/ops tasks:
 
@@ -134,15 +167,27 @@ Additional Phase 2 docs/ops tasks:
 
 ---
 
-### Phase 3 – Extensibility and multi‑OS support (future)
+### Phase 3 – Extensibility and multi-OS support (future)
 
 Goal: Make OPS more portable and flexible.
 
 Ideas (not committed):
 
 - Add support for another Linux distribution (e.g. Debian).
-- Create plugin hooks so third‑party modules can add menus safely.
+- Create plugin hooks so third-party modules can add menus safely.
 - Add templating helpers for more complex app deployments.
+
+Suggested task groups:
+
+- distro abstraction audit
+- compatibility matrix and path/service mapping
+- plugin hook and loading safety design
+- template/rendering abstraction
+- migration and compatibility docs
+
+Detailed execution spec:
+
+- `docs/PHASE-03-IMPLEMENTATION-SPEC.md`
 
 Any work in this phase must first update `ARCHITECTURE.md` and rules to account for multi‑OS behaviour.
 
@@ -150,10 +195,24 @@ Any work in this phase must first update `ARCHITECTURE.md` and rules to account 
 
 ### Phase 4 – Cloud automation and integrations (future)
 
-Long‑term ideas:
+Long-term ideas:
 
 - Optional integration with cloud APIs (DNS management, snapshots, etc.).
 - Deeper Codex CLI integration for automated runbooks.
+
+Suggested task groups:
+
+- provider abstraction audit
+- DNS provider abstraction
+- snapshot/backup provider abstraction
+- cloud-aware SSL and domain workflows
+- secret and credential handling model
+- Codex-assisted runbook automation
+- provider support matrix and docs
+
+Detailed execution spec:
+
+- `docs/PHASE-04-IMPLEMENTATION-SPEC.md`
 
 These features should remain optional and not increase the baseline resource footprint significantly.
 
