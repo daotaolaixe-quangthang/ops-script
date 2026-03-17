@@ -32,7 +32,11 @@ This document defines non‑negotiable security rules for OPS. Any change that v
   - Bind only to loopback (e.g. `127.0.0.1:20128`).
   - Never be exposed directly through firewall.
   - Be reachable only via Nginx and, where applicable, Cloudflare Access.
-- For Cloudflare setups, follow the `vps-9router` Cloudflare checklist.
+- For Cloudflare Access setups:
+  - Protect only the intended router domain.
+  - Keep Cloudflare proxy enabled and use `Full (strict)` when applicable.
+  - Treat Cloudflare Access as an additional gate, not a replacement for loopback binding and firewall rules.
+- Keep a default Nginx server that rejects unknown hosts.
 
 ### 4. Firewall and fail2ban
 
@@ -84,6 +88,8 @@ This document defines non‑negotiable security rules for OPS. Any change that v
   - Fail safely on errors rather than producing partial configs.
 - For Nginx, PHP‑FPM, and systemd:
   - Changes must be validated (e.g. `nginx -t`) before reloading services.
+- For PM2-managed Node services:
+  - Verify process health, restart behaviour, and localhost binding after changes.
 
 ### 9. Logging and secrets
 

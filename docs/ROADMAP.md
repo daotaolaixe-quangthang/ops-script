@@ -2,21 +2,21 @@
 
 This document describes the planned phases for OPS and the major tasks in each phase. It helps humans and AI agents know what is in scope now and what is planned for later.
 
-### Phase 0 – Existing 9router VPS kit (reference only)
+### Phase 0 – Legacy 9router VPS kit (cleanup completed)
 
-Status: **Already exists** under `ops/vps-9router/`.
+Status: **Deprecated and removed from active architecture**.
 
 Purpose:
 
-- Serves as a concrete reference for:
-  - Ubuntu 24.04 stack (Nginx + systemd + Cloudflare + 9router).
-  - Example scripts for OS bootstrap and 9router deployment.
-- OPS should **learn from but not be tightly coupled to** this kit.
+- The old kit informed early docs, but it diverged from the current OPS direction:
+  - PM2-only for Node services
+  - shared control plane for Node-first + PHP-secondary VPS
+  - unified docs-first architecture
 
 Tasks (no active work unless needed):
 
-- Reuse templates and patterns where appropriate.
-- Keep this kit working for existing users while OPS is developed.
+- Keep any useful knowledge in main `docs/`.
+- Do not reintroduce legacy folder-level reference kits that conflict with active architecture.
 
 ---
 
@@ -77,7 +77,13 @@ High‑level tasks:
 
 7. **Docs, rules, and AI integration**
    - Keep `docs/`, `rules/`, and `agents/` in sync with implementation.
-   - Provide examples and quick‑start sections for end users.
+   - Provide examples and quick-start sections for end users.
+   - Add AI-operational docs:
+     - bug triage index
+     - source-to-runtime trace
+     - known risks patterns
+     - platform-agnostic capabilities
+     - Node-first porting map
 
 Phase 1 “done” criteria:
 
@@ -116,6 +122,15 @@ Potential tasks:
    - Restore guidance (manual but scripted support where reasonable).
 
 Phase 2 is optional and can be scoped per actual needs.
+
+Additional Phase 2 docs/ops tasks:
+
+1. **Runtime artefact inventory**
+   - Document cron, timer, systemd, and login-hook artefacts once implementation exists.
+2. **Unified verify stack**
+   - Add one action to verify SSH, Nginx, Node, PHP, DB, SSL, and monitoring paths.
+3. **Rollback playbooks**
+   - Add concise rollback-first runbooks for SSH, Nginx, Node process manager, PHP-FPM, DB, and firewall changes.
 
 ---
 

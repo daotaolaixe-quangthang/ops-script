@@ -7,10 +7,14 @@ This guide explains how AI agents should work on the OPS project so that changes
 When a task involves the `ops/` directory, AI agents must first read:
 
 - `README.md`
+- `docs/README.md`
 - `docs/ARCHITECTURE.md`
 - `docs/FLOW-INSTALL.md`
 - `docs/SECURITY-RULES.md`
 - `docs/PERF-TUNING.md`
+- `docs/BUG-TRIAGE-INDEX.md` when fixing bugs or reviewing risk
+- `docs/SOURCE-TO-RUNTIME-TRACE.md` when touching runtime state/configs
+- `docs/KNOWN-RISKS-PATTERNS.md` for production-safe changes
 - `rules/PROJECT-RULES.md`
 - `rules/BASH-STYLE.md`
 
@@ -48,12 +52,14 @@ AI agents must **not**:
   - Keep user prompts in English.
   - Ensure new options appear in `docs/MENU-REFERENCE.md`.
   - Respect security and tuning rules.
+  - Document impact layer, source of truth, verify steps, and rollback minimum.
 
 ### 5. Safety, backups, and testing
 
 - Before modifying critical configs (Nginx, PHP‑FPM, DB, systemd units), always:
   - Create backups.
   - Validate configs before reload (e.g. `nginx -t`).
+- For Node services, PM2 is the process manager contract. Do not introduce parallel systemd service ownership for Node apps unless the architecture docs are updated first.
 - Where possible, add or reuse verification commands (e.g. `verify_stack` functions).
 - Never print secrets to logs or commit them into the repo.
 
@@ -63,6 +69,10 @@ AI agents must **not**:
   - Update or extend docs in `docs/` first (or alongside code) to describe the new behaviour.
   - Only then modify scripts to match the updated spec.
 - If a requested change conflicts with existing docs, clarify in the docs and then implement the new direction.
+- If the task is about cloning or porting OPS logic to another stack, also read:
+  - `docs/PLATFORM-AGNOSTIC-CAPABILITIES.md`
+  - `docs/PORTING-MAP-NODE-FIRST.md`
+  - `docs/DESIGN-PATTERNS-EXTRACTED.md`
 
 ### 7. Coding style
 
@@ -74,7 +84,7 @@ AI agents must **not**:
 
 - OPS is designed to deploy and manage 9router and other Node/PHP apps, but:
   - It should not embed application‑specific logic beyond what is necessary to install and run them.
-  - Reuse existing `ops/vps-9router` assets where appropriate, but keep OPS generic and modular.
+  - Keep OPS generic and modular; legacy folder-specific kits should not become hidden architecture dependencies.
 
 This guide may be extended as new workflows and tools are added to the project.
 

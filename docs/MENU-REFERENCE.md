@@ -52,8 +52,8 @@ Submenu:
 
 Notes:
 
-- Implementation can use PM2 or systemd, but must hide this complexity from the user.
-- “Service” here means a long‑running Node.js application (including but not limited to 9router).
+- Implementation uses **PM2** for all Node.js services. `systemd` remains for OS-level services only.
+- “Service” here means a long-running Node.js application (including but not limited to 9router).
 
 ---
 
@@ -126,7 +126,7 @@ Notes:
 - “Install 9router”:
   - Clone or update the 9router code.
   - Install dependencies and build.
-  - Register a service (PM2 or systemd) bound to localhost only.
+  - Register a **PM2** service bound to localhost only.
 - “Link 9router to a domain”:
   - Integrate with Domains & Nginx module to add/update a vhost for a chosen domain.
 

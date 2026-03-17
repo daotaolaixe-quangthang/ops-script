@@ -34,7 +34,7 @@ OPS is split into three layers:
      - `modules/security.sh` – SSH hardening, firewall, fail2ban.
      - `modules/nginx.sh` – Nginx install, global tuning, vhost management, SSL helpers.
      - `modules/node.sh` – Node.js LTS install, PM2 setup, Node service management.
-     - `modules/nine-router.sh` – 9router install, service, domain integration.
+     - `modules/nine-router.sh` – 9router install, PM2 service, domain integration.
      - `modules/php.sh` – multi‑PHP (7.4, 8.1, 8.2, 8.3) install and PHP‑FPM tuning.
      - `modules/database.sh` – MySQL/MariaDB install, secure setup, tuning, DB/user management.
      - `modules/monitoring.sh` – basic + optional advanced monitoring.
@@ -68,17 +68,15 @@ Expected layout inside this repo under `ops/`:
   - `database.sh`
   - `monitoring.sh`
   - `codex-cli.sh`
-- `templates/`
-  - `nginx/`
-    - `node_vhost.conf.tpl`
-    - `php_vhost.conf.tpl`
-    - `ssl_snippet.tpl`
-    - `default-deny.conf.tpl`
-  - `systemd/`
-    - `node.service.tpl`
-    - `nine-router.service.tpl`
-  - `pm2/`
-    - `ecosystem.config.js.tpl`
+  - `templates/`
+    - `nginx/`
+      - `node_vhost.conf.tpl`
+      - `php_vhost.conf.tpl`
+      - `ssl_snippet.tpl`
+      - `default-deny.conf.tpl`
+    - `pm2/`
+      - `ecosystem.config.js.tpl`
+      - `nine-router.ecosystem.config.js.tpl`
 - `docs/`
   - (this file and other documentation)
 - `rules/`
@@ -96,10 +94,35 @@ In production, OPS is expected to use:
   - `capacity.json` or `.conf` – captured VPS capacity estimate.
   - Module‑specific configs (e.g. `codex-cli.conf`).
 - **Log path**:
-  - `/var/log/ops/ops.log` – high‑level operations log.
+  - `/var/log/ops/ops.log` – high-level operations log.
   - Module logs as needed (or reuse system logs).
 
-AI agents must **not** hard‑code additional runtime paths without updating this document.
+### 3.1 Suggested source-of-truth state layout
+
+To keep the production control plane maintainable, OPS should add explicit state files rather than relying only on system inspection:
+
+- `/etc/ops/ops.conf` - global install and defaults
+- `/etc/ops/capacity.conf` or JSON - captured VPS capacity profile
+- `/etc/ops/apps/<app>.conf` - Node app manifests
+- `/etc/ops/domains/<domain>.conf` - domain to backend mapping
+- `/etc/ops/php-sites/<site>.conf` - PHP site metadata
+- `/etc/ops/codex-cli.conf` - Codex CLI integration state
+
+If some of these are not implemented in Phase 1, they still remain the target architecture.
+
+### 3.2 Impact layers
+
+Every OPS change should be reasoned about by impact layer:
+
+1. SSH and operator access
+2. Nginx, proxy, and TLS
+3. Node runtime and PM2
+4. PHP runtime and PHP-FPM
+5. Database
+6. Firewall and fail2ban
+7. Monitoring, logs, and login hooks
+
+AI agents must **not** hard-code additional runtime paths without updating this document.
 
 ### 4. Responsibilities and boundaries
 
@@ -112,10 +135,14 @@ AI agents must **not** hard‑code additional runtime paths without updating thi
   - Orchestrates first‑time production setup.
   - Delegates to security, nginx, node, php, database, monitoring modules.
 
-- **Per‑feature modules**:
+- **Per-feature modules**:
   - Own their domain (e.g. PHP, DB, Node) and expose:
     - Functions for wizard orchestration.
     - Functions for menu actions (list, create, edit, remove, status).
+  - Should always be able to state:
+    - source of truth
+    - verify steps
+    - rollback minimum
 
 ### 5. Compatibility assumptions
 

@@ -104,7 +104,7 @@ From the main menu, user selects **“Production Setup Wizard”** (or similar).
 4. **Node.js LTS and PM2**
    - Install Node.js LTS (exact method documented in module).
    - Install PM2 globally.
-   - Optionally configure PM2 startup for the admin user.
+   - Configure PM2 startup for the admin user as the default contract for all Node services.
 
 5. **PHP‑FPM (multi‑version)**
    - Ask which PHP versions to install: 7.4, 8.1, 8.2, 8.3.

@@ -18,7 +18,7 @@ These rules define how this project should evolve. Human contributors and AI age
 - Implementation language for core and modules: **Bash**.
 - External tools:
   - System packages via `apt` (Nginx, PHP, MySQL/MariaDB, certbot, etc.).
-  - Node.js + PM2 for Node services.
+  - Node.js + PM2 for all Node services.
 - No heavy additional runtimes (Python/Go/Node CLIs) should be required for OPS itself unless:
   - Strong justification is documented.
   - The dependency footprint is acceptable for small VPS instances.
