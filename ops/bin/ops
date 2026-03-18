@@ -7,8 +7,14 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-# Resolve OPS_ROOT to absolute path (works regardless of cwd)
-OPS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve the real script path first so the /usr/local/bin symlink works.
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [[ -L "$SCRIPT_PATH" ]]; do
+    SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+    SCRIPT_PATH="$(readlink "$SCRIPT_PATH")"
+    [[ "$SCRIPT_PATH" != /* ]] && SCRIPT_PATH="${SCRIPT_DIR}/${SCRIPT_PATH}"
+done
+OPS_ROOT="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 
 # Source core helpers (always in this order)
 # shellcheck source=core/env.sh

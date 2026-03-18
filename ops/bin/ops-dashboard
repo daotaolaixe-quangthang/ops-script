@@ -24,7 +24,14 @@ if [[ -z "${SSH_CONNECTION:-}" ]]; then
     exit 0
 fi
 
-OPS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve the real script path first so the /usr/local/bin symlink works.
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [[ -L "$SCRIPT_PATH" ]]; do
+    SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+    SCRIPT_PATH="$(readlink "$SCRIPT_PATH")"
+    [[ "$SCRIPT_PATH" != /* ]] && SCRIPT_PATH="${SCRIPT_DIR}/${SCRIPT_PATH}"
+done
+OPS_ROOT="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 
 # shellcheck source=core/env.sh
 source "$OPS_ROOT/core/env.sh"
