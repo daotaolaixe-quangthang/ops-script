@@ -16,22 +16,23 @@
 # Complex logic delegates to core modules and ops-setup.sh.
 # ============================================================
 set -euo pipefail
-IFS=$'\\n\\t'
+IFS=$'\n\t'
 
 # ── Constants ─────────────────────────────────────────────────
 readonly OPS_INSTALL_DIR="/opt/ops"
 readonly OPS_CONFIG_DIR="/etc/ops"
-readonly OPS_REPO_URL="https://github.com/daotaolaixe-quangthang/ops-script.git"
+readonly OPS_GITHUB_REPO="daotaolaixe-quangthang/ops-script"
+readonly OPS_GITHUB_BRANCH="main"
 readonly OPS_VERSION="0.1.0"
 readonly OPS_SOURCE_SUBDIR="ops"
 
 # Colours (inline — do not depend on core/ui.sh before install)
-RED=$'\\033[0;31m'
-GRN=$'\\033[0;32m'
-YLW=$'\\033[1;33m'
-CYN=$'\\033[0;36m'
-BLD=$'\\033[1m'
-RST=$'\\033[0m'
+RED=$'\033[0;31m'
+GRN=$'\033[0;32m'
+YLW=$'\033[1;33m'
+CYN=$'\033[0;36m'
+BLD=$'\033[1m'
+RST=$'\033[0m'
 
 die()  { echo -e "${RED}[ERROR]${RST} $*" >&2; exit 1; }
 info() { echo -e "${GRN}[INFO]${RST}  $*"; }
@@ -73,7 +74,7 @@ preflight_check() {
 ensure_deps() {
     info "Checking required dependencies..."
     local missing=()
-    for cmd in curl git awk nproc df ss; do
+    for cmd in curl tar awk nproc df ss; do
         command -v "$cmd" &>/dev/null || missing+=("$cmd")
     done
 
@@ -104,7 +105,6 @@ compute_tier() {
     fi
     export OPS_TIER
 
-    # Recommended sites / concurrent users per tier
     case "$OPS_TIER" in
         S) TIER_SITES="1-2";   TIER_USERS="10-50"  ;;
         M) TIER_SITES="3-6";   TIER_USERS="50-200" ;;
@@ -129,8 +129,8 @@ print_vps_summary() {
 # Xuất:
 #   SSH_ALREADY_CONFIGURED=yes|no
 #   SSH_PORT_22_OPEN=yes|no
-#   SSH_CURRENT_PORTS=( ... )   — danh sách port đang cấu hình
-#   NEW_SSH_PORT                — port non-22 đã có, hoặc rỗng nếu chưa đặt
+#   SSH_CURRENT_PORTS=( ... )
+#   NEW_SSH_PORT   — port non-22 đã có, hoặc rỗng nếu chưa đặt
 detect_ssh_state() {
     local sshd_conf="/etc/ssh/sshd_config"
     SSH_ALREADY_CONFIGURED="no"
@@ -142,19 +142,17 @@ detect_ssh_state() {
         return 0
     fi
 
-    # Đọc tất cả Port lines đang active (không bị comment)
     local port
     while IFS= read -r port; do
         SSH_CURRENT_PORTS+=("$port")
         if [[ "$port" == "22" ]]; then
             SSH_PORT_22_OPEN="yes"
         else
-            NEW_SSH_PORT="$port"  # lấy port non-22 đầu tiên
+            NEW_SSH_PORT="$port"   # lấy port non-22 đầu tiên
         fi
     done < <(grep -E '^[[:space:]]*Port[[:space:]]+[0-9]+' "$sshd_conf" \
              | awk '{print $2}')
 
-    # SSH đã cấu hình port khác 22 → không cần thay đổi
     if [[ -n "$NEW_SSH_PORT" ]]; then
         SSH_ALREADY_CONFIGURED="yes"
     fi
@@ -166,7 +164,6 @@ setup_ssh_port() {
     detect_ssh_state
 
     if [[ "$SSH_ALREADY_CONFIGURED" == "yes" ]]; then
-        # SSH đã được cấu hình trước đó — chỉ thông báo, không thay đổi
         echo ""
         echo -e "${CYN}${BLD}━━━ SSH Port Configuration ━━━${RST}"
         ok "SSH port đã được cấu hình: port ${NEW_SSH_PORT}."
@@ -210,7 +207,6 @@ setup_ssh_port() {
 }
 
 # _configure_sshd_fresh: chỉ chạy khi fresh install (port 22 là duy nhất).
-# Giữ nguyên Port 22 + thêm Port mới vào transition.
 _configure_sshd_fresh() {
     local sshd_conf="/etc/ssh/sshd_config"
     info "Configuring sshd: adding port ${NEW_SSH_PORT} (keeping port 22 during transition)..."
@@ -242,12 +238,12 @@ configure_ufw() {
     ufw default deny incoming   >/dev/null
     ufw default allow outgoing  >/dev/null
 
-    # Luôn allow port hiện tại (đã detect hoặc mới chọn)
+    # Allow SSH port(s) per current sshd state
     if [[ -n "$NEW_SSH_PORT" ]]; then
         ufw allow "${NEW_SSH_PORT}/tcp" comment "ops: SSH port" >/dev/null
     fi
 
-    # Chỉ allow port 22 nếu sshd_config hiện tại vẫn giữ port 22
+    # Allow port 22 only if sshd still has it open
     if [[ "$SSH_PORT_22_OPEN" == "yes" || "$SSH_ALREADY_CONFIGURED" == "no" ]]; then
         ufw allow 22/tcp comment "ops: SSH legacy port (transition)" >/dev/null
     fi
@@ -263,7 +259,7 @@ configure_ufw() {
     ok "UFW configured. HTTP/HTTPS open. SSH port(s) allowed per current sshd state."
 }
 
-# ── 5. Admin user creation ────────────────────────────────────
+# ── 5. Admin user ─────────────────────────────────────────────
 
 # setup_admin_user: idempotent — skip hoàn toàn nếu user đã tồn tại.
 setup_admin_user() {
@@ -315,54 +311,95 @@ setup_admin_user() {
     export ADMIN_USER
 }
 
-# ── 6. Clone OPS core ─────────────────────────────────────────
+# ── 6. Install OPS core (tarball) ─────────────────────────────
+# Dùng tarball thay vì git clone — nhất quán với self-update menu 16.
+# Không yêu cầu git trên VPS.
 
 install_ops_core() {
-    info "Installing OPS core to ${OPS_INSTALL_DIR}..."
+    info "Installing OPS core to ${OPS_INSTALL_DIR} (via tarball)..."
 
-    if [[ -d "${OPS_INSTALL_DIR}/.git" ]]; then
-        warn "OPS already cloned at ${OPS_INSTALL_DIR} — pulling latest changes..."
+    local tarball_url="https://github.com/${OPS_GITHUB_REPO}/archive/refs/heads/${OPS_GITHUB_BRANCH}.tar.gz"
+    local tmp_dir
+    tmp_dir=$(mktemp -d /tmp/ops-install-XXXXXX)
+    local tarball="${tmp_dir}/ops-source.tar.gz"
 
-        # Git 2.35.2+ refuses to operate in directories owned by a different user.
-        # Temporarily take ownership as root so git pull works, then restore below.
-        chown -R root:root "$OPS_INSTALL_DIR" 2>/dev/null || true
-        git config --global --add safe.directory "$OPS_INSTALL_DIR" 2>/dev/null || true
+    # ── Step 1: Download
+    info "Downloading source tarball from GitHub..."
+    if ! curl -fsSL --max-time 120 --connect-timeout 15 \
+            -o "$tarball" "$tarball_url" 2>&1; then
+        rm -rf "$tmp_dir"
+        die "Download failed. Check network connectivity and try again."
+    fi
+    local size
+    size=$(du -sh "$tarball" 2>/dev/null | cut -f1)
+    ok "Downloaded (${size})"
 
-        if ! git -C "$OPS_INSTALL_DIR" pull --ff-only; then
-            warn "git pull failed — continuing with existing code."
-        fi
+    # ── Step 2: Verify
+    if ! tar -tzf "$tarball" >/dev/null 2>&1; then
+        rm -rf "$tmp_dir"
+        die "Downloaded file is not a valid tar.gz archive. Aborting."
+    fi
+
+    # ── Step 3: Extract
+    local extract_dir="${tmp_dir}/extracted"
+    mkdir -p "$extract_dir"
+    tar -xzf "$tarball" -C "$extract_dir" 2>/dev/null
+
+    # GitHub tarballs extract as <repo>-<branch>/
+    local source_root
+    source_root=$(find "$extract_dir" -maxdepth 1 -type d -name "ops-script-*" | head -1)
+    if [[ -z "$source_root" ]]; then
+        rm -rf "$tmp_dir"
+        die "Unexpected archive structure — expected ops-script-*/ inside tarball."
+    fi
+
+    # Runtime files are in ops/ inside tarball
+    local source_ops="${source_root}/${OPS_SOURCE_SUBDIR}"
+    if [[ ! -d "${source_ops}/bin" ]]; then
+        rm -rf "$tmp_dir"
+        die "Missing ${OPS_SOURCE_SUBDIR}/bin/ inside tarball. Archive may be corrupted."
+    fi
+
+    # ── Step 4: Apply to OPS_INSTALL_DIR
+    mkdir -p "$OPS_INSTALL_DIR"
+
+    if command -v rsync >/dev/null 2>&1; then
+        rsync -a --exclude='*.log' \
+            "${source_ops}/" \
+            "${OPS_INSTALL_DIR}/" 2>&1 | grep -v '^sending\|^sent\|^total\|speedup' || true
     else
-        # Ensure parent exists and is not occupied by a non-git dir
-        if [[ -d "$OPS_INSTALL_DIR" ]]; then
-            warn "${OPS_INSTALL_DIR} exists but is not a git repo — backing up..."
-            mv "$OPS_INSTALL_DIR" "${OPS_INSTALL_DIR}.bak.$(date +%Y%m%d_%H%M%S)"
+        cp -a "${source_ops}/." "${OPS_INSTALL_DIR}/"
+    fi
+
+    # Also copy install/ docs/ rules/ agents/ from source root (outside ops/)
+    for extra_dir in install docs rules agents; do
+        if [[ -d "${source_root}/${extra_dir}" ]]; then
+            if command -v rsync >/dev/null 2>&1; then
+                rsync -a "${source_root}/${extra_dir}/" \
+                    "${OPS_INSTALL_DIR}/${extra_dir}/" 2>/dev/null || true
+            else
+                mkdir -p "${OPS_INSTALL_DIR}/${extra_dir}"
+                cp -a "${source_root}/${extra_dir}/." "${OPS_INSTALL_DIR}/${extra_dir}/"
+            fi
         fi
-        git clone --depth=1 "$OPS_REPO_URL" "$OPS_INSTALL_DIR"
-    fi
+    done
 
-    # Repo source layout keeps runtime files under ./ops/. Promote to /opt/ops.
-    if [[ -d "${OPS_INSTALL_DIR}/${OPS_SOURCE_SUBDIR}/bin" ]]; then
-        info "Promoting ${OPS_SOURCE_SUBDIR}/ runtime tree to ${OPS_INSTALL_DIR}..."
-        cp -a "${OPS_INSTALL_DIR}/${OPS_SOURCE_SUBDIR}/." "${OPS_INSTALL_DIR}/"
-    fi
-
-    # Make all scripts executable FIRST (must happen before -x checks below)
+    # ── Step 5: Permissions
     find "${OPS_INSTALL_DIR}/bin"     -type f             -exec chmod +x {} \;
-    find "${OPS_INSTALL_DIR}/install" -type f -name "*.sh" -exec chmod +x {} \;
-    find "${OPS_INSTALL_DIR}/modules" -type f -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
-    find "${OPS_INSTALL_DIR}/core"    -type f -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
+    find "${OPS_INSTALL_DIR}/modules" -type f -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
+    find "${OPS_INSTALL_DIR}/core"    -type f -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
+    find "${OPS_INSTALL_DIR}/install" -type f -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
 
-    # Verify the key entrypoint exists (use -f, not -x, since git may not preserve execute bits)
     [[ -f "${OPS_INSTALL_DIR}/bin/ops-setup.sh" ]] \
-        || die "Missing ${OPS_INSTALL_DIR}/bin/ops-setup.sh after clone/promote."
+        || die "Missing bin/ops-setup.sh after install. Tarball may be incomplete."
     chmod +x "${OPS_INSTALL_DIR}/bin/ops-setup.sh"
 
-    # Restore ownership to admin user (also needed after the root chown above)
+    # ── Step 6: Cleanup + ownership
+    rm -rf "$tmp_dir"
     chown -R "${ADMIN_USER}:${ADMIN_USER}" "$OPS_INSTALL_DIR"
 
-    ok "OPS core installed at ${OPS_INSTALL_DIR}."
+    ok "OPS core installed at ${OPS_INSTALL_DIR} (from tarball — no git required)."
 }
-
 
 # ── 7. Write capacity.conf ────────────────────────────────────
 
@@ -393,12 +430,10 @@ run_setup() {
     local setup_script="${OPS_INSTALL_DIR}/bin/ops-setup.sh"
 
     if [[ ! -f "$setup_script" ]]; then
-        die "ops-setup.sh not found at ${setup_script}. Clone may have failed."
+        die "ops-setup.sh not found at ${setup_script}. Install may have failed."
     fi
 
     info "Running ops-setup.sh as root (will use ADMIN_USER=${ADMIN_USER})..."
-    # OPS_VERSION is already readonly+exported — no need to re-pass it.
-    # Passing ADMIN_USER explicitly so ops-setup.sh sees it even if env is clean.
     ADMIN_USER="$ADMIN_USER" \
     bash "$setup_script"
 }
