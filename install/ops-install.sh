@@ -284,11 +284,16 @@ install_ops_core() {
         cp -a "${OPS_INSTALL_DIR}/${OPS_SOURCE_SUBDIR}/." "${OPS_INSTALL_DIR}/"
     fi
 
-    [[ -x "${OPS_INSTALL_DIR}/bin/ops-setup.sh" ]] || die "Missing ${OPS_INSTALL_DIR}/bin/ops-setup.sh after clone/promote."
-
-    # Make all scripts executable
-    find "${OPS_INSTALL_DIR}/bin"     -type f            -exec chmod +x {} \;
+    # Make all scripts executable FIRST (must happen before -x checks below)
+    find "${OPS_INSTALL_DIR}/bin"     -type f             -exec chmod +x {} \;
     find "${OPS_INSTALL_DIR}/install" -type f -name "*.sh" -exec chmod +x {} \;
+    find "${OPS_INSTALL_DIR}/modules" -type f -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
+    find "${OPS_INSTALL_DIR}/core"    -type f -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
+
+    # Verify the key entrypoint exists (use -f, not -x, since git may not preserve execute bits)
+    [[ -f "${OPS_INSTALL_DIR}/bin/ops-setup.sh" ]] \
+        || die "Missing ${OPS_INSTALL_DIR}/bin/ops-setup.sh after clone/promote."
+    chmod +x "${OPS_INSTALL_DIR}/bin/ops-setup.sh"
 
     # Restore ownership to admin user (also needed after the root chown above)
     chown -R "${ADMIN_USER}:${ADMIN_USER}" "$OPS_INSTALL_DIR"
