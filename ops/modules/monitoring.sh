@@ -34,6 +34,7 @@ menu_monitoring() {
         echo "  13) Advanced monitoring (Netdata opt-in)"
         echo "  14) Notifications & scheduled checks"
         echo "  15) Backup helpers"
+        echo "  16) Update OPS from git"
         echo "  0) Back"
         echo ""
         read -r -p "Select: " choice
@@ -53,6 +54,7 @@ menu_monitoring() {
             13) menu_monitoring_netdata          ;;
             14) menu_checks                      ;;
             15) menu_backup                      ;;
+            16) ops_self_update                  ;;
             0)  return                           ;;
             *)  print_warn "Invalid option"     ;;
         esac
@@ -557,4 +559,107 @@ monitoring_netdata_status() {
     fi
 
     log_info "monitoring_netdata_status: done"
+}
+
+# ── P2-16: OPS self-update from git ───────────────────────────
+
+ops_self_update() {
+    print_section "Update OPS from Git"
+
+    # Resolve the actual OPS_ROOT (works even if called via symlink)
+    local ops_root="${OPS_ROOT:-}"
+    if [[ -z "$ops_root" || ! -d "$ops_root/.git" ]]; then
+        # Walk up from bin/ to find the git root
+        ops_root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+    fi
+    if [[ ! -d "${ops_root}/.git" ]]; then
+        print_error "OPS directory is not a git repo: ${ops_root}"
+        print_warn "Manual update: cd ${ops_root} && git pull origin main"
+        return 1
+    fi
+
+    if ! command -v git >/dev/null 2>&1; then
+        print_error "git is not installed. Install with: apt install git"
+        return 1
+    fi
+
+    echo "  OPS root : ${ops_root}"
+    local current_branch current_commit
+    current_branch=$(git -C "$ops_root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+    current_commit=$(git -C "$ops_root" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    echo "  Branch   : ${current_branch}"
+    echo "  Commit   : ${current_commit}"
+    echo ""
+
+    # Fetch and show pending changes
+    print_warn "Fetching from origin..."
+    if ! git -C "$ops_root" fetch origin 2>&1; then
+        print_error "git fetch failed. Check network connectivity."
+        return 1
+    fi
+
+    local pending
+    pending=$(git -C "$ops_root" log "HEAD..origin/${current_branch}" --oneline 2>/dev/null || true)
+    if [[ -z "$pending" ]]; then
+        print_ok "Already up to date — no changes to pull."
+        return 0
+    fi
+
+    echo "  Pending commits:"
+    printf '%s\n' "$pending" | sed 's/^/    /'
+    echo ""
+
+    if ! prompt_confirm "Pull these changes into ${ops_root}?"; then
+        print_warn "Update cancelled."
+        return 0
+    fi
+
+    # Pull
+    print_warn "Running git pull origin ${current_branch}..."
+    if ! git -C "$ops_root" pull origin "$current_branch"; then
+        print_error "git pull failed. Check for merge conflicts."
+        return 1
+    fi
+
+    local new_commit
+    new_commit=$(git -C "$ops_root" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    print_ok "Updated: ${current_commit} → ${new_commit}"
+
+    # Syntax check all shell files post-pull
+    echo ""
+    echo "  Running bash -n on core shell files..."
+    local any_fail=0
+    local f
+    for f in \
+        "${ops_root}/ops/bin/ops" \
+        "${ops_root}/ops/modules/monitoring.sh" \
+        "${ops_root}/ops/modules/verify.sh" \
+        "${ops_root}/ops/modules/checks.sh" \
+        "${ops_root}/ops/modules/backup.sh" \
+        "${ops_root}/ops/modules/nginx.sh" \
+        "${ops_root}/ops/modules/php.sh" \
+        "${ops_root}/ops/modules/database.sh" \
+        "${ops_root}/ops/modules/node.sh" \
+        "${ops_root}/ops/modules/security.sh"
+    do
+        [[ -f "$f" ]] || continue
+        local short_name="${f#${ops_root}/}"
+        if bash -n "$f" 2>/dev/null; then
+            printf '  [OK]  %s\n' "$short_name"
+        else
+            printf '  [ERR] %s  — syntax error!\n' "$short_name"
+            any_fail=1
+        fi
+    done
+
+    echo ""
+    if [[ "$any_fail" -eq 1 ]]; then
+        print_error "Syntax errors found after update!"
+        print_warn "Rollback with: git -C ${ops_root} checkout ${current_commit}"
+    else
+        print_ok "All syntax checks passed. OPS is ready."
+        print_warn "Restart OPS (exit and re-run) to load the new version."
+    fi
+
+    log_info "ops_self_update: ${current_commit} → ${new_commit} any_fail=${any_fail}"
 }
