@@ -260,7 +260,15 @@ install_ops_core() {
 
     if [[ -d "${OPS_INSTALL_DIR}/.git" ]]; then
         warn "OPS already cloned at ${OPS_INSTALL_DIR} — pulling latest changes..."
-        git -C "$OPS_INSTALL_DIR" pull --ff-only
+
+        # Git 2.35.2+ refuses to operate in directories owned by a different user.
+        # Temporarily take ownership as root so git pull works, then restore below.
+        chown -R root:root "$OPS_INSTALL_DIR" 2>/dev/null || true
+        git config --global --add safe.directory "$OPS_INSTALL_DIR" 2>/dev/null || true
+
+        if ! git -C "$OPS_INSTALL_DIR" pull --ff-only; then
+            warn "git pull failed — continuing with existing code."
+        fi
     else
         # Ensure parent exists and is not occupied by a non-git dir
         if [[ -d "$OPS_INSTALL_DIR" ]]; then
@@ -279,14 +287,15 @@ install_ops_core() {
     [[ -x "${OPS_INSTALL_DIR}/bin/ops-setup.sh" ]] || die "Missing ${OPS_INSTALL_DIR}/bin/ops-setup.sh after clone/promote."
 
     # Make all scripts executable
-    find "${OPS_INSTALL_DIR}/bin" -type f -exec chmod +x {} \;
+    find "${OPS_INSTALL_DIR}/bin"     -type f            -exec chmod +x {} \;
     find "${OPS_INSTALL_DIR}/install" -type f -name "*.sh" -exec chmod +x {} \;
 
-    # Set ownership to admin user
+    # Restore ownership to admin user (also needed after the root chown above)
     chown -R "${ADMIN_USER}:${ADMIN_USER}" "$OPS_INSTALL_DIR"
 
     ok "OPS core installed at ${OPS_INSTALL_DIR}."
 }
+
 
 # ── 7. Write capacity.conf ────────────────────────────────────
 
