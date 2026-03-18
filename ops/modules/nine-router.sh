@@ -225,6 +225,7 @@ link_nine_router_domain() {
     fi
 
     _nine_router_ensure_limit_req_zone
+    create_default_deny
 
     backup_file "$vhost_path" >/dev/null || true
     render_template "$nginx_tpl" \

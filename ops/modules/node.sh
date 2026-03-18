@@ -267,12 +267,15 @@ node_add_app() {
     prompt_input "Entry point (relative to app dir, e.g. dist/index.js)" "index.js"
     local app_entry="$REPLY"
 
-    prompt_input "Port (localhost only, e.g. 3000)"
-    local app_port="$REPLY"
-    if ! [[ "$app_port" =~ ^[0-9]+$ ]]; then
-        print_error "Port must be numeric."
-        return 1
-    fi
+    local app_port=""
+    while true; do
+        prompt_input "Port (localhost only, e.g. 3000)"
+        app_port="$REPLY"
+        if [[ "$app_port" =~ ^[0-9]+$ ]]; then
+            break
+        fi
+        print_error "Port must be numeric. Please try again."
+    done
 
     prompt_input "PM2 process name" "$app_name"
     local pm2_name="$REPLY"
@@ -295,11 +298,13 @@ node_add_app() {
     local tpl="${OPS_ROOT:-/opt/ops}/modules/templates/pm2/ecosystem.config.js.tpl"
     local eco_dest="${app_dir}/ecosystem.config.js"
     if [[ -f "$tpl" ]]; then
+        local app_path="${app_dir%/}/${app_entry}"
         render_template "$tpl" \
-            "APP_NAME=${app_name}" \
-            "APP_ENTRY=${app_entry}" \
+            "APP_NAME=${pm2_name}" \
+            "APP_PATH=${app_path}" \
             "APP_PORT=${app_port}" \
-            "PM2_NAME=${pm2_name}" \
+            "INSTANCES=1" \
+            "EXEC_MODE=fork" \
             "NODE_ENV=${app_env}" \
             > "$eco_dest"
         print_ok "Rendered: $eco_dest"

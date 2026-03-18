@@ -12,6 +12,7 @@ DB_ROOT_PASSWORD_FILE="${OPS_CONFIG_DIR}/.db-root-password"
 DB_CREDENTIALS_DIR="${OPS_CONFIG_DIR}/db-credentials"
 MARIADB_SERVER_CNF="/etc/mysql/mariadb.conf.d/50-server.cnf"
 MARIADB_TUNING_CNF="/etc/mysql/mariadb.conf.d/60-ops-tuning.cnf"
+DB_ROOT_AUTH_MODE="socket"
 
 _db_mysql_socket_exec() {
     local sql="$1"
@@ -20,14 +21,20 @@ _db_mysql_socket_exec() {
 
 _db_mysql_root_exec() {
     local sql="$1"
-    if [[ ! -f "$DB_ROOT_PASSWORD_FILE" ]]; then
-        print_error "Root password file not found: ${DB_ROOT_PASSWORD_FILE}"
-        return 1
+    if _db_mysql_socket_exec "SELECT 1;" >/dev/null 2>&1; then
+        _db_mysql_socket_exec "$sql"
+        return $?
     fi
 
-    local root_password
-    root_password="$(cat "$DB_ROOT_PASSWORD_FILE")"
-    MYSQL_PWD="$root_password" mysql -u root -e "$sql"
+    if [[ -f "$DB_ROOT_PASSWORD_FILE" ]]; then
+        local root_password
+        root_password="$(cat "$DB_ROOT_PASSWORD_FILE")"
+        MYSQL_PWD="$root_password" mysql -u root -e "$sql"
+        return $?
+    fi
+
+    print_error "Cannot authenticate as MariaDB root via socket or password file."
+    return 1
 }
 
 _db_escape_sql_string() {
@@ -92,12 +99,21 @@ EOF_SECRET
     chown "$owner":"$owner" "$path" 2>/dev/null || true
 }
 
+_db_remove_secret_file() {
+    local path="$1"
+    [[ -f "$path" ]] || return 0
+    rm -f "$path"
+}
+
 _db_save_database_conf() {
     local db_version="$1"
 
     ops_conf_set "database.conf" "DB_ENGINE" "mariadb"
     ops_conf_set "database.conf" "DB_VERSION" "$db_version"
-    ops_conf_set "database.conf" "DB_ROOT_PASSWORD_FILE" "$DB_ROOT_PASSWORD_FILE"
+    ops_conf_set "database.conf" "DB_ROOT_AUTH_MODE" "$DB_ROOT_AUTH_MODE"
+    if [[ "$DB_ROOT_AUTH_MODE" == "password" ]]; then
+        ops_conf_set "database.conf" "DB_ROOT_PASSWORD_FILE" "$DB_ROOT_PASSWORD_FILE"
+    fi
     ops_conf_set "database.conf" "DB_INSTALL_DATE" "$(date '+%F %T')"
     chmod 600 "$DB_CONFIG_FILE" 2>/dev/null || true
 }
@@ -116,24 +132,20 @@ install_mariadb() {
         apt_install openssl
     fi
 
-    local root_password escaped_root_password
-    root_password="$(openssl rand -base64 24)"
-    escaped_root_password="$(_db_escape_sql_string "$root_password")"
-
     # Security baseline equivalent to mysql_secure_installation.
     _db_mysql_socket_exec "DELETE FROM mysql.user WHERE User='';"
     _db_mysql_socket_exec "DELETE FROM mysql.user WHERE User='root' AND Host != 'localhost';"
     _db_mysql_socket_exec "DROP DATABASE IF EXISTS test;"
-    _db_mysql_socket_exec "ALTER USER 'root'@'localhost' IDENTIFIED BY '${escaped_root_password}';"
+    _db_mysql_socket_exec "ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket;"
     _db_mysql_socket_exec "FLUSH PRIVILEGES;"
 
-    _db_write_secret_file "$DB_ROOT_PASSWORD_FILE" "$root_password"
+    _db_remove_secret_file "$DB_ROOT_PASSWORD_FILE"
     _db_save_database_conf "$(_db_detect_mariadb_version)"
 
     service_restart mariadb
 
     print_ok "MariaDB installed and secured."
-    print_ok "Root password stored at ${DB_ROOT_PASSWORD_FILE} (0600)."
+    print_ok "MariaDB root uses local unix_socket authentication (sudo mysql)."
 }
 
 tune_mariadb() {
@@ -311,12 +323,6 @@ db_status() {
     print_section "Database Status"
     service_status mariadb || true
 
-    if [[ -f "$DB_ROOT_PASSWORD_FILE" ]]; then
-        local root_password
-        root_password="$(cat "$DB_ROOT_PASSWORD_FILE")"
-        MYSQL_PWD="$root_password" mysqladmin -u root status || true
-        MYSQL_PWD="$root_password" mysql -u root -e "SHOW DATABASES;" || true
-    else
-        print_warn "Root password file not found: ${DB_ROOT_PASSWORD_FILE}"
-    fi
+    _db_mysql_root_exec "SHOW DATABASES;" || true
+    _db_mysql_root_exec "SHOW GLOBAL STATUS LIKE 'Threads_connected';" || true
 }

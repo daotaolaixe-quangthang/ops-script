@@ -16,6 +16,30 @@ NGINX_DEFAULT_CERT_DIR="/etc/nginx/ssl"
 NGINX_DEFAULT_CERT="${NGINX_DEFAULT_CERT_DIR}/ops-default.crt"
 NGINX_DEFAULT_KEY="${NGINX_DEFAULT_CERT_DIR}/ops-default.key"
 
+_nginx_disable_packaged_default_site() {
+    local packaged_enabled="${NGINX_SITES_ENABLED}/default"
+    local packaged_available="${NGINX_SITES_AVAILABLE}/default"
+
+    if [[ -L "$packaged_enabled" ]]; then
+        rm -f "$packaged_enabled"
+        log_info "Disabled packaged nginx default site symlink: ${packaged_enabled}"
+        return 0
+    fi
+
+    # If the distro dropped a real file into sites-enabled/default, move it aside so
+    # our managed default deny server remains the only default_server on :80/:443.
+    if [[ -f "$packaged_enabled" ]]; then
+        backup_file "$packaged_enabled" >/dev/null || true
+        rm -f "$packaged_enabled"
+        log_info "Removed packaged nginx default site file: ${packaged_enabled}"
+        return 0
+    fi
+
+    if [[ -f "$packaged_available" ]]; then
+        log_info "Packaged nginx default site remains available but disabled: ${packaged_available}"
+    fi
+}
+
 _nginx_detect_tuning() {
     local worker_processes worker_connections
     case "${OPS_TIER:-M}" in
@@ -232,6 +256,7 @@ create_default_deny() {
         "SELF_SIGNED_CERT=${NGINX_DEFAULT_CERT}" \
         "SELF_SIGNED_KEY=${NGINX_DEFAULT_KEY}"
 
+    _nginx_disable_packaged_default_site
     safe_symlink "$available" "$enabled"
     log_info "Default deny vhost is present and enabled."
 }
