@@ -72,6 +72,8 @@ Expected layout inside this repo under `ops/`:
     - `nginx/`
       - `node_vhost.conf.tpl`
       - `php_vhost.conf.tpl`
+      - `nine-router.vhost.conf.tpl`    # SSE proxy + rate limiting
+      - `static_vhost.conf.tpl`
       - `ssl_snippet.tpl`
       - `default-deny.conf.tpl`
     - `pm2/`
@@ -101,12 +103,23 @@ In production, OPS is expected to use:
 
 To keep the production control plane maintainable, OPS should add explicit state files rather than relying only on system inspection:
 
+**Config files (key=value, shell-sourceable):**
 - `/etc/ops/ops.conf` - global install and defaults
-- `/etc/ops/capacity.conf` or JSON - captured VPS capacity profile
+- `/etc/ops/capacity.conf` - captured VPS capacity profile
 - `/etc/ops/apps/<app>.conf` - Node app manifests
 - `/etc/ops/domains/<domain>.conf` - domain to backend mapping
 - `/etc/ops/php-sites/<site>.conf` - PHP site metadata
-- `/etc/ops/codex-cli.conf` - Codex CLI integration state
+- `/etc/ops/nine-router.conf` - 9router state (NINE_ROUTER_INSTALLED, DOMAIN, SSL, REQUIRE_API_KEY)
+- `/etc/ops/codex-cli.conf` - Codex CLI state
+- `/etc/ops/database.conf` - DB engine (MariaDB default), version
+- `/etc/ops/notifications.conf` - Telegram CHAT_ID, TELEGRAM_ENABLED
+
+**Secret files (0600, owned by admin user — NEVER in config files above):**
+- `/etc/ops/.nine-router-password` - 9router dashboard initial password
+- `/etc/ops/.db-root-password` - MariaDB root password
+- `/etc/ops/.codex-api-key` - Codex CLI API key
+- `/etc/ops/.telegram-bot-token` - Telegram bot token
+- `/opt/9router/.env` - 9router runtime secrets (JWT_SECRET, API keys)
 
 If some of these are not implemented in Phase 1, they still remain the target architecture.
 

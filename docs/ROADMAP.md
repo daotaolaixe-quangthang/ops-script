@@ -44,7 +44,7 @@ Goal: Deliver a working OPS stack for Ubuntu 22.04/24.04 with:
 - Core menu system.
 - Nginx + Node.js LTS + PM2.
 - Multi‑PHP (7.4, 8.1, 8.2, 8.3).
-- MySQL/MariaDB.
+- MariaDB (default).
 - Certbot SSL.
 - Basic monitoring.
 - 9router management.
@@ -72,7 +72,7 @@ High‑level tasks:
      - Nginx install + base tuning.
      - Node.js LTS + PM2.
      - PHP‑FPM multi‑version support.
-     - MySQL/MariaDB install + secure setup.
+     - MariaDB (default) install + secure setup.
      - Logging & basic monitoring.
 
 5. **Feature modules**
@@ -80,7 +80,7 @@ High‑level tasks:
    - `modules/node.sh` – Node services / PM2 integration.
    - `modules/nine-router.sh` – 9router install and control.
    - `modules/php.sh` – PHP‑FPM (7.4, 8.1, 8.2, 8.3).
-   - `modules/database.sh` – MySQL/MariaDB.
+   - `modules/database.sh` – MariaDB (default).
    - `modules/monitoring.sh` – system overview, service status, quick logs (basic).
    - `modules/codex-cli.sh` – Codex CLI install and config.
 
@@ -136,7 +136,7 @@ Potential tasks:
 
 4. **Backup helpers**
    - Simple menu actions to:
-     - Dump MySQL/MariaDB databases.
+     - Dump MariaDB (default) databases.
      - Archive Nginx and OPS configs.
    - Restore guidance (manual but scripted support where reasonable).
 

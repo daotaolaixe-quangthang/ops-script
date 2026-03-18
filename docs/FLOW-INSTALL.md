@@ -1,8 +1,9 @@
-## OPS Install & First‑Run Flow
+
+## OPS Install & First‑Run Flow
 
 This document describes the exact end‑to‑end flow from a fresh VPS to a production‑ready stack managed by OPS. It is the primary reference for how installers and wizards should behave.
 
-> Target: Ubuntu 22.04 / 24.04, systemd, Nginx + Node + multi‑PHP + MySQL/MariaDB.
+> Target: Ubuntu 22.04 / 24.04, systemd, Nginx + Node + multi‑PHP + MariaDB (default).
 
 ### 1. One‑line installer
 
@@ -116,7 +117,7 @@ From the main menu, user selects **“Production Setup Wizard”** (or similar).
      - Generate FPM pool config from templates with tuning rules.
      - Configure `php.ini` and opcache.
 
-6. **Database (MySQL/MariaDB)**
+6. **Database (MariaDB (default))**
    - Ask whether to install a database server now.
    - If yes:
      - Install MySQL or MariaDB (as default).

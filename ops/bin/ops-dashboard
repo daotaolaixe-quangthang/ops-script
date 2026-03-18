@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+# ============================================================
+# ops/bin/ops-dashboard
+# Purpose:  Login dashboard — shown on interactive SSH login
+# Part of:  OPS — VPS Production Setup & Manager
+# ============================================================
+# Guard: only runs in interactive sessions with a real terminal.
+# This script is called by the login hook in ~/.bash_profile.
+# It must NOT run for scp / rsync / sftp / non‑interactive shells.
+# The guard ([[ $- == *i* ]] && [[ -t 0 ]]) lives in the hook,
+# but we add a belt-and-suspenders check here too.
+# ============================================================
+set -euo pipefail
+IFS=$'\\n\\t'
+
+# ── Belt-and-suspenders interactive SSH guard ─────────────────
+# Exit silently for scp/rsync/sftp/non-tty/non-SSH contexts.
+if [[ ! -t 0 ]] || [[ ! -t 1 ]]; then
+    exit 0
+fi
+
+# Only show dashboard in SSH sessions.
+if [[ -z "${SSH_CONNECTION:-}" ]]; then
+    exit 0
+fi
+
+OPS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=core/env.sh
+source "$OPS_ROOT/core/env.sh"
+# shellcheck source=core/utils.sh
+source "$OPS_ROOT/core/utils.sh"
+# shellcheck source=core/ui.sh
+source "$OPS_ROOT/core/ui.sh"
+
+# Load saved config if available (provides OPS_TIER override from capacity.conf)
+# shellcheck source=/dev/null
+[[ -f "${OPS_CONFIG_DIR}/capacity.conf" ]] && source "${OPS_CONFIG_DIR}/capacity.conf" || true
+# shellcheck source=/dev/null
+[[ -f "${OPS_CONFIG_DIR}/ops.conf" ]]      && source "${OPS_CONFIG_DIR}/ops.conf"      || true
+
+# ── Colour shorthands (already loaded via ui.sh) ──────────────
+
+# ── Helper: service status badge ──────────────────────────────
+_svc_badge() {
+    local name="$1"
+    if systemctl is-active --quiet "$name" 2>/dev/null; then
+        echo -e "${GRN}●${RST} ${name}"
+    else
+        echo -e "${RED}○${RST} ${name}"
+    fi
+}
+
+# ── Dashboard sections ────────────────────────────────────────
+
+show_header() {
+    local hostname
+    hostname=$(hostname -f 2>/dev/null || hostname)
+    echo ""
+    echo -e "${CYN}${BLD}╔══════════════════════════════════════════════════╗${RST}"
+    printf "${CYN}${BLD}║${RST}   %-47s${CYN}${BLD}║${RST}\n" "OPS Dashboard — ${hostname}"
+    echo -e "${CYN}${BLD}╚══════════════════════════════════════════════════╝${RST}"
+    echo ""
+}
+
+show_system_info() {
+    # Uptime
+    local uptime_str
+    uptime_str=$(uptime -p 2>/dev/null || uptime | sed 's/.*up //' | sed 's/,.*//')
+
+    # Date/time
+    local now
+    now=$(date '+%F %T %Z')
+
+    # OS
+    local os_pretty="${PRETTY_NAME:-${OS_ID:-?} ${OS_VERSION_ID:-?}}"
+    # PRETTY_NAME is exported by source /etc/os-release in detect_os()
+
+    local primary_ip
+    primary_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    primary_ip="${primary_ip:-N/A}"
+
+    echo -e "${BLD}  System${RST}"
+    echo -e "  ├ OS:      ${os_pretty}"
+    echo -e "  ├ Host:    $(hostname -f 2>/dev/null || hostname)"
+    echo -e "  ├ IP:      ${primary_ip}"
+    echo -e "  ├ Time:    ${now}"
+    echo -e "  └ Uptime:  ${uptime_str}"
+    echo ""
+}
+
+show_resources() {
+    # RAM
+    local ram_total ram_used ram_free ram_pct
+    ram_total=$(awk '/MemTotal/  { printf "%d", $2/1024 }' /proc/meminfo)
+    ram_free=$( awk '/MemAvailable/ { printf "%d", $2/1024 }' /proc/meminfo)
+    ram_used=$(( ram_total - ram_free ))
+    ram_pct=$(( ram_used * 100 / ram_total ))
+
+    # Swap
+    local swap_total swap_used swap_pct
+    swap_total=$(awk '/SwapTotal/ { printf "%d", $2/1024 }' /proc/meminfo)
+    swap_used=$( awk '/SwapFree/  { printf "%d", $2/1024 }' /proc/meminfo)
+    # swap_used from /proc is actually free; real used = total - free
+    swap_used=$(( swap_total - swap_used ))
+    if (( swap_total > 0 )); then
+        swap_pct=$(( swap_used * 100 / swap_total ))
+    else
+        swap_pct=0
+    fi
+
+    # CPU load
+    local load1 load5 load15
+    read -r load1 load5 load15 _ < /proc/loadavg
+
+    # Disk
+    local disk_used disk_total disk_avail disk_pct
+    read -r _ disk_total disk_used disk_avail disk_pct _ < <(df -BG / | awk 'NR==2 { print }')
+    disk_pct="${disk_pct//%/}"   # strip % for comparison
+
+    # OPS Tier (from env.sh or capacity.conf)
+    local tier="${OPS_TIER:-?}"
+
+    echo -e "${BLD}  Resources${RST}"
+    echo -e "  ├ CPU:     ${CPU_CORES} core(s)   Load: ${load1} / ${load5} / ${load15} (1m / 5m / 15m)"
+
+    # Colour RAM pct
+    local ram_colour="${GRN}"
+    (( ram_pct >= 80 )) && ram_colour="${YLW}"
+    (( ram_pct >= 92 )) && ram_colour="${RED}"
+    echo -e "  ├ RAM:     ${ram_used}MB / ${ram_total}MB  (${ram_colour}${ram_pct}%${RST} used)  Avail: ${ram_free}MB"
+
+    if (( swap_total > 0 )); then
+        echo -e "  ├ Swap:    ${swap_used}MB / ${swap_total}MB  (${swap_pct}% used)"
+    else
+        echo -e "  ├ Swap:    none"
+    fi
+
+    local disk_colour="${GRN}"
+    (( disk_pct >= 80 )) && disk_colour="${YLW}"
+    (( disk_pct >= 92 )) && disk_colour="${RED}"
+    echo -e "  ├ Disk /:  ${disk_used} / ${disk_total}  (${disk_colour}${disk_pct}%${RST} used)  Avail: ${disk_avail}"
+    echo -e "  └ Tier:    ${BLD}${tier}${RST}"
+    echo ""
+}
+
+show_services() {
+    echo -e "${BLD}  Services${RST}"
+
+    # Detect configured services
+    local services=()
+    systemctl is-active --quiet nginx       2>/dev/null && services+=("nginx")       || services+=("nginx")
+    systemctl is-active --quiet mariadb     2>/dev/null && services+=("mariadb")     || services+=("mariadb")
+    systemctl is-active --quiet mysql       2>/dev/null && services+=("mysql")       || services+=("mysql")
+    systemctl is-active --quiet ufw         2>/dev/null && services+=("ufw")         || services+=("ufw")
+    systemctl is-active --quiet fail2ban    2>/dev/null && services+=("fail2ban")    || services+=("fail2ban")
+    systemctl is-active --quiet ssh         2>/dev/null && services+=("ssh")         || services+=("ssh")
+
+    # PHP-FPM (any version)
+    local php_versions=("7.4" "8.1" "8.2" "8.3")
+    for v in "${php_versions[@]}"; do
+        local svc="php${v}-fpm"
+        systemctl list-units --type=service --all 2>/dev/null | grep -q "${svc}" \
+            && services+=("${svc}") || true
+    done
+
+    # PM2: check if 'pm2' process exists for admin user
+    local pm2_status
+    if command -v pm2 &>/dev/null; then
+        if pm2 list 2>/dev/null | grep -q "online"; then
+            pm2_status="${GRN}● pm2 (processes online)${RST}"
+        else
+            pm2_status="${YLW}○ pm2 (no online processes)${RST}"
+        fi
+    fi
+
+    # Deduplicate and print service badges (use associative array trick)
+    local -A seen=()
+    local count=0
+    local last_svc=""
+    for svc in "${services[@]}"; do
+        [[ -n "${seen[$svc]+x}" ]] && continue
+        seen["$svc"]=1
+        count=$(( count + 1 ))
+        last_svc="$svc"
+    done
+
+    local i=0
+    for svc in "${!seen[@]}"; do
+        i=$(( i + 1 ))
+        if (( i < count )); then
+            echo -n "  ├ "; _svc_badge "$svc"
+        else
+            echo -n "  └ "; _svc_badge "$svc"
+        fi
+    done
+
+    if [[ -n "${pm2_status:-}" ]]; then
+        echo -e "  └ ${pm2_status}"
+    fi
+
+    echo ""
+}
+
+show_security_warning() {
+    # If port 22 is still open alongside a custom SSH port, warn the operator.
+    local ops_conf="${OPS_CONFIG_DIR}/ops.conf"
+    # shellcheck source=/dev/null
+    [[ -f "$ops_conf" ]] && source "$ops_conf" || true
+
+    # Check if UFW has both port 22 AND a custom SSH port open
+    local ufw_status
+    ufw_status=$(ufw status 2>/dev/null || echo "inactive")
+    if echo "$ufw_status" | grep -q "22/tcp" && echo "$ufw_status" | grep -q "ALLOW"; then
+        echo -e "  ${YLW}⚠  Port 22 is still open (transition mode).${RST}"
+        echo -e "  ${YLW}   Use 'ops' → Security → Finalise SSH port to close it.${RST}"
+        echo ""
+    fi
+}
+
+# ── Interactive prompt ────────────────────────────────────────
+
+show_prompt() {
+    echo -e "  ${BLD}Press 1 to open OPS menu, or Enter to continue to the shell:${RST}"
+    local choice
+    if read -r choice; then
+        if [[ "$choice" == "1" ]]; then
+            if command -v ops &>/dev/null; then
+                ops
+            else
+                echo -e "  ${RED}[ERROR]${RST} 'ops' command not found. Run: sudo ln -s ${OPS_ROOT}/bin/ops /usr/local/bin/ops"
+            fi
+        fi
+    fi
+    # Any other input → continue to shell
+}
+
+# ── Main ──────────────────────────────────────────────────────
+
+show_header
+show_system_info
+show_resources
+show_services
+show_security_warning
+show_prompt

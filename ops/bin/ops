@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# ============================================================
+# ops/bin/ops
+# Purpose:  OPS main menu dispatcher (TUI entry point)
+# Part of:  OPS — VPS Production Setup & Manager
+# ============================================================
+set -euo pipefail
+IFS=$'\n\t'
+
+# Resolve OPS_ROOT to absolute path (works regardless of cwd)
+OPS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Source core helpers (always in this order)
+# shellcheck source=core/env.sh
+source "$OPS_ROOT/core/env.sh"
+# shellcheck source=core/utils.sh
+source "$OPS_ROOT/core/utils.sh"
+# shellcheck source=core/ui.sh
+source "$OPS_ROOT/core/ui.sh"
+# shellcheck source=core/system.sh
+source "$OPS_ROOT/core/system.sh"
+
+# ── Load all modules (sourced, not executed) ─────────────────
+# shellcheck source=modules/setup-wizard.sh
+source "$OPS_ROOT/modules/setup-wizard.sh"
+# shellcheck source=modules/security.sh
+source "$OPS_ROOT/modules/security.sh"
+# shellcheck source=modules/nginx.sh
+source "$OPS_ROOT/modules/nginx.sh"
+# shellcheck source=modules/node.sh
+source "$OPS_ROOT/modules/node.sh"
+# shellcheck source=modules/nine-router.sh
+source "$OPS_ROOT/modules/nine-router.sh"
+# shellcheck source=modules/php.sh
+source "$OPS_ROOT/modules/php.sh"
+# shellcheck source=modules/database.sh
+source "$OPS_ROOT/modules/database.sh"
+# shellcheck source=modules/monitoring.sh
+source "$OPS_ROOT/modules/monitoring.sh"
+# shellcheck source=modules/codex-cli.sh
+source "$OPS_ROOT/modules/codex-cli.sh"
+
+# ── Main menu loop ────────────────────────────────────────────
+main_menu() {
+    while true; do
+        clear
+        print_section "OPS — VPS Production Manager"
+        echo "  System: ${OS_ID:-unknown} ${OS_VERSION_ID:-}  |  Tier: ${OPS_TIER:-?}  |  RAM: ${RAM_MB:-?}MB  |  CPU: ${CPU_CORES:-?}"
+        echo ""
+        echo "  1) Production Setup Wizard"
+        echo "  2) Node.js Services"
+        echo "  3) Domains & Nginx"
+        echo "  4) SSL Management"
+        echo "  5) 9router Management"
+        echo "  6) PHP / PHP-FPM Management"
+        echo "  7) Database Management"
+        echo "  8) Codex CLI Integration"
+        echo "  9) System & Monitoring"
+        echo "  0) Exit"
+        echo ""
+        read -r -p "Select: " choice
+        case "$choice" in
+            1) menu_setup_wizard   ;;
+            2) menu_node           ;;
+            3) menu_nginx          ;;
+            4) menu_ssl            ;;
+            5) menu_nine_router    ;;
+            6) menu_php            ;;
+            7) menu_database       ;;
+            8) menu_codex_cli      ;;
+            9) menu_monitoring     ;;
+            0) exit 0              ;;
+            *) print_warn "Invalid option — choose 0..9" ;;
+        esac
+    done
+}
+
+main_menu

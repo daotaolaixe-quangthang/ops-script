@@ -125,15 +125,18 @@ Nguyen tac:
   - `PERF-TUNING.md`
   - `SOURCE-TO-RUNTIME-TRACE.md`
 - **Runtime state can xem**:
-  - MySQL/MariaDB service
-  - server config
-  - created DB/users
+  - **MariaDB** service (default) hoac MySQL
+  - `/etc/mysql/mariadb.conf.d/50-server.cnf` (bind-address=127.0.0.1)
+  - server config + created DB/users
+  - `/etc/ops/.db-root-password` (0600) neu can root password
 - **Verify**:
   - login DB
   - service status
   - app ket noi thanh cong
+  - `mysql -u root -p < /etc/ops/.db-root-password` hoac socket auth
 - **Rollback**:
   - revert config, restart DB, xoa user/db tao nham neu can
+
 
 ### G. SSH/firewall/fail2ban gay lockout
 
@@ -173,14 +176,17 @@ Nguyen tac:
   - `RUNBOOKS.md`
   - `RUNTIME-ARTEFACT-INVENTORY.md`
 - **Runtime state can xem**:
-  - `/etc/ops/notifications.conf`
+  - `/etc/ops/notifications.conf` (TELEGRAM_CHAT_ID, TELEGRAM_ENABLED)
+  - `/etc/ops/.telegram-bot-token` (0600) — xac nhan file ton tai va co gia tri
   - `/etc/ops/checks/*`
   - scheduler artefacts
 - **Verify**:
-  - test notification
+  - test notification (gui message thu)
   - kiem tra disable path
 - **Rollback**:
   - tat checks/scheduler moi
+  - xoa `/etc/ops/.telegram-bot-token` neu muon reset Telegram config
+
 
 ### J. Cloudflare real IP / direct IP block / custom header sai
 
