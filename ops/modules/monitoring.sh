@@ -561,89 +561,120 @@ monitoring_netdata_status() {
     log_info "monitoring_netdata_status: done"
 }
 
-# ── P2-16: OPS self-update from git ───────────────────────────
+# ── P2-16: OPS self-update from GitHub tarball ────────────────
+
+OPS_GITHUB_REPO="daotaolaixe-quangthang/ops-script"
+OPS_GITHUB_BRANCH="main"
 
 ops_self_update() {
-    print_section "Update OPS from Git"
+    print_section "Update OPS from GitHub"
 
-    # Resolve the actual OPS_ROOT (works even if called via symlink)
     local ops_root="${OPS_ROOT:-}"
-    if [[ -z "$ops_root" || ! -d "$ops_root/.git" ]]; then
-        # Walk up from bin/ to find the git root
-        ops_root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
-    fi
-    if [[ ! -d "${ops_root}/.git" ]]; then
-        print_error "OPS directory is not a git repo: ${ops_root}"
-        print_warn "Manual update: cd ${ops_root} && git pull origin main"
+    if [[ -z "$ops_root" || ! -d "$ops_root" ]]; then
+        print_error "Cannot determine OPS_ROOT."
         return 1
     fi
 
-    if ! command -v git >/dev/null 2>&1; then
-        print_error "git is not installed. Install with: apt install git"
+    if ! command -v curl >/dev/null 2>&1; then
+        print_error "curl is required but not installed: apt install curl"
         return 1
     fi
 
     echo "  OPS root : ${ops_root}"
-    local current_branch current_commit
-    current_branch=$(git -C "$ops_root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
-    current_commit=$(git -C "$ops_root" rev-parse --short HEAD 2>/dev/null || echo "unknown")
-    echo "  Branch   : ${current_branch}"
-    echo "  Commit   : ${current_commit}"
+    echo "  Source   : github.com/${OPS_GITHUB_REPO} (branch: ${OPS_GITHUB_BRANCH})"
     echo ""
 
-    # Fetch and show pending changes
-    print_warn "Fetching from origin..."
-    if ! git -C "$ops_root" fetch origin 2>&1; then
-        print_error "git fetch failed. Check network connectivity."
+    local tarball_url="https://github.com/${OPS_GITHUB_REPO}/archive/refs/heads/${OPS_GITHUB_BRANCH}.tar.gz"
+    local tmp_dir
+    tmp_dir=$(mktemp -d /tmp/ops-update-XXXXXX)
+    local tarball="${tmp_dir}/ops-update.tar.gz"
+
+    # ── Step 1: Download
+    print_warn "Downloading latest source..."
+    if ! curl -fsSL --max-time 60 --connect-timeout 10 \
+            -o "$tarball" "$tarball_url" 2>&1; then
+        print_error "Download failed. Check network connectivity."
+        rm -rf "$tmp_dir"
         return 1
     fi
 
-    local pending
-    pending=$(git -C "$ops_root" log "HEAD..origin/${current_branch}" --oneline 2>/dev/null || true)
-    if [[ -z "$pending" ]]; then
-        print_ok "Already up to date — no changes to pull."
-        return 0
+    local size
+    size=$(du -sh "$tarball" 2>/dev/null | cut -f1)
+    print_ok "Downloaded: ${tarball} (${size})"
+
+    # ── Step 2: Verify tarball
+    if ! tar -tzf "$tarball" >/dev/null 2>&1; then
+        print_error "Downloaded file is not a valid tar.gz archive."
+        rm -rf "$tmp_dir"
+        return 1
     fi
 
-    echo "  Pending commits:"
-    printf '%s\n' "$pending" | sed 's/^/    /'
+    # ── Step 3: Extract
+    local extract_dir="${tmp_dir}/extracted"
+    mkdir -p "$extract_dir"
+    tar -xzf "$tarball" -C "$extract_dir" 2>/dev/null
+
+    # GitHub tarballs extract as <repo>-<branch>/
+    local source_dir
+    source_dir=$(find "$extract_dir" -maxdepth 1 -type d -name "ops-script-*" | head -1)
+    if [[ -z "$source_dir" || ! -d "${source_dir}/ops" ]]; then
+        print_error "Unexpected archive structure — expected ops-script-*/ops/ inside tarball."
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    echo "  Extracted : ${source_dir}"
     echo ""
 
-    if ! prompt_confirm "Pull these changes into ${ops_root}?"; then
+    # ── Step 4: Preview changes
+    if command -v diff >/dev/null 2>&1; then
+        local changed_count
+        changed_count=$(diff -rq \
+            --exclude='*.log' --exclude='*.cooldown' \
+            "${source_dir}/ops/" "${ops_root}/" 2>/dev/null | wc -l || echo "?")
+        echo "  Changed files : ~${changed_count}"
+    fi
+
+    if ! prompt_confirm "Apply update to ${ops_root}?"; then
         print_warn "Update cancelled."
+        rm -rf "$tmp_dir"
         return 0
     fi
 
-    # Pull
-    print_warn "Running git pull origin ${current_branch}..."
-    if ! git -C "$ops_root" pull origin "$current_branch"; then
-        print_error "git pull failed. Check for merge conflicts."
-        return 1
+    # ── Step 5: Apply (rsync or cp)
+    print_warn "Applying update..."
+    if command -v rsync >/dev/null 2>&1; then
+        rsync -a --exclude='*.log' \
+            "${source_dir}/ops/" \
+            "${ops_root}/" 2>&1 | grep -v '^sending\|^sent\|^total\|speedup' || true
+    else
+        cp -r "${source_dir}/ops/." "${ops_root}/"
     fi
 
-    local new_commit
-    new_commit=$(git -C "$ops_root" rev-parse --short HEAD 2>/dev/null || echo "unknown")
-    print_ok "Updated: ${current_commit} → ${new_commit}"
+    # Restore execute permissions
+    find "${ops_root}/bin" -type f -exec chmod +x {} \; 2>/dev/null || true
+    find "${ops_root}/modules" -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
 
-    # Syntax check all shell files post-pull
+    print_ok "Files applied."
+
+    # ── Step 6: Syntax check
     echo ""
     echo "  Running bash -n on core shell files..."
-    local any_fail=0
-    local f
+    local any_fail=0 f short_name
     for f in \
-        "${ops_root}/ops/bin/ops" \
-        "${ops_root}/ops/modules/monitoring.sh" \
-        "${ops_root}/ops/modules/verify.sh" \
-        "${ops_root}/ops/modules/checks.sh" \
-        "${ops_root}/ops/modules/backup.sh" \
-        "${ops_root}/ops/modules/nginx.sh" \
-        "${ops_root}/ops/modules/php.sh" \
-        "${ops_root}/ops/modules/database.sh" \
-        "${ops_root}/ops/modules/node.sh" \
-        "${ops_root}/ops/modules/security.sh"
+        "${ops_root}/bin/ops" \
+        "${ops_root}/modules/monitoring.sh" \
+        "${ops_root}/modules/verify.sh" \
+        "${ops_root}/modules/checks.sh" \
+        "${ops_root}/modules/backup.sh" \
+        "${ops_root}/modules/nginx.sh" \
+        "${ops_root}/modules/php.sh" \
+        "${ops_root}/modules/database.sh" \
+        "${ops_root}/modules/node.sh" \
+        "${ops_root}/modules/security.sh"
     do
         [[ -f "$f" ]] || continue
-        local short_name="${f#${ops_root}/}"
+        short_name="${f#${ops_root}/}"
         if bash -n "$f" 2>/dev/null; then
             printf '  [OK]  %s\n' "$short_name"
         else
@@ -652,14 +683,18 @@ ops_self_update() {
         fi
     done
 
+    # ── Step 7: Cleanup
+    rm -rf "$tmp_dir"
+
     echo ""
     if [[ "$any_fail" -eq 1 ]]; then
-        print_error "Syntax errors found after update!"
-        print_warn "Rollback with: git -C ${ops_root} checkout ${current_commit}"
+        print_error "Syntax errors found after update — please review the files above."
+        print_warn "Restore from backup: ops menu → Backup helpers → Archive configs (run before update)"
     else
-        print_ok "All syntax checks passed. OPS is ready."
+        print_ok "Update complete. All syntax checks passed."
         print_warn "Restart OPS (exit and re-run) to load the new version."
     fi
 
-    log_info "ops_self_update: ${current_commit} → ${new_commit} any_fail=${any_fail}"
+    log_info "ops_self_update: applied from ${tarball_url} any_fail=${any_fail}"
 }
+
