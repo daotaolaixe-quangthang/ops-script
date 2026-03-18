@@ -130,11 +130,12 @@ _write_domain_state() {
     ensure_dir "$OPS_DOMAINS_DIR"
     write_file "${OPS_DOMAINS_DIR}/${domain}.conf" <<EOF
 DOMAIN="${domain}"
-TYPE="${type}"
-BACKEND_TARGET="${backend_target}"
-PHP_VERSION="${php_version}"
-PHP_SOCKET="${php_socket}"
-WEB_ROOT="/var/www/${domain}"
+DOMAIN_BACKEND_TYPE="${type}"
+DOMAIN_BACKEND_TARGET="${backend_target}"
+DOMAIN_PHP_VERSION="${php_version}"
+DOMAIN_PHP_SOCKET="${php_socket}"
+DOMAIN_WEB_ROOT="/var/www/${domain}"
+DOMAIN_CREATED="$(date '+%Y-%m-%d %H:%M:%S')"
 EOF
 }
 
@@ -246,8 +247,8 @@ list_domains() {
     local state_file domain type backend
     for state_file in "${OPS_DOMAINS_DIR}"/*.conf; do
         domain=$(grep '^DOMAIN=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
-        type=$(grep '^TYPE=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
-        backend=$(grep '^BACKEND_TARGET=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
+        type=$(grep '^DOMAIN_BACKEND_TYPE=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
+        backend=$(grep '^DOMAIN_BACKEND_TARGET=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
         echo "  - ${domain} (${type}) ${backend:+-> ${backend}}"
     done
 }
