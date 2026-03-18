@@ -31,15 +31,40 @@ Luu y:
 
 ## 2) Feature groups
 
-### A. Notifications & Checks (Phase 2)
+### A. Telegram Config (Phase 1 — đã có trong menu)
 
-Bao gom:
+Telegram config la Phase 1 feature, nam trong `System & Monitoring → Telegram notifications config`.
+
+**Secret vs Non-secret (chot):**
+
+| Field | Secret? | Luu tai | Permission |
+|---|---|---|---|
+| Bot Token | YES (secret) | `/etc/ops/.telegram-bot-token` | 0600 |
+| Chat ID | NO (non-secret) | `/etc/ops/notifications.conf` (`TELEGRAM_CHAT_ID=...`) | 640 |
+
+**Runtime state:**
+
+- `/etc/ops/.telegram-bot-token` (0600, owned by admin user)
+- `/etc/ops/notifications.conf` (TELEGRAM_CHAT_ID, TELEGRAM_ENABLED)
+
+**Actions:**
+
+- Configure: hoi Bot Token (hidden input) + Chat ID -> test message
+- Remove: xoa token file + clear TELEGRAM_CHAT_ID trong notifications.conf
+- Status: hien thi co token hay chua (KHONG hien thi token value)
+
+---
+
+### B. Notifications & Checks — automated triggers (Phase 2)
+
+Bao gom automated check triggers (su dung Telegram config da co san tu Phase 1):
 
 - website uptime/downtime checks
 - SSL expiry checks
 - domain expiry checks
-- Telegram + Email notifications
 - periodic security scan
+
+> Luu y: PM2 crash/restart noti KHONG duoc implement (da loai bo theo quyet dinh).
 
 **Muc tieu**
 
@@ -49,7 +74,7 @@ Bao gom:
 
 **Runtime state du kien**
 
-- `/etc/ops/notifications.conf`
+- `/etc/ops/notifications.conf` (da co tu Phase 1 Telegram config)
 - `/etc/ops/checks/uptime/*.conf`
 - `/etc/ops/checks/ssl-expiry/*.conf`
 - `/etc/ops/checks/domain-expiry/*.conf`
@@ -66,6 +91,8 @@ Bao gom:
 - disable check
 - remove scheduler artefact
 - khoi phuc config truoc do neu can
+
+
 
 ### B. Remote Upload Backups via Telegram Cloud (Phase 4)
 

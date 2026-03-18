@@ -176,10 +176,20 @@ pm2 save
 When user selects "Link 9router to a domain", OPS creates an Nginx vhost:
 
 ```nginx
-# /etc/nginx/sites-available/9router.<domain>
+# /etc/nginx/sites-available/nine-router.<domain>
+# Rate limiting zone (define in nginx.conf http block if not already present)
+# limit_req_zone $binary_remote_addr zone=nine_router:10m rate=30r/m;
+
 server {
     listen 80;
     server_name {{DOMAIN}};
+
+    access_log /var/log/nginx/nine-router.access.log;
+    error_log  /var/log/nginx/nine-router.error.log;
+
+    # Rate limiting: max 30 req/min per IP (burst 10)
+    limit_req zone=nine_router burst=10 nodelay;
+    limit_req_status 429;
 
     # Dashboard and API — proxy to 9router
     location / {
@@ -192,13 +202,22 @@ server {
         proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto $scheme;
         proxy_cache_bypass $http_upgrade;
-        proxy_read_timeout 120s;    # SSE streaming needs longer timeout
-        proxy_buffering    off;     # Required for SSE streaming
+        proxy_read_timeout    120s;   # SSE streaming needs longer timeout
+        proxy_connect_timeout  10s;
+        proxy_send_timeout     60s;
+        proxy_buffering        off;   # Required for SSE streaming
     }
 }
 ```
 
-> **Important**: `proxy_buffering off` is required for Server-Sent Events (SSE) streaming to work correctly.
+Nginx `http` block trong `nginx.conf` phai co:
+```nginx
+limit_req_zone $binary_remote_addr zone=nine_router:10m rate=30r/m;
+```
+OPS se tu dong them vao neu chua ton tai khi "Link 9router to a domain".
+
+> **Important**: `proxy_buffering off` is required for SSE streaming (AI responses streamed in real-time).
+
 
 #### 2.6 Update flow
 
@@ -237,13 +256,15 @@ NINE_ROUTER_DIR="/opt/9router"
 NINE_ROUTER_DATA_DIR="/var/lib/9router"
 NINE_ROUTER_PORT="20128"
 NINE_ROUTER_PM2_NAME="nine-router"
-NINE_ROUTER_DOMAIN=""           # empty until linked via Domains menu
-NINE_ROUTER_SSL="no"            # updated to "yes" after certbot issues SSL
+NINE_ROUTER_DOMAIN=""              # empty until linked via Domains menu
+NINE_ROUTER_SSL="no"               # updated to "yes" after certbot issues SSL
+NINE_ROUTER_REQUIRE_API_KEY="no"   # updated via Enable/Disable menu action
 NINE_ROUTER_INSTALL_DATE=""
 ```
 
 > **Secret**: INITIAL_PASSWORD KHÔNG được lưu ở đây.
 > Chỉ lưu tại `/etc/ops/.nine-router-password` (0600, owned by admin user).
+
 
 ---
 
