@@ -228,6 +228,11 @@ show_security_warning() {
 # ── Interactive prompt ────────────────────────────────────────
 
 show_prompt() {
+    # Check for update (silent — never blocks if network unavailable)
+    if declare -f ops_print_update_banner >/dev/null 2>&1; then
+        ops_print_update_banner 2>/dev/null || true
+    fi
+
     echo -e "  ${BLD}Press 1 to open OPS menu, or Enter to continue to the shell:${RST}"
     local choice
     if read -r choice; then
@@ -243,6 +248,11 @@ show_prompt() {
 }
 
 # ── Main ──────────────────────────────────────────────────────
+
+# Source monitoring.sh for version check functions (after OPS_ROOT is set)
+# shellcheck source=modules/monitoring.sh
+[[ -f "$OPS_ROOT/modules/monitoring.sh" ]] && \
+    source "$OPS_ROOT/modules/monitoring.sh" 2>/dev/null || true
 
 show_header
 show_system_info

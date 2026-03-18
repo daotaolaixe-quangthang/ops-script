@@ -59,6 +59,7 @@ main_menu() {
         print_section "OPS — VPS Production Manager"
         echo "  System: ${OS_ID:-unknown} ${OS_VERSION_ID:-}  |  Tier: ${OPS_TIER:-?}  |  RAM: ${RAM_MB:-?}MB  |  CPU: ${CPU_CORES:-?}"
         echo ""
+        ops_print_update_banner 2>/dev/null || true
         echo "  1) Production Setup Wizard"
         echo "  2) Node.js Services"
         echo "  3) Domains & Nginx"

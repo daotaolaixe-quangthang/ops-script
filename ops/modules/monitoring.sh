@@ -561,10 +561,74 @@ monitoring_netdata_status() {
     log_info "monitoring_netdata_status: done"
 }
 
-# ── P2-16: OPS self-update from GitHub tarball ────────────────
+# ── Version check (auto-update notification) ─────────────────
 
 OPS_GITHUB_REPO="daotaolaixe-quangthang/ops-script"
 OPS_GITHUB_BRANCH="main"
+OPS_VERSION_CACHE="/tmp/ops-version-remote.cache"
+OPS_VERSION_CACHE_TTL=21600   # 6 hours in seconds
+
+# _ops_local_version: read from $OPS_ROOT/VERSION or fallback
+_ops_local_version() {
+    local ver_file="${OPS_ROOT:-}/VERSION"
+    if [[ -f "$ver_file" ]]; then
+        tr -d '[:space:]' < "$ver_file"
+    else
+        echo "0.0.0"
+    fi
+}
+
+# _ops_remote_version: fetch from GitHub, cache result for TTL seconds
+# Returns 0 and prints version on success, 1 on failure
+_ops_remote_version() {
+    local remote_url="https://raw.githubusercontent.com/${OPS_GITHUB_REPO}/${OPS_GITHUB_BRANCH}/ops/VERSION"
+
+    # Check cache freshness
+    if [[ -f "$OPS_VERSION_CACHE" ]]; then
+        local cached_time now elapsed
+        cached_time=$(awk 'NR==1 {print $1}' "$OPS_VERSION_CACHE" 2>/dev/null || echo 0)
+        now=$(date +%s)
+        elapsed=$(( now - cached_time ))
+        if (( elapsed < OPS_VERSION_CACHE_TTL )); then
+            awk 'NR==2 {print $1}' "$OPS_VERSION_CACHE" 2>/dev/null
+            return 0
+        fi
+    fi
+
+    # Fetch remote version (silent, fast timeout — never block interactive shell)
+    local remote_ver
+    remote_ver=$(curl -fsSL --max-time 4 --connect-timeout 3 \
+        "$remote_url" 2>/dev/null | tr -d '[:space:]' || true)
+
+    if [[ -z "$remote_ver" ]]; then
+        return 1   # network unavailable — skip silently
+    fi
+
+    # Write cache: line 1 = timestamp, line 2 = version
+    printf '%s\n%s\n' "$(date +%s)" "$remote_ver" > "$OPS_VERSION_CACHE" 2>/dev/null || true
+    echo "$remote_ver"
+    return 0
+}
+
+# ops_update_available: returns 0 if update available, 1 otherwise
+# Also sets OPS_LOCAL_VER and OPS_REMOTE_VER globals for display
+ops_update_available() {
+    OPS_LOCAL_VER="$(_ops_local_version)"
+    OPS_REMOTE_VER="$(_ops_remote_version 2>/dev/null || true)"
+    [[ -z "$OPS_REMOTE_VER" ]] && return 1
+    [[ "$OPS_REMOTE_VER" != "$OPS_LOCAL_VER" ]]
+}
+
+# ops_print_update_banner: prints a coloured one-liner if update available
+# Silently exits if no update or network unavailable
+ops_print_update_banner() {
+    if ops_update_available 2>/dev/null; then
+        printf '\033[0;33m  ★  Phiên bản mới: %s → %s  |  System & Monitoring → 16) Update OPS from git\033[0m\n' \
+            "$OPS_LOCAL_VER" "$OPS_REMOTE_VER"
+        echo ""
+    fi
+}
+
 
 ops_self_update() {
     print_section "Update OPS from GitHub"
