@@ -523,12 +523,12 @@ menu_nginx_web_controls() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) nginx_enable_cloudflare_real_ip    ;;
-            2) nginx_remove_cloudflare_real_ip    ;;
-            3) nginx_add_custom_powered_by        ;;
-            4) nginx_remove_custom_powered_by     ;;
-            0) return                             ;;
-            *) print_warn "Invalid option"        ;;
+            1) nginx_enable_cloudflare_real_ip || true; press_enter ;;
+            2) nginx_remove_cloudflare_real_ip || true; press_enter ;;
+            3) nginx_add_custom_powered_by     || true; press_enter ;;
+            4) nginx_remove_custom_powered_by  || true; press_enter ;;
+            0) return                                  ;;
+            *) print_warn "Invalid option"             ;;
         esac
     done
 }

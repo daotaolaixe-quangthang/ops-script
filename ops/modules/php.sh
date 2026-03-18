@@ -297,14 +297,14 @@ menu_php() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) php_list_versions  ;;
-            2) php_manage_version ;;
-            3) php_configure_pool ;;
-            4) php_set_default    ;;
-            5) php_fpm_status     ;;
-            6) php_reset_htaccess_menu ;;
-            0) return             ;;
-            *) print_warn "Invalid option" ;;
+            1) php_list_versions        || true; press_enter ;;
+            2) php_manage_version       || true; press_enter ;;
+            3) php_configure_pool       || true; press_enter ;;
+            4) php_set_default          || true; press_enter ;;
+            5) php_fpm_status           || true; press_enter ;;
+            6) php_reset_htaccess_menu  || true; press_enter ;;
+            0) return                           ;;
+            *) print_warn "Invalid option"      ;;
         esac
     done
 }

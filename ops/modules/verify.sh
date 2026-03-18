@@ -233,26 +233,28 @@ verify_stack() {
 
     local pass_count=0 warn_count=0 fail_count=0
 
-    # Run each check and tally results
-    _run_check() {
+    # Wrapper that tallies return codes without triggering set -e
+    _vs_run() {
         local fn="$1"
-        "$fn"
-        local rc=$?
+        local rc=0
+        "$fn" || rc=$?
         case "$rc" in
-            0) (( pass_count++ )) ;;
-            1) (( warn_count++ )) ;;
-            2) (( fail_count++ )) ;;
+            0) pass_count=$(( pass_count + 1 )) ;;
+            1) warn_count=$(( warn_count + 1 )) ;;
+            2) fail_count=$(( fail_count + 1 )) ;;
+            *) warn_count=$(( warn_count + 1 )) ;;
         esac
+        return 0   # always return 0 so set -e never triggers
     }
 
-    _run_check _vs_check_ssh
-    _run_check _vs_check_nginx
-    _run_check _vs_check_pm2
-    _run_check _vs_check_nine_router
-    _run_check _vs_check_php_fpm
-    _run_check _vs_check_mariadb
-    _run_check _vs_check_ssl
-    _vs_check_monitoring   # always 0 exit (optional feature)
+    _vs_run _vs_check_ssh
+    _vs_run _vs_check_nginx
+    _vs_run _vs_check_pm2
+    _vs_run _vs_check_nine_router
+    _vs_run _vs_check_php_fpm
+    _vs_run _vs_check_mariadb
+    _vs_run _vs_check_ssl
+    _vs_check_monitoring 2>/dev/null || true   # always optional
 
     echo ""
     echo "  ═══════════════════════════════════════════════════"
@@ -271,5 +273,6 @@ verify_stack() {
     echo ""
 
     log_info "verify_stack: pass=${pass_count} warn=${warn_count} fail=${fail_count}"
-    unset -f _run_check
+    unset -f _vs_run
+    return 0   # never exit the menu due to FAIL counts
 }

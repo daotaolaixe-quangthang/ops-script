@@ -499,16 +499,16 @@ menu_checks() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) checks_install_cron      ;;
-            2) checks_remove_cron       ;;
-            3) check_resources          ;;
-            4) check_uptime             ;;
-            5) check_ssl_expiry         ;;
-            6) check_domain_expiry      ;;
-            7) check_security_scan      ;;
-            8) _checks_show_log         ;;
-            0) return                   ;;
-            *) print_warn "Invalid option" ;;
+            1) checks_install_cron   || true; press_enter ;;
+            2) checks_remove_cron    || true; press_enter ;;
+            3) check_resources       || true; press_enter ;;
+            4) check_uptime          || true; press_enter ;;
+            5) check_ssl_expiry      || true; press_enter ;;
+            6) check_domain_expiry   || true; press_enter ;;
+            7) check_security_scan   || true; press_enter ;;
+            8) _checks_show_log      || true; press_enter ;;
+            0) return                        ;;
+            *) print_warn "Invalid option"   ;;
         esac
     done
 }

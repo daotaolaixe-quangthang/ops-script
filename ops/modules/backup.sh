@@ -290,13 +290,13 @@ menu_backup() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) _backup_menu_dump_one    ;;
-            2) backup_dump_all_dbs      ;;
-            3) backup_archive_configs   ;;
-            4) backup_show_restore_guidance ;;
-            5) backup_list              ;;
-            0) return                   ;;
-            *) print_warn "Invalid option" ;;
+            1) _backup_menu_dump_one        || true; press_enter ;;
+            2) backup_dump_all_dbs          || true; press_enter ;;
+            3) backup_archive_configs       || true; press_enter ;;
+            4) backup_show_restore_guidance || true; press_enter ;;
+            5) backup_list                  || true; press_enter ;;
+            0) return                               ;;
+            *) print_warn "Invalid option"          ;;
         esac
     done
 }

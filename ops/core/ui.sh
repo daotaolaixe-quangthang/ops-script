@@ -69,6 +69,14 @@ prompt_secret() {
     echo
 }
 
+# press_enter
+# Pauses and waits for user to press Enter before returning to menu.
+# Use after any non-interactive action so output stays visible.
+press_enter() {
+    echo ""
+    read -r -p "  Press Enter to return to menu..." _press_enter_dummy </dev/tty || true
+}
+
 # ── Generic menu helper ───────────────────────────────────────
 # Usage: show_menu "Title" "Item 1" "Item 2" ...
 # Selection stored in MENU_CHOICE.
@@ -79,7 +87,7 @@ show_menu() {
     local i=1
     for item in "$@"; do
         echo -e "  ${BLD}${i})${RST} $item"
-        (( i++ ))
+        i=$(( i + 1 ))
     done
     echo -e "  ${BLD}0)${RST} Back / Exit"
     echo ""

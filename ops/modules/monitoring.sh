@@ -39,24 +39,24 @@ menu_monitoring() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1)  monitoring_system_overview       ;;
-            2)  monitoring_service_status        ;;
-            3)  monitoring_logs_nginx            ;;
-            4)  monitoring_logs_php              ;;
-            5)  monitoring_logs_pm2              ;;
-            6)  monitoring_logs_db               ;;
-            7)  monitoring_show_ops_log          ;;
-            8)  monitoring_login_history         ;;
-            9)  monitoring_disk_usage            ;;
-            10) monitoring_setup_telegram        ;;
-            11) monitoring_test_telegram         ;;
-            12) verify_stack                     ;;
-            13) menu_monitoring_netdata          ;;
-            14) menu_checks                      ;;
-            15) menu_backup                      ;;
-            16) ops_self_update                  ;;
+            1)  monitoring_system_overview  || true; press_enter ;;
+            2)  monitoring_service_status   || true; press_enter ;;
+            3)  monitoring_logs_nginx       || true; press_enter ;;
+            4)  monitoring_logs_php         || true; press_enter ;;
+            5)  monitoring_logs_pm2         || true; press_enter ;;
+            6)  monitoring_logs_db          || true; press_enter ;;
+            7)  monitoring_show_ops_log     || true; press_enter ;;
+            8)  monitoring_login_history    || true; press_enter ;;
+            9)  monitoring_disk_usage       || true; press_enter ;;
+            10) monitoring_setup_telegram   || true; press_enter ;;
+            11) monitoring_test_telegram    || true; press_enter ;;
+            12) verify_stack               || true; press_enter ;;
+            13) menu_monitoring_netdata    || true ;;
+            14) menu_checks               || true ;;
+            15) menu_backup               || true ;;
+            16) ops_self_update           || true; press_enter ;;
             0)  return                           ;;
-            *)  print_warn "Invalid option"     ;;
+            *)  print_warn "Invalid option"      ;;
         esac
     done
 }
