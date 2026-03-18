@@ -192,17 +192,19 @@ menu_nginx() {
         echo "  4) Remove domain"
         echo "  5) Test Nginx config & reload"
         echo "  6) Install / update Nginx"
+        echo "  7) Advanced web controls"
         echo "  0) Back"
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) list_domains ;;
-            2) nginx_prompt_add_domain ;;
+            1) list_domains             ;;
+            2) nginx_prompt_add_domain  ;;
             3) print_warn "Edit domain: not implemented yet." ;;
             4) nginx_prompt_remove_domain ;;
-            5) _nginx_test_and_reload ;;
-            6) install_nginx ;;
-            0) return ;;
+            5) _nginx_test_and_reload   ;;
+            6) install_nginx            ;;
+            7) menu_nginx_web_controls  ;;
+            0) return                   ;;
             *) print_warn "Invalid option" ;;
         esac
     done
@@ -504,4 +506,124 @@ ssl_renew_all() {
 ssl_list_certs() {
     _install_certbot_snap
     certbot certificates
+}
+
+# ── P2-03A: Advanced Web Controls ────────────────────────────
+
+NGINX_SNIPPETS_DIR="/etc/nginx/snippets"
+
+menu_nginx_web_controls() {
+    while true; do
+        print_section "Advanced Web Controls"
+        echo "  1) Enable Cloudflare real IP logging"
+        echo "  2) Remove Cloudflare real IP snippet"
+        echo "  3) Add custom X-Powered-By header"
+        echo "  4) Remove custom X-Powered-By snippet"
+        echo "  0) Back"
+        echo ""
+        read -r -p "Select: " choice
+        case "$choice" in
+            1) nginx_enable_cloudflare_real_ip    ;;
+            2) nginx_remove_cloudflare_real_ip    ;;
+            3) nginx_add_custom_powered_by        ;;
+            4) nginx_remove_custom_powered_by     ;;
+            0) return                             ;;
+            *) print_warn "Invalid option"        ;;
+        esac
+    done
+}
+
+nginx_enable_cloudflare_real_ip() {
+    print_section "Enable Cloudflare Real IP Logging"
+
+    local tpl="${NGINX_TEMPLATE_DIR}/cloudflare-real-ip.conf.tpl"
+    local snippet="${NGINX_SNIPPETS_DIR}/cloudflare-real-ip.conf"
+
+    if [[ ! -f "$tpl" ]]; then
+        print_error "Template not found: $tpl"
+        return 1
+    fi
+
+    ensure_dir "$NGINX_SNIPPETS_DIR"
+    backup_file "$snippet" >/dev/null || true
+    cp "$tpl" "$snippet"
+    chmod 644 "$snippet"
+
+    print_ok "Snippet installed: $snippet"
+    echo ""
+    print_warn "Next step: add the following to each server {} block behind Cloudflare:"
+    echo "    include /etc/nginx/snippets/cloudflare-real-ip.conf;"
+    print_warn "Then run: nginx -t && systemctl reload nginx"
+    print_warn "Rollback: remove the include line and run 'Remove Cloudflare real IP snippet'."
+    log_info "nginx_enable_cloudflare_real_ip: snippet installed at $snippet"
+}
+
+nginx_remove_cloudflare_real_ip() {
+    print_section "Remove Cloudflare Real IP Snippet"
+    local snippet="${NGINX_SNIPPETS_DIR}/cloudflare-real-ip.conf"
+    if [[ ! -f "$snippet" ]]; then
+        print_warn "Snippet not found: $snippet (nothing to remove)"
+        return 0
+    fi
+    if ! prompt_confirm "Remove $snippet?"; then
+        print_warn "Aborted."
+        return 0
+    fi
+    backup_file "$snippet" >/dev/null || true
+    rm -f "$snippet"
+    print_ok "Removed: $snippet"
+    print_warn "Also remove any 'include .../cloudflare-real-ip.conf' lines from your site configs."
+    print_warn "Run: nginx -t && systemctl reload nginx"
+    log_info "nginx_remove_cloudflare_real_ip: done"
+}
+
+nginx_add_custom_powered_by() {
+    print_section "Add Custom X-Powered-By Header"
+
+    local tpl="${NGINX_TEMPLATE_DIR}/custom-powered-by.conf.tpl"
+    local snippet="${NGINX_SNIPPETS_DIR}/custom-powered-by.conf"
+
+    if [[ ! -f "$tpl" ]]; then
+        print_error "Template not found: $tpl"
+        return 1
+    fi
+
+    prompt_input "X-Powered-By value (e.g. 'MyApp/2.0')"
+    local header_value="$REPLY"
+    if [[ -z "$header_value" ]]; then
+        print_error "Header value cannot be empty."
+        return 1
+    fi
+
+    ensure_dir "$NGINX_SNIPPETS_DIR"
+    backup_file "$snippet" >/dev/null || true
+    sed "s|{{VALUE}}|${header_value}|g" "$tpl" > "$snippet"
+    chmod 644 "$snippet"
+
+    print_ok "Snippet installed: $snippet"
+    echo ""
+    print_warn "Next step: add to the relevant server {} block:"
+    echo "    include /etc/nginx/snippets/custom-powered-by.conf;"
+    print_warn "Also set expose_php = Off in php.ini to hide the default PHP header."
+    print_warn "Run: nginx -t && systemctl reload nginx"
+    log_info "nginx_add_custom_powered_by: header_value=[redacted]"
+}
+
+nginx_remove_custom_powered_by() {
+    print_section "Remove Custom X-Powered-By Snippet"
+    local snippet="${NGINX_SNIPPETS_DIR}/custom-powered-by.conf"
+    if [[ ! -f "$snippet" ]]; then
+        print_warn "Snippet not found: $snippet (nothing to remove)"
+        return 0
+    fi
+    if ! prompt_confirm "Remove $snippet?"; then
+        print_warn "Aborted."
+        return 0
+    fi
+    backup_file "$snippet" >/dev/null || true
+    rm -f "$snippet"
+    print_ok "Removed: $snippet"
+    print_warn "Also remove any 'include .../custom-powered-by.conf' lines from site configs."
+    print_warn "Run: nginx -t && systemctl reload nginx"
+    log_info "nginx_remove_custom_powered_by: done"
 }

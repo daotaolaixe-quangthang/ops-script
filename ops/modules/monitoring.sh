@@ -30,23 +30,31 @@ menu_monitoring() {
         echo "  9) Disk usage"
         echo "  10) Setup Telegram notifications"
         echo "  11) Test Telegram notification"
+        echo "  12) Verify stack health"
+        echo "  13) Advanced monitoring (Netdata opt-in)"
+        echo "  14) Notifications & scheduled checks"
+        echo "  15) Backup helpers"
         echo "  0) Back"
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1)  monitoring_system_overview  ;;
-            2)  monitoring_service_status   ;;
-            3)  monitoring_logs_nginx       ;;
-            4)  monitoring_logs_php         ;;
-            5)  monitoring_logs_pm2         ;;
-            6)  monitoring_logs_db          ;;
-            7)  monitoring_show_ops_log     ;;
-            8)  monitoring_login_history    ;;
-            9)  monitoring_disk_usage       ;;
-            10) monitoring_setup_telegram   ;;
-            11) monitoring_test_telegram    ;;
-            0)  return                      ;;
-            *)  print_warn "Invalid option" ;;
+            1)  monitoring_system_overview       ;;
+            2)  monitoring_service_status        ;;
+            3)  monitoring_logs_nginx            ;;
+            4)  monitoring_logs_php              ;;
+            5)  monitoring_logs_pm2              ;;
+            6)  monitoring_logs_db               ;;
+            7)  monitoring_show_ops_log          ;;
+            8)  monitoring_login_history         ;;
+            9)  monitoring_disk_usage            ;;
+            10) monitoring_setup_telegram        ;;
+            11) monitoring_test_telegram         ;;
+            12) verify_stack                     ;;
+            13) menu_monitoring_netdata          ;;
+            14) menu_checks                      ;;
+            15) menu_backup                      ;;
+            0)  return                           ;;
+            *)  print_warn "Invalid option"     ;;
         esac
     done
 }
@@ -433,4 +441,120 @@ monitoring_test_telegram() {
     rm -f /tmp/tg_response.json
     # NOTE: bot_token variable is NOT logged — only http_code is logged
     log_info "monitoring_test_telegram: http_code=$http_code"
+}
+
+# ── P2-02: Netdata opt-in monitoring ─────────────────────────
+
+menu_monitoring_netdata() {
+    while true; do
+        print_section "Advanced Monitoring (Netdata)"
+        echo "  1) Install Netdata"
+        echo "  2) Remove Netdata"
+        echo "  3) Show Netdata status"
+        echo "  0) Back"
+        echo ""
+        read -r -p "Select: " choice
+        case "$choice" in
+            1) monitoring_install_netdata  ;;
+            2) monitoring_remove_netdata   ;;
+            3) monitoring_netdata_status   ;;
+            0) return                      ;;
+            *) print_warn "Invalid option" ;;
+        esac
+    done
+}
+
+monitoring_install_netdata() {
+    print_section "Install Netdata"
+
+    # RAM guard — Netdata idle ~50-80MB, warn on < 512MB
+    local ram_mb
+    ram_mb=$(awk '/MemTotal/ { printf "%d", $2/1024 }' /proc/meminfo)
+    if (( ram_mb < 512 )); then
+        print_warn "Available RAM: ${ram_mb}MB — Netdata may be heavy on small VPS."
+        if ! prompt_confirm "Continue installing Netdata anyway?"; then
+            print_warn "Aborted."
+            return 0
+        fi
+    fi
+
+    apt_update
+    apt_install netdata
+    service_enable netdata
+    service_start netdata
+
+    # Bind to localhost only (security: do not expose dashboard publicly)
+    local netdata_conf="/etc/netdata/netdata.conf"
+    if [[ -f "$netdata_conf" ]]; then
+        backup_file "$netdata_conf" >/dev/null || true
+        # Set or replace bind socket line
+        if grep -Eq '^\s*#?\s*bind to\s*=' "$netdata_conf"; then
+            sed -i -E "s|^\s*#?\s*bind to\s*=.*|\tbind to = 127.0.0.1|" "$netdata_conf"
+        else
+            # Inject under [global]
+            sed -i '/^\[global\]/a \\tbind to = 127.0.0.1' "$netdata_conf"
+        fi
+        service_restart netdata
+        log_info "Netdata bound to 127.0.0.1 only."
+    else
+        log_warn "netdata.conf not found at $netdata_conf — skipping bind config."
+    fi
+
+    print_ok "Netdata installed and bound to localhost:19999."
+    print_warn "Dashboard is NOT publicly accessible. Access via SSH tunnel:"
+    print_warn "  ssh -L 19999:localhost:19999 <user>@<server>"
+    log_info "monitoring_install_netdata: done"
+}
+
+monitoring_remove_netdata() {
+    print_section "Remove Netdata"
+
+    if ! command -v netdata >/dev/null 2>&1 && \
+       ! systemctl list-unit-files 2>/dev/null | grep -q '^netdata\.service'; then
+        print_warn "Netdata does not appear to be installed."
+        return 0
+    fi
+
+    if ! prompt_confirm "Remove Netdata and its configuration?"; then
+        print_warn "Aborted."
+        return 0
+    fi
+
+    service_stop netdata 2>/dev/null || true
+    systemctl disable netdata 2>/dev/null || true
+    apt-get purge -y netdata 2>/dev/null || true
+    apt-get autoremove -y 2>/dev/null || true
+
+    print_ok "Netdata removed."
+    print_warn "Config remnants in /etc/netdata (if any) were not deleted — remove manually if needed."
+    log_info "monitoring_remove_netdata: done"
+}
+
+monitoring_netdata_status() {
+    print_section "Netdata Status"
+
+    if ! systemctl list-unit-files 2>/dev/null | grep -q '^netdata\.service'; then
+        print_warn "Netdata is not installed."
+        return 0
+    fi
+
+    if systemctl is-active netdata >/dev/null 2>&1; then
+        print_ok "Netdata service: active"
+    else
+        print_warn "Netdata service: inactive"
+    fi
+
+    echo ""
+    echo "  Dashboard: http://localhost:19999  (localhost only)"
+    local api_resp
+    api_resp=$(curl -sf --max-time 3 "http://localhost:19999/api/v1/info" 2>/dev/null || true)
+    if [[ -n "$api_resp" ]]; then
+        local version
+        version=$(printf '%s' "$api_resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('version','?'))" 2>/dev/null || echo "?")
+        print_ok "API reachable — Netdata version: ${version}"
+    else
+        print_warn "API not reachable (service may be starting up or bound differently)"
+    fi
+
+    log_info "monitoring_netdata_status: done"
 }

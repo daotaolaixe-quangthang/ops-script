@@ -69,16 +69,19 @@ Node services va 9router deu theo PM2 contract:
 | live cert paths | active cert/key material |
 | Nginx SSL snippets | TLS wiring |
 
-## 5.1 Future checks and notifications
+## 5.1 Scheduled checks and notifications
 
-| Artefact | Muc dich |
-|---|---|
-| `/etc/ops/checks/uptime/*.conf` | website uptime/downtime checks (future optional) |
-| `/etc/ops/checks/ssl-expiry/*.conf` | SSL expiry checks (future optional) |
-| `/etc/ops/checks/domain-expiry/*.conf` | domain expiry checks (future optional) |
-| `/etc/ops/checks/security-scan/*.conf` | scheduled security scan configs (future optional) |
-| scheduler entries for checks | chay dinh ky checks/alerts |
-| notification delivery config | Telegram/Email channel wiring |
+| Artefact | Path | Source module | Verify | Permission |
+|---|---|---|---|---|
+| Cron file | `/etc/cron.d/ops-checks` | `modules/checks.sh` — `checks_install_cron` | `cat /etc/cron.d/ops-checks` | 0644 |
+| Check dispatcher | `bin/ops-check` | `modules/checks.sh` — `_checks_write_dispatcher` | `bash -n bin/ops-check` | 0755 |
+| Alert cooldown | `/tmp/ops-alert-<type>-<id>.cooldown` | runtime (per check run) | `ls /tmp/ops-alert-*` | 0644 |
+| Check log | `/var/log/ops/checks.log` | cron redirect | `tail /var/log/ops/checks.log` | 0644 |
+| Checks config override | `/etc/ops/checks.conf` | operator-created (optional) | `cat /etc/ops/checks.conf` | 0600 |
+| Telegram token | `/etc/ops/.telegram-bot-token` | `modules/monitoring.sh` | exists + 0600 | 0600 |
+| Telegram config | `/etc/ops/ops.conf` (TELEGRAM_ENABLED, TELEGRAM_CHAT_ID) | `modules/monitoring.sh` | `grep TELEGRAM /etc/ops/ops.conf` | 0600 |
+
+**Rollback:** `checks_remove_cron` removes `/etc/cron.d/ops-checks`; delete cooldown files manually if needed.
 
 ## 6. PHP
 
@@ -121,14 +124,15 @@ Cac file sau phai luon co permission `0600` va owned by admin user:
 > Bat co file nao trong danh sach tren bi set khac 0600 la bug bao mat.
 
 
-## 8.1 Future web-control artefacts
+## 8.1 Advanced web controls (P2-03A)
 
-| Artefact | Muc dich |
-|---|---|
-| Nginx real IP snippet | Cloudflare-aware real visitor IP logging |
-| Nginx direct-IP block snippet | chan truy cap truc tiep bang IP |
-| Nginx custom header snippet | custom `X-Powered-By` handling |
-| PHP-secondary `.htaccess` backup/reset target | app-level compatibility reset only |
+| Artefact | Path | Source | Verify | Permission |
+|---|---|---|---|---|
+| Cloudflare real IP snippet | `/etc/nginx/snippets/cloudflare-real-ip.conf` | `modules/nginx.sh` — `nginx_enable_cloudflare_real_ip` | `nginx -t` | 0644 |
+| Custom X-Powered-By snippet | `/etc/nginx/snippets/custom-powered-by.conf` | `modules/nginx.sh` — `nginx_add_custom_powered_by` | `nginx -t` | 0644 |
+| `.htaccess` backup | auto-created by `backup_file` before reset | `modules/php.sh` — `php_reset_htaccess` | backup file present | 0644 |
+
+**Rollback:** remove snippet file, remove `include` line from site config, `nginx -t && systemctl reload nginx`.
 
 ## 8.2 Future remote backup artefacts
 
@@ -158,3 +162,53 @@ Moi artefact quan trong phai co:
 - rollback toi thieu
 
 Neu implementation tao artefact moi ma file nay khong cap nhat, docs dang khong theo kip runtime.
+
+---
+
+## 11. Scheduled check artefacts (P2-03)
+
+> Source: `modules/checks.sh` → `checks_install_cron`
+
+| Artefact | Path | Verify | Note |
+|---|---|---|---|
+| Cron schedule | `/etc/cron.d/ops-checks` | `cat /etc/cron.d/ops-checks` | 0644, managed by OPS |
+| Check dispatcher | `<OPS_ROOT>/bin/ops-check` | `bash -n bin/ops-check` | 0755 |
+| Check log | `/var/log/ops/checks.log` | `tail -f /var/log/ops/checks.log` | created on first run |
+| Alert cooldown | `/tmp/ops-alert-<type>-<id>.cooldown` | `ls /tmp/ops-alert-*` | cleared on reboot |
+| Checks config | `/etc/ops/checks.conf` (optional override) | `source /etc/ops/checks.conf` | 0600 if created |
+
+**Default thresholds:** CPU >90%, RAM >85%, Disk >85%, SSL <14 days, Domain <30 days.
+**Cooldown:** 1 hour per alert type per target (configurable via `CHECKS_COOLDOWN_SECONDS`).
+
+---
+
+## 12. Backup artefacts (P2-05)
+
+> Source: `modules/backup.sh`
+
+| Artefact | Path | Verify | Permission |
+|---|---|---|---|
+| DB dump (single) | `/var/backups/ops/db/<dbname>-YYYYMMDD-HHMMSS.sql.gz` | `gzip -t <file>` | 0600 |
+| DB dump (all) | `/var/backups/ops/db/all-YYYYMMDD-HHMMSS.sql.gz` (per-db files) | `gzip -t <file>` | 0600 |
+| Config archive | `/var/backups/ops/config/ops-config-YYYYMMDD-HHMMSS.tar.gz` | `tar -tzf <file>` | 0600 |
+| Backup base dir | `/var/backups/ops/` | `ls -la /var/backups/ops/` | 0700 |
+
+**Retention:** OPS warns when > 7 files exist in a backup subdir. Files are **never auto-deleted**.
+**Restore guidance:** `menu_backup → Show restore guidance`.
+
+---
+
+## 13. Advanced monitoring — Netdata opt-in (P2-02)
+
+> Source: `modules/monitoring.sh` → `monitoring_install_netdata`
+
+| Artefact | Path | Verify | Note |
+|---|---|---|---|
+| Netdata package | `netdata` (apt) | `dpkg -l netdata` | install via OPS menu only |
+| Netdata service | `netdata.service` | `systemctl is-active netdata` | bound to 127.0.0.1 only |
+| Netdata config | `/etc/netdata/netdata.conf` | `grep 'bind to' /etc/netdata/netdata.conf` | must show 127.0.0.1 |
+| Dashboard | `http://localhost:19999` | `curl -s localhost:19999/api/v1/info` | localhost only — SSH tunnel to access |
+
+**Footprint:** ~50-80MB RAM idle. OPS warns if RAM < 512MB before install.
+**Remove:** `monitoring_remove_netdata` purges package. Config remnants in `/etc/netdata` must be removed manually if needed.
+

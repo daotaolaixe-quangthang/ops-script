@@ -292,6 +292,7 @@ menu_php() {
         echo "  3) Configure PHP-FPM pools"
         echo "  4) Set default PHP CLI version"
         echo "  5) Show PHP-FPM status"
+        echo "  6) Reset .htaccess (PHP sites only)"
         echo "  0) Back"
         echo ""
         read -r -p "Select: " choice
@@ -301,6 +302,7 @@ menu_php() {
             3) php_configure_pool ;;
             4) php_set_default    ;;
             5) php_fpm_status     ;;
+            6) php_reset_htaccess_menu ;;
             0) return             ;;
             *) print_warn "Invalid option" ;;
         esac
@@ -410,4 +412,113 @@ php_fpm_status() {
             service_status "$svc" || true
         fi
     done
+}
+
+# ── P2-03A: .htaccess factory reset (PHP-secondary only) ────
+
+php_reset_htaccess_menu() {
+    print_section ".htaccess Factory Reset"
+    print_warn "This resets .htaccess for a PHP site web root."
+    print_warn "Only applicable to PHP-backend sites. Backup is made automatically."
+    echo ""
+
+    # List PHP sites from OPS state
+    local found=0 state_file site_name site_dir domain
+    for state_file in "${PHP_SITES_DIR:-/etc/ops/php-sites}/"*.conf; do
+        [[ -f "$state_file" ]] || continue
+        site_name=$(grep '^SITE_NAME=' "$state_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+        site_dir=$(grep '^SITE_DIR=' "$state_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+        domain=$(grep '^SITE_DOMAIN=' "$state_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+        echo "  - ${site_name} (${domain:-?}) → ${site_dir:-/var/www/${site_name}}"
+        found=1
+    done
+
+    # Also check domain state files for php-type sites
+    for state_file in "${OPS_CONFIG_DIR:-/etc/ops}/domains/"*.conf; do
+        [[ -f "$state_file" ]] || continue
+        local dtype
+        dtype=$(grep '^DOMAIN_BACKEND_TYPE=' "$state_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+        [[ "$dtype" != "php" ]] && continue
+        domain=$(grep '^DOMAIN=' "$state_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+        local web_root
+        web_root=$(grep '^DOMAIN_WEB_ROOT=' "$state_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+        echo "  - ${domain} → ${web_root:-/var/www/${domain}}"
+        found=1
+    done
+
+    if [[ "$found" -eq 0 ]]; then
+        print_warn "No PHP sites found in OPS state."
+        echo ""
+    fi
+
+    prompt_input "Web root path to reset .htaccess (e.g. /var/www/mysite.com)"
+    local web_root="$REPLY"
+
+    if [[ -z "$web_root" ]]; then
+        print_error "Web root path cannot be empty."
+        return 1
+    fi
+    if [[ ! -d "$web_root" ]]; then
+        print_error "Directory not found: $web_root"
+        return 1
+    fi
+
+    php_reset_htaccess "$web_root"
+}
+
+# php_reset_htaccess <web_root>
+php_reset_htaccess() {
+    local web_root="${1:-}"
+    if [[ -z "$web_root" || ! -d "$web_root" ]]; then
+        print_error "Invalid web root: $web_root"
+        return 1
+    fi
+
+    local htaccess="${web_root}/.htaccess"
+
+    # Backup existing .htaccess before reset
+    if [[ -f "$htaccess" ]]; then
+        backup_file "$htaccess" >/dev/null 2>&1 || true
+        print_warn "Backed up existing .htaccess"
+    fi
+
+    if ! prompt_confirm "Reset .htaccess in ${web_root}?"; then
+        print_warn "Aborted."
+        return 0
+    fi
+
+    # Write sensible secure default .htaccess
+    cat > "$htaccess" <<'HTACCESS_EOF'
+# .htaccess — reset by OPS (factory default)
+# Secure baseline: denies access to sensitive files, passes everything else to index.php
+# Adjust for your framework (WordPress, Laravel, etc.) as needed.
+
+# Deny access to dot-files (except .well-known for ACME)
+<FilesMatch "^\.(?!well-known)">>
+    Require all denied
+</FilesMatch>
+
+# Deny access to common sensitive files
+<FilesMatch "\.(env|json|lock|log|sql|bak|conf|ini|sh)$">
+    Require all denied
+</FilesMatch>
+
+# Standard PHP front-controller rewrite
+Options -Indexes
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^ index.php [L]
+</IfModule>
+HTACCESS_EOF
+
+    chown "${ADMIN_USER:-www-data}":www-data "$htaccess" 2>/dev/null || true
+    chmod 644 "$htaccess"
+
+    print_ok ".htaccess reset complete: $htaccess"
+    print_warn "If you use WordPress or Laravel, you may need to re-apply their specific rewrite rules."
+    log_info "php_reset_htaccess: reset ${htaccess}"
 }

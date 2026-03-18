@@ -43,6 +43,12 @@ source "$OPS_ROOT/modules/php.sh"
 source "$OPS_ROOT/modules/database.sh"
 # shellcheck source=modules/monitoring.sh
 source "$OPS_ROOT/modules/monitoring.sh"
+# shellcheck source=modules/verify.sh
+source "$OPS_ROOT/modules/verify.sh"
+# shellcheck source=modules/checks.sh
+source "$OPS_ROOT/modules/checks.sh"
+# shellcheck source=modules/backup.sh
+source "$OPS_ROOT/modules/backup.sh"
 # shellcheck source=modules/codex-cli.sh
 source "$OPS_ROOT/modules/codex-cli.sh"
 

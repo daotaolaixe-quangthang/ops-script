@@ -6,20 +6,22 @@ Muc tieu: cung cap runbook ngan theo format `pre-check -> change -> verify -> ro
 
 - **Pre-check**:
   - xac nhan admin user moi da tao
-  - xac nhan port SSH moi chua bi chiem
-  - mo ca port 22 va port moi tren firewall
+  - xac nhan port SSH moi chua bi chiem: `ss -tlnp | grep <NEW_PORT>`
+  - mo ca port 22 va port moi tren firewall: `ufw allow <NEW_PORT>/tcp`
+  - **QUAN TRONG:** giu session SSH hien tai mo trong suot qua trinh
 - **Change**:
-  - them port moi vao `sshd_config`
+  - them port moi vao `sshd_config`: `Port <NEW_PORT>`
   - giu port 22 trong giai doan transition
-  - verify login bang session SSH moi
-  - chi dong port 22 sau khi verify xong
+  - verify login bang session SSH moi: `ssh -p <NEW_PORT> <ADMIN_USER>@host`
+  - chi dong port 22 sau khi verify xong: `ufw delete allow 22/tcp`
 - **Verify**:
-  - `sshd -t`
+  - `sshd -t` — kiem tra syntax config
   - dang nhap bang `ssh -p <NEW_PORT> <ADMIN_USER>@host`
+  - `ss -tlnp | grep <NEW_PORT>` — xac nhan port dang listen
 - **Rollback**:
-  - mo lai port 22
-  - khoi phuc `sshd_config`
-  - restart `sshd`
+  - mo lai port 22: `ufw allow 22/tcp`
+  - khoi phuc `sshd_config`: `cp /etc/ssh/sshd_config.bak /etc/ssh/sshd_config`
+  - restart `sshd`: `systemctl restart sshd`
 
 ## 2. Nginx domain add/edit/remove
 
@@ -201,3 +203,75 @@ Muc tieu: cung cap runbook ngan theo format `pre-check -> change -> verify -> ro
   - `git log --oneline -10` — tim commit truoc do
   - `git checkout <previous-commit>`
   - restart khong can thiet (OPS la shell script, khong phai long-running service)
+
+## 12. Netdata advanced monitoring install / remove (P2-02)
+
+- **Pre-check**:
+  - xac nhan RAM con tu do: `free -m` — nen co > 512MB free
+  - Netdata se bind `127.0.0.1:19999` — khong expose ra ngoai
+  - Khong dung tren VPS < 512MB RAM neu khong can thiet
+- **Change (install)**:
+  - OPS menu: `System & Monitoring → Advanced monitoring (Netdata) → Install Netdata`
+  - OPS tu dong apt install, enable service, va chinh `bind to = 127.0.0.1` trong `/etc/netdata/netdata.conf`
+- **Verify**:
+  - `systemctl is-active netdata` → active
+  - `curl -s http://localhost:19999/api/v1/info` → JSON response
+  - `grep 'bind to' /etc/netdata/netdata.conf` → `127.0.0.1`
+  - `ss -tlnp | grep 19999` → ONLY listening on 127.0.0.1 (not 0.0.0.0)
+- **Rollback (remove)**:
+  - OPS menu: `Advanced monitoring → Remove Netdata`
+  - Manual: `systemctl stop netdata && apt-get purge -y netdata && apt-get autoremove -y`
+  - Verify: `systemctl status netdata` → not found, `ss -tlnp | grep 19999` → empty
+
+## 13. Alerts scheduler — enable / disable (P2-03)
+
+- **Pre-check**:
+  - xac nhan Telegram da config: `grep TELEGRAM_ENABLED /etc/ops/ops.conf`
+  - xac nhan `/etc/ops/.telegram-bot-token` ton tai va co quyen 0600
+  - Neu Telegram chua setup, alerts se chi ghi vao `/var/log/ops/checks.log`
+- **Change (enable)**:
+  - OPS menu: `System & Monitoring → Notifications & scheduled checks → Install scheduled checks`
+  - Tao `/etc/cron.d/ops-checks` va `bin/ops-check` dispatcher
+- **Verify**:
+  - `cat /etc/cron.d/ops-checks` → 5 cron entries dung lich
+  - `bash -n <OPS_ROOT>/bin/ops-check` → no errors
+  - `ls /var/log/ops/checks.log` → file exists (created by cron)
+  - Sau 5 phut: `tail /var/log/ops/checks.log` → check output
+- **Change (disable)**:
+  - OPS menu: `Notifications & scheduled checks → Remove scheduled checks`
+  - Manual: `rm -f /etc/cron.d/ops-checks`
+- **Rollback**:
+  - `rm -f /etc/cron.d/ops-checks` → scheduler bi vo hieu
+  - `rm -f /tmp/ops-alert-*.cooldown` → xoa cooldown files neu can reset
+  - Khong co long-running process — chi cron entries
+
+## 14. Backup helpers — DB dump and config archive (P2-05)
+
+- **Pre-check**:
+  - Kiem tra disk space truoc: `df -h /var/backups`
+  - DB dump yeu cau MariaDB active: `systemctl is-active mariadb`
+  - Config archive yeu cau `/etc/ops/` va `/etc/nginx/sites-available/` ton tai
+- **Change (DB dump)**:
+  - OPS menu: `System & Monitoring → Backup helpers → Dump single database`
+  - Hoac: `Dump all databases`
+  - Output: `/var/backups/ops/db/<dbname>-YYYYMMDD-HHMMSS.sql.gz` (0600)
+- **Verify (DB dump)**:
+  - `ls -lh /var/backups/ops/db/` → file ton tai, size > 0
+  - `gzip -t /var/backups/ops/db/<dbname>-<ts>.sql.gz` → no error
+  - Test restore (staging only): `gunzip < <file> | mysql <dbname>`
+- **Change (config archive)**:
+  - OPS menu: `Backup helpers → Archive configs`
+  - Output: `/var/backups/ops/config/ops-config-YYYYMMDD-HHMMSS.tar.gz` (0600)
+- **Verify (config archive)**:
+  - `tar -tzf /var/backups/ops/config/ops-config-<ts>.tar.gz` → list files without error
+  - `ls -lh /var/backups/ops/config/` → file ton tai, size > 0
+- **Restore (manual)**:
+  - DB: `gunzip < /var/backups/ops/db/<file>.sql.gz | mysql <dbname>`
+  - Nginx: `tar -xzf <archive> -C / etc/nginx/sites-available/ && nginx -t && systemctl reload nginx`
+  - OPS config: `tar -xzf <archive> -C / etc/ops/ && chmod 600 /etc/ops/.*`
+- **Rollback**:
+  - Backup files bao gio cung nam o `/var/backups/ops/` — khong bi xoa tu dong
+  - Neu restore sai: restore tu backup cu hon
+  - Secret files: verify `chmod 600` sau moi restore: `.telegram-bot-token`, `.db-root-password`, `.codex-api-key`
+
+
