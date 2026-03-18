@@ -7,10 +7,11 @@
 # Installer URL (chốt):
 #   https://raw.githubusercontent.com/daotaolaixe-quangthang/ops-script/main/install/ops-install.sh
 #
-# Usage (from VPS, as root):
-#   curl -sO https://raw.githubusercontent.com/daotaolaixe-quangthang/ops-script/main/install/ops-install.sh
-#   bash ops-install.sh
+# Usage (from VPS, as root — one command):
+#   bash <(curl -fsSL https://raw.githubusercontent.com/daotaolaixe-quangthang/ops-script/main/install/ops-install.sh)
 #
+# (Process substitution keeps stdin as TTY so interactive prompts work correctly.)
+
 # This script must remain small and auditable.
 # Complex logic delegates to core modules and ops-setup.sh.
 # ============================================================
