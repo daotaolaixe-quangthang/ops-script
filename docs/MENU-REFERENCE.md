@@ -239,29 +239,35 @@ Purpose:
 
 Entry: `9) System & Monitoring`
 
-Submenu:
+Current implementation (monitoring.sh — đã full Phase 1 + Phase 2):
 
-1. **System overview**
-2. **Service status**
-3. **Quick logs**
-4. **Telegram notifications config**
-5. **Advanced monitoring (install / configure)** *(optional / may show "coming soon")*
+1. **System overview** — CPU, RAM, swap, disk, load, uptime
+2. **Service status** — Nginx, PHP-FPM, MariaDB, PM2, UFW, fail2ban
+3. **Quick logs — Nginx**
+4. **Quick logs — PHP-FPM**
+5. **Quick logs — PM2 / Node apps**
+6. **Quick logs — Database (MariaDB)**
+7. **OPS log (ops.log)**
+8. **Login history** — `last`, `lastb`, journalctl SSH
+9. **Disk usage**
+10. **Setup Telegram notifications**
+11. **Test Telegram notification**
+12. **Verify stack health** — PASS/WARN/FAIL per component, always exit 0
+13. **Advanced monitoring (Netdata opt-in)** → submenu install/remove/status
+14. **Notifications & scheduled checks** → submenu (checks.sh — P2-03)
+15. **Backup helpers** → submenu (backup.sh — P2-05)
+16. **Update OPS from git** — download tarball, syntax check, apply
 0. **Back to main menu**
 
-Expected behaviour:
+**Telegram config implementation (chốt):**
 
-- **System overview**:
-  - CPU, RAM, swap, disk, load, uptime.
-- **Service status**:
-  - Nginx, all PHP-FPM pools, MariaDB, Node/PM2 services, 9router.
-- **Quick logs**:
-  - Simple interactive selection to tail error/access logs for Nginx, PHP-FPM, Node/9router.
-- **Telegram notifications config**:
-  - Hỏi: `"Enter Telegram Bot Token:"` (hidden input) — lưu tại `/etc/ops/.telegram-bot-token` (0600)
-  - Hỏi: `"Enter Telegram Chat ID:"` (non-secret) — lưu tại `/etc/ops/notifications.conf`
-  - Gửi test message để xác nhận kết nối
-  - Hiển thị: trạng thái đã cấu hình hay chưa (không hiển thị token)
-  - Có option: **Remove Telegram config** (xóa token file + clear Chat ID)
+- Bot token: `/etc/ops/.telegram-bot-token` (0600, owned by ADMIN_USER) — never printed to terminal
+- Chat ID và TELEGRAM_ENABLED: hiện lưu trong `ops.conf` (`TELEGRAM_CHAT_ID`, `TELEGRAM_ENABLED`)
+
+> **⚠ Known drift (cần sửa):** Docs kia (`ARCHITECTURE.md`, `FEATURE-EXPANSION-SPEC.md`, `BUG-TRIAGE-INDEX.md`, `SOURCE-TO-RUNTIME-TRACE.md`) quy định Chat ID lưu tại `/etc/ops/notifications.conf`.
+> Implementation thực tế (`monitoring.sh`, `checks.sh`) lưu vào `ops.conf`.
+> **Hành động cần làm:** migrate monitoring.sh + checks.sh sang dùng `notifications.conf` để đồng bộ với toàn bộ docs còn lại.
+
 
 This reference must be kept in sync with the actual menu layout in `bin/ops`.
 

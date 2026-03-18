@@ -91,7 +91,7 @@ Cu the phai cover:
 - quick logs de dung hon
 - verify summary screen co the doc nhanh
 
-### E. Advanced web controls
+### E. Advanced web controls (`P2-09`)
 
 - Cloudflare real IP logging
 - direct `http://IP` access block
@@ -233,7 +233,7 @@ Ly do:
 
 ---
 
-### P2-03A Advanced web controls planning and implementation
+### P2-09 Advanced web controls planning and implementation
 
 **Muc tieu**
 
@@ -291,6 +291,15 @@ Ly do:
    - PASS / WARN / FAIL
    - issue summary
    - next action hint
+4. **Exit code contract (bat buoc — tranh bug menu exit):**
+   - `PASS` → exit `0`
+   - `WARN` → exit `0` (co issue nhung khong fatal — menu KHONG duoc thoat)
+   - `FAIL` → exit `0` (function phai return 0; caller menu phai handle display, KHONG propagate non-zero ra ngoai menu loop)
+   - Moi `verify_stack` hoac submenu verify action PHAI wrap trong subshell hoac trap return code:
+     ```bash
+     verify_stack || true   # NEVER let verify exit propagate to menu
+     ```
+   - **Ly do**: exit non-zero tu verify action se lam `set -e` hoac caller shell thoat khoi menu loop. Day la nguon goc bug menu exit da gap o Phase 1.
 
 **Output**
 
@@ -298,13 +307,15 @@ Ly do:
 
 **Verify**
 
-- stack tot -> PASS ro rang
-- pha co chu dich 1 component -> FAIL/WARN dung component
+- stack tot -> PASS ro rang, exit 0
+- pha co chu dich 1 component -> FAIL/WARN dung component, exit 0
+- goi `verify_stack` tu menu -> menu KHONG thoat sau khi verify xong
 
 **Review checklist**
 
 - output de scan nhanh
 - khong chi report status ma khong chi duong tiep theo
+- exit code contract phai duoc enforce — reviewer phai check ro
 
 ---
 
@@ -319,29 +330,43 @@ Ly do:
 1. DB dump helper:
    - dump 1 DB
    - dump all DBs tuy chon
+   - output path: `/var/backups/ops/db/<dbname>-YYYYMMDD-HHMMSS.sql.gz` — permission 0600
 2. config archive helper:
-   - `/etc/ops`
+   - `/etc/ops` → `/var/backups/ops/config/ops-config-YYYYMMDD-HHMMSS.tar.gz` — permission 0600
    - Nginx sites
    - selected app manifests
-3. naming + retention basic
+   - backup base dir: `/var/backups/ops/` — permission 0700
+3. **Naming + retention contract (bat buoc):**
+   - Format: `<type>-YYYYMMDD-HHMMSS.<ext>` — moi lan chay tao file moi, KHONG overwrite
+   - **Files KHONG BAO GIO bi tu dong xoa** — chi operator xoa thu cong
+   - **Warn khi > 7 files trong 1 subdir**: in canh bao ro tren screen, khong tu dong xoa
+   - Ly do giu 7 lam moc canh bao: tien dung cho VPS nho, tranh disk day lam that bai
 4. restore guidance:
    - huong dan clear
    - script support o muc vua phai, khong auto destructive qua muc
+   - restore guidance accessible tu menu: `Backup helpers → Show restore guidance`
 
 **Output**
 
 - operator co the backup configs va DB truoc khi sua lon
+- backup files nam o `/var/backups/ops/` voi subdir `db/` va `config/`
 
 **Verify**
 
-- dump file tao thanh cong
-- archive file tao thanh cong
-- file restore guidance khop thuc te
+- `ls -lh /var/backups/ops/db/` — dump file ton tai, size > 0
+- `gzip -t <file>` — dump file khong bi corrupt
+- `ls -lh /var/backups/ops/config/` — archive ton tai, size > 0
+- `tar -tzf <file>` — archive list OK
+- `ls -la /var/backups/ops/` — 0700 owned by admin
+- `ls -la /var/backups/ops/db/<file>` — 0600
+- restore guidance khop thuc te
 
 **Review checklist**
 
-- khong overwrite backup cu im lang
-- secret files duoc backup voi permission phu hop
+- KHONG overwrite backup cu im lang — moi lan chay = file timestamp moi
+- secret files duoc backup voi permission 0600
+- backup path phai la `/var/backups/ops/` — khong luu vao `/root/` hay `/tmp/`
+- canh bao > 7 files phai co, khong im lang
 
 ---
 
@@ -490,12 +515,18 @@ Lam theo tung task `P2-xx`, khong mo dong ca monitoring + alerts + backup cung l
 
 Thu tu review khuyen nghi:
 
-1. `P2-01`
-2. `P2-04`
-3. `P2-06`
-4. `P2-07`
-5. moi tiep `P2-02`, `P2-03`, `P2-05`
+1. `P2-01` — runtime observation audit (biet runtime that truoc)
+2. `P2-04` — unified verify stack (bao gom exit code contract)
+3. `P2-06` — runtime artefact inventory expansion
+4. `P2-07` — rollback playbooks expansion
+5. `P2-02` — advanced monitoring integration (opt-in)
+6. `P2-03` — alerts and thresholds
+7. `P2-05` — backup helpers
+8. `P2-08` — phase acceptance and docs sync
+9. `P2-09` — advanced web controls (co the lam song song sau P2-04)
 
 Ly do:
 
 - verify/inventory/runbook la nen cho cac tinh nang quality-of-life con lai
+- `P2-09` (advanced web controls) doc lap voi monitoring/backup nen co the lam song song sau P2-04
+- `P2-08` (acceptance) phai la buoc cuoi cung

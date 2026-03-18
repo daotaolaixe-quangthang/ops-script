@@ -140,44 +140,23 @@ Potential tasks:
      - Archive Nginx and OPS configs.
    - Restore guidance (manual but scripted support where reasonable).
 
-Suggested task groups:
+Task groups (P2-01 through P2-09):
 
-- runtime observation and health signals
-- advanced monitoring integration
-- alerts, scheduled checks, and thresholds
-- unified verify stack
-- backup helpers
-- optional web controls for Nginx/PHP-secondary
-- runtime artefact inventory expansion
-- rollback playbooks expansion
+- `P2-01` runtime observation audit
+- `P2-02` advanced monitoring integration (opt-in)
+- `P2-03` alerts, scheduled checks, and thresholds
+- `P2-04` unified verify stack (bao gom exit code contract)
+- `P2-05` backup helpers
+- `P2-06` runtime artefact inventory expansion
+- `P2-07` rollback playbooks expansion
+- `P2-08` phase acceptance and docs sync
+- `P2-09` advanced web controls for Nginx/PHP-secondary
 
 Phase 2 is optional and can be scoped per actual needs.
 
-Detailed execution spec:
+Detailed execution spec (source of truth cho task IDs, order, verify, acceptance):
 
 - `docs/PHASE-02-IMPLEMENTATION-SPEC.md`
-
-Additional Phase 2 docs/ops tasks:
-
-1. **Runtime artefact inventory**
-   - Document cron, timer, systemd, and login-hook artefacts once implementation exists.
-2. **Unified verify stack**
-   - Add one action to verify SSH, Nginx, Node, PHP, DB, SSL, and monitoring paths.
-3. **Rollback playbooks**
-   - Add concise rollback-first runbooks for SSH, Nginx, Node process manager, PHP-FPM, DB, and firewall changes.
-4. **Notifications and checks**
-   - Add docs and implementation plan for:
-     - website uptime/downtime checks
-     - SSL expiry alerts
-     - domain expiry alerts
-     - Telegram/Email delivery
-     - periodic security scan
-5. **Advanced web controls**
-   - Add docs and implementation plan for:
-     - `.htaccess` factory reset (PHP-secondary only)
-     - Cloudflare real IP logging
-     - custom `X-Powered-By`
-     - direct IP access block
 
 ---
 

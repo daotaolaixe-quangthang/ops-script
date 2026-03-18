@@ -54,12 +54,23 @@ _checks_cooldown_ok() {
 _checks_send_telegram() {
     local message="$1"
     local token_file="${OPS_CONFIG_DIR:-/etc/ops}/.telegram-bot-token"
-    local chat_id
+    local chat_id tg_enabled
 
-    # Respect TELEGRAM_ENABLED flag
-    chat_id=$(ops_conf_get "ops.conf" "TELEGRAM_CHAT_ID" 2>/dev/null || true)
-    local tg_enabled
-    tg_enabled=$(ops_conf_get "ops.conf" "TELEGRAM_ENABLED" 2>/dev/null || echo "no")
+    # Read from notifications.conf (chốt per ARCHITECTURE.md, FEATURE-EXPANSION-SPEC.md)
+    chat_id=$(ops_conf_get "notifications.conf" "TELEGRAM_CHAT_ID" 2>/dev/null || true)
+    tg_enabled=$(ops_conf_get "notifications.conf" "TELEGRAM_ENABLED" 2>/dev/null || echo "no")
+
+    # Migration fallback: legacy installs stored these in ops.conf
+    if [[ "$tg_enabled" != "yes" || -z "$chat_id" ]]; then
+        local legacy_chat legacy_enabled
+        legacy_chat=$(ops_conf_get "ops.conf" "TELEGRAM_CHAT_ID" 2>/dev/null || true)
+        legacy_enabled=$(ops_conf_get "ops.conf" "TELEGRAM_ENABLED" 2>/dev/null || echo "no")
+        if [[ "$legacy_enabled" == "yes" && -n "$legacy_chat" ]]; then
+            chat_id="$legacy_chat"
+            tg_enabled="$legacy_enabled"
+            log_warn "_checks_send_telegram: Telegram config found in ops.conf (legacy) — re-run 'Setup Telegram notifications' to migrate."
+        fi
+    fi
 
     if [[ "$tg_enabled" != "yes" || -z "$chat_id" || ! -f "$token_file" ]]; then
         log_info "_checks_send_telegram: Telegram not configured, skipping notification."

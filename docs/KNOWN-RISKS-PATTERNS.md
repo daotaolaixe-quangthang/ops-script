@@ -139,3 +139,17 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
 - **Safe action**:
   - Chay sau moi install/update: `ls -la /etc/ops/.*` verify 0600 owned by admin user
   - Bat ky script nao ghi file secret phai co: `chmod 600 <file> && chown $ADMIN_USER:$ADMIN_USER <file>`
+
+## 15) Verify action exit non-zero lam menu loop thoat
+
+- **Pattern**:
+  - verify function (vi du `verify_stack`, `verify_service_health`) tra ve exit code khac 0 khi detect issue
+  - caller menu dung `set -e` hoac khong guard return code neu function fail
+- **Rui ro**:
+  - Menu exit ngoai y muon sau khi user chon "Verify stack health" — da xay ra o Phase 1
+  - User khong biet menu da thoat, tuong rang verify da pass
+- **Safe action**:
+  - Moi verify function PHAI return 0 \u2014 in PASS/WARN/FAIL len screen, KHONG propagate exit code
+  - Caller menu PHAI wrap: `verify_stack || true`
+  - Contract ro trong `P2-04`: PASS/WARN/FAIL deu exit 0; caller xu ly display, khong xu ly exit code
+  - Khi review bat ky verify action nao: kiem tra ro ket qua khi co FAIL co lam menu thoat khong

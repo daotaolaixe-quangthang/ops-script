@@ -393,9 +393,20 @@ monitoring_setup_telegram() {
     chown "${ADMIN_USER:-root}:${ADMIN_USER:-root}" "$token_file" 2>/dev/null || true
     log_info "Telegram bot token saved to $token_file (0600)"
 
-    # Store non-secret config
-    ops_conf_set "ops.conf" "TELEGRAM_ENABLED"  "yes"
-    ops_conf_set "ops.conf" "TELEGRAM_CHAT_ID"  "$chat_id"
+    # Store non-secret config in notifications.conf (0640) — not in ops.conf
+    # (chốt: ARCHITECTURE.md, FEATURE-EXPANSION-SPEC.md, BUG-TRIAGE-INDEX.md, SOURCE-TO-RUNTIME-TRACE.md)
+    local notif_conf="${OPS_CONFIG_DIR:-/etc/ops}/notifications.conf"
+    ops_conf_set "notifications.conf" "TELEGRAM_ENABLED"  "yes"
+    ops_conf_set "notifications.conf" "TELEGRAM_CHAT_ID"  "$chat_id"
+    # Ensure correct permission on notifications.conf (non-secret but separate from ops.conf)
+    chmod 640 "$notif_conf" 2>/dev/null || true
+    chown "${ADMIN_USER:-root}:${ADMIN_USER:-root}" "$notif_conf" 2>/dev/null || true
+
+    # Migration: remove old keys from ops.conf if they were stored there previously
+    if grep -q 'TELEGRAM_CHAT_ID\|TELEGRAM_ENABLED' "${OPS_CONFIG_DIR:-/etc/ops}/ops.conf" 2>/dev/null; then
+        sed -i '/^TELEGRAM_CHAT_ID=/d;/^TELEGRAM_ENABLED=/d' "${OPS_CONFIG_DIR:-/etc/ops}/ops.conf" 2>/dev/null || true
+        log_info "Migrated TELEGRAM_CHAT_ID and TELEGRAM_ENABLED from ops.conf → notifications.conf"
+    fi
 
     print_ok "Telegram configured. Token at $token_file (0600). Chat ID: $chat_id"
     print_warn "Run 'Test Telegram notification' to verify."
@@ -415,7 +426,13 @@ monitoring_test_telegram() {
 
     local bot_token chat_id
     bot_token="$(cat "$token_file")"
-    chat_id="$(ops_conf_get "ops.conf" "TELEGRAM_CHAT_ID" 2>/dev/null || true)"
+    # Read Chat ID from notifications.conf (chốt location per ARCHITECTURE.md)
+    chat_id="$(ops_conf_get "notifications.conf" "TELEGRAM_CHAT_ID" 2>/dev/null || true)"
+    # Migration fallback: old installs may have stored it in ops.conf
+    if [[ -z "$chat_id" ]]; then
+        chat_id="$(ops_conf_get "ops.conf" "TELEGRAM_CHAT_ID" 2>/dev/null || true)"
+        [[ -n "$chat_id" ]] && log_warn "TELEGRAM_CHAT_ID found in ops.conf (legacy) — re-run 'Setup Telegram notifications' to migrate."
+    fi
 
     if [[ -z "$chat_id" ]]; then
         print_error "Telegram chat ID not set. Run 'Setup Telegram notifications' first."
