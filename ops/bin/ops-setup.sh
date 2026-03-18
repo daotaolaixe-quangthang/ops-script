@@ -111,11 +111,11 @@ setup_login_hook() {
     local hook_code
     # The guard ensures ops-dashboard only runs for interactive SSH sessions.
     # [[ $- == *i* ]] — shell is interactive
-    # [[ -t 0 ]]     — stdin is a terminal (not scp/rsync/sftp pipe)
-    # [[ -n $SSH_TTY ]] — actual SSH login shell context
+    # [[ -n $SSH_TTY ]] — actual SSH login shell context (set by sshd for interactive logins;
+    #                     NOT set for scp/rsync/sftp — this is the canonical guard per spec)
     read -r -d '' hook_code << 'HOOK' || true
 # OPS login hook — do not remove
-if [[ $- == *i* ]] && [[ -t 0 ]] && [[ -n "${SSH_TTY:-}" ]]; then
+if [[ $- == *i* ]] && [[ -n "${SSH_TTY:-}" ]]; then
     if command -v ops-dashboard &>/dev/null; then
         ops-dashboard
     fi
@@ -180,6 +180,8 @@ setup_base_config() {
     ops_conf_set "ops.conf" "OPS_LOG_DIR" "$OPS_LOG_DIR"
     ops_conf_set "ops.conf" "OPS_LOG_FILE" "$OPS_LOG_FILE"
     ops_conf_set "ops.conf" "OPS_ADMIN_USER" "$ADMIN_USER"
+    # OPS_SSH_PORT: empty until security module finalises SSH port transition
+    ops_conf_set "ops.conf" "OPS_SSH_PORT" "${OPS_SSH_PORT:-}"
     ops_conf_set "ops.conf" "OPS_INSTALL_DATE" "$install_date"
 
     ops_conf_set "setup.conf" "SETUP_BASE_CONFIG" "written"
