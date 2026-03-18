@@ -125,7 +125,62 @@ print_vps_summary() {
 
 # ── 4. SSH port configuration ─────────────────────────────────
 
-prompt_ssh_port() {
+# detect_ssh_state: đọc trạng thái SSH hiện tại từ sshd_config.
+# Xuất:
+#   SSH_ALREADY_CONFIGURED=yes|no
+#   SSH_PORT_22_OPEN=yes|no
+#   SSH_CURRENT_PORTS=( ... )   — danh sách port đang cấu hình
+#   NEW_SSH_PORT                — port non-22 đã có, hoặc rỗng nếu chưa đặt
+detect_ssh_state() {
+    local sshd_conf="/etc/ssh/sshd_config"
+    SSH_ALREADY_CONFIGURED="no"
+    SSH_PORT_22_OPEN="no"
+    SSH_CURRENT_PORTS=()
+    NEW_SSH_PORT=""
+
+    if [[ ! -f "$sshd_conf" ]]; then
+        return 0
+    fi
+
+    # Đọc tất cả Port lines đang active (không bị comment)
+    local port
+    while IFS= read -r port; do
+        SSH_CURRENT_PORTS+=("$port")
+        if [[ "$port" == "22" ]]; then
+            SSH_PORT_22_OPEN="yes"
+        else
+            NEW_SSH_PORT="$port"  # lấy port non-22 đầu tiên
+        fi
+    done < <(grep -E '^[[:space:]]*Port[[:space:]]+[0-9]+' "$sshd_conf" \
+             | awk '{print $2}')
+
+    # SSH đã cấu hình port khác 22 → không cần thay đổi
+    if [[ -n "$NEW_SSH_PORT" ]]; then
+        SSH_ALREADY_CONFIGURED="yes"
+    fi
+
+    export SSH_ALREADY_CONFIGURED SSH_PORT_22_OPEN NEW_SSH_PORT
+}
+
+setup_ssh_port() {
+    detect_ssh_state
+
+    if [[ "$SSH_ALREADY_CONFIGURED" == "yes" ]]; then
+        # SSH đã được cấu hình trước đó — chỉ thông báo, không thay đổi
+        echo ""
+        echo -e "${CYN}${BLD}━━━ SSH Port Configuration ━━━${RST}"
+        ok "SSH port đã được cấu hình: port ${NEW_SSH_PORT}."
+        if [[ "$SSH_PORT_22_OPEN" == "yes" ]]; then
+            warn "Port 22 vẫn mở (transition mode). Dùng 'ops → Security → Finalise SSH port' để đóng nếu cần."
+        else
+            ok "Port 22 đã đóng — giữ nguyên."
+        fi
+        echo ""
+        return 0
+    fi
+
+    # Fresh state — port 22 là duy nhất, cần hỏi port mới
+    echo ""
     echo -e "${CYN}${BLD}━━━ SSH Port Configuration ━━━${RST}"
     echo "  Current SSH port is 22."
     echo "  A new port will be opened in addition to port 22 (transition period)."
@@ -136,13 +191,11 @@ prompt_ssh_port() {
         read -r -p "  Enter new SSH port (> 1024, not currently in use) [default: 2222]: " NEW_SSH_PORT
         NEW_SSH_PORT="${NEW_SSH_PORT:-2222}"
 
-        # Validate: must be a number > 1024 and <= 65535
         if ! [[ "$NEW_SSH_PORT" =~ ^[0-9]+$ ]] || (( NEW_SSH_PORT <= 1024 || NEW_SSH_PORT > 65535 )); then
             warn "Port must be a number between 1025 and 65535. Try again."
             continue
         fi
 
-        # Validate: port must not already be in use
         if ss -H -ltn | awk '{print $4}' | grep -Eq "(^|:)${NEW_SSH_PORT}$"; then
             warn "Port ${NEW_SSH_PORT} is already in use. Choose a different port."
             continue
@@ -150,21 +203,22 @@ prompt_ssh_port() {
 
         break
     done
-
     export NEW_SSH_PORT
     ok "New SSH port set to: ${NEW_SSH_PORT}"
+
+    _configure_sshd_fresh
 }
 
-configure_sshd() {
+# _configure_sshd_fresh: chỉ chạy khi fresh install (port 22 là duy nhất).
+# Giữ nguyên Port 22 + thêm Port mới vào transition.
+_configure_sshd_fresh() {
     local sshd_conf="/etc/ssh/sshd_config"
-    info "Configuring sshd to listen on port ${NEW_SSH_PORT} (keeping port 22)..."
+    info "Configuring sshd: adding port ${NEW_SSH_PORT} (keeping port 22 during transition)..."
 
-    # Backup existing config
     local backup="${sshd_conf}.bak.$(date +%Y%m%d_%H%M%S)"
     cp "$sshd_conf" "$backup"
     info "sshd_config backup: $backup"
 
-    # Enforce transition ports idempotently: Port 22 + Port <NEW>
     local tmp
     tmp=$(mktemp)
     {
@@ -174,27 +228,30 @@ configure_sshd() {
     } > "$tmp"
     mv "$tmp" "$sshd_conf"
 
-    systemctl reload ssh || systemctl reload sshd
+    systemctl reload ssh 2>/dev/null || systemctl reload sshd
     ok "sshd reloaded — now listening on ports 22 and ${NEW_SSH_PORT}."
 }
 
 configure_ufw() {
     info "Configuring UFW firewall..."
 
-    # Install UFW if missing
     if ! command -v ufw &>/dev/null; then
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ufw
     fi
 
-    # Ensure baseline policy without destructive reset
     ufw default deny incoming   >/dev/null
     ufw default allow outgoing  >/dev/null
 
-    # Allow both SSH ports during transition
-    ufw allow 22/tcp   comment "ops: SSH legacy port (transition)" >/dev/null
-    ufw allow "${NEW_SSH_PORT}/tcp" comment "ops: SSH new port" >/dev/null
+    # Luôn allow port hiện tại (đã detect hoặc mới chọn)
+    if [[ -n "$NEW_SSH_PORT" ]]; then
+        ufw allow "${NEW_SSH_PORT}/tcp" comment "ops: SSH port" >/dev/null
+    fi
 
-    # Allow HTTP and HTTPS for future use
+    # Chỉ allow port 22 nếu sshd_config hiện tại vẫn giữ port 22
+    if [[ "$SSH_PORT_22_OPEN" == "yes" || "$SSH_ALREADY_CONFIGURED" == "no" ]]; then
+        ufw allow 22/tcp comment "ops: SSH legacy port (transition)" >/dev/null
+    fi
+
     ufw allow 80/tcp  comment "ops: HTTP"  >/dev/null
     ufw allow 443/tcp comment "ops: HTTPS" >/dev/null
 
@@ -203,54 +260,59 @@ configure_ufw() {
     else
         ufw --force enable >/dev/null
     fi
-    ok "UFW enabled. Ports open: 22, ${NEW_SSH_PORT}, 80, 443."
+    ok "UFW configured. HTTP/HTTPS open. SSH port(s) allowed per current sshd state."
 }
 
 # ── 5. Admin user creation ────────────────────────────────────
 
-prompt_admin_user() {
+# setup_admin_user: idempotent — skip hoàn toàn nếu user đã tồn tại.
+setup_admin_user() {
     echo ""
     echo -e "${CYN}${BLD}━━━ Admin User Setup ━━━${RST}"
-    echo "  A non-root admin user will be created for daily SSH access."
-    echo ""
 
-    while true; do
-        read -r -p "  Enter new admin username [default: opsadmin]: " ADMIN_USER
-        ADMIN_USER="${ADMIN_USER:-opsadmin}"
+    # Nếu chưa biết ADMIN_USER (fresh install) → hỏi
+    if [[ -z "${ADMIN_USER:-}" ]]; then
+        echo "  A non-root admin user will be created for daily SSH access."
+        echo ""
+        while true; do
+            read -r -p "  Enter new admin username [default: opsadmin]: " ADMIN_USER
+            ADMIN_USER="${ADMIN_USER:-opsadmin}"
+            if ! [[ "$ADMIN_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+                warn "Username must start with a lowercase letter and contain only a-z, 0-9, _ or -. Try again."
+                continue
+            fi
+            break
+        done
+        export ADMIN_USER
+    fi
 
-        # Validate: must be a valid unix username
-        if ! [[ "$ADMIN_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
-            warn "Username must start with a lowercase letter and contain only a-z, 0-9, _ or -. Try again."
-            continue
-        fi
-
-        break
-    done
-    export ADMIN_USER
-}
-
-create_admin_user() {
+    # User đã tồn tại → bỏ qua toàn bộ, kể cả password
     if id "$ADMIN_USER" &>/dev/null; then
-        warn "User '${ADMIN_USER}' already exists — skipping user creation."
-    else
-        info "Creating user: ${ADMIN_USER}..."
-        useradd -m -s /bin/bash "$ADMIN_USER"
-        ok "User '${ADMIN_USER}' created."
+        ok "User '${ADMIN_USER}' already exists — skipping creation and password."
+        # Đảm bảo sudo group (safe, idempotent)
+        if ! id -nG "$ADMIN_USER" | grep -qw sudo; then
+            usermod -aG sudo "$ADMIN_USER"
+            ok "User '${ADMIN_USER}' added to sudo group."
+        fi
+        export ADMIN_USER
+        return 0
     fi
 
-    # Ensure user is in sudo group
-    if ! id -nG "$ADMIN_USER" | grep -qw sudo; then
-        usermod -aG sudo "$ADMIN_USER"
-        ok "User '${ADMIN_USER}' added to sudo group."
-    fi
+    # User chưa tồn tại → tạo mới
+    info "Creating user: ${ADMIN_USER}..."
+    useradd -m -s /bin/bash "$ADMIN_USER"
+    ok "User '${ADMIN_USER}' created."
 
-    # Set password
+    usermod -aG sudo "$ADMIN_USER"
+    ok "User '${ADMIN_USER}' added to sudo group."
+
     echo ""
     info "Set a password for '${ADMIN_USER}':"
     while true; do
         passwd "$ADMIN_USER" && break || warn "Password change failed — try again."
     done
     ok "Password set for '${ADMIN_USER}'."
+    export ADMIN_USER
 }
 
 # ── 6. Clone OPS core ─────────────────────────────────────────
@@ -371,12 +433,10 @@ main() {
         exit 0
     fi
 
-    prompt_ssh_port
-    configure_sshd
+    setup_ssh_port
     configure_ufw
 
-    prompt_admin_user
-    create_admin_user
+    setup_admin_user
 
     write_capacity_conf
     install_ops_core
@@ -391,16 +451,22 @@ main() {
     echo ""
     echo -e "  ${BLD}IMPORTANT — Save these details:${RST}"
     echo ""
-    echo -e "  ${BLD}After reboot use: ssh -p ${NEW_SSH_PORT} ${ADMIN_USER}@${SERVER_IP}${RST}"
+    echo -e "  Admin user : ${BLD}${ADMIN_USER}${RST}"
+    echo -e "  SSH port   : ${BLD}${NEW_SSH_PORT:-22}${RST}"
+    echo -e "  SSH command: ${CYN}${BLD}ssh -p ${NEW_SSH_PORT:-22} ${ADMIN_USER}@${SERVER_IP}${RST}"
     echo ""
-    echo -e "  SSH login command:"
-    echo -e "  ${CYN}${BLD}  ssh -p ${NEW_SSH_PORT} ${ADMIN_USER}@${SERVER_IP}${RST}"
-    echo ""
-    echo -e "  ${YLW}⚠  Port 22 remains open during transition.${RST}"
-    echo -e "  ${YLW}   Use 'ops' menu → Security → Finalise SSH port to close port 22.${RST}"
+    if [[ "$SSH_PORT_22_OPEN" == "yes" && "$SSH_ALREADY_CONFIGURED" == "yes" ]]; then
+        echo -e "  ${YLW}⚠  Port 22 vẫn mở (transition mode).${RST}"
+        echo -e "  ${YLW}   Dùng 'ops → Security → Finalise SSH port' để đóng nếu muốn.${RST}"
+    elif [[ "$SSH_PORT_22_OPEN" == "no" && "$SSH_ALREADY_CONFIGURED" == "yes" ]]; then
+        echo -e "  ${GRN}✓  Port 22 đã đóng — giữ nguyên.${RST}"
+    else
+        echo -e "  ${YLW}⚠  Port 22 remains open during transition.${RST}"
+        echo -e "  ${YLW}   Use 'ops' menu → Security → Finalise SSH port to close port 22.${RST}"
+    fi
     echo ""
     echo -e "  Next steps:"
-    echo -e "    1. Open a NEW terminal and test:  ${CYN}ssh -p ${NEW_SSH_PORT} ${ADMIN_USER}@${SERVER_IP}${RST}"
+    echo -e "    1. Open a NEW terminal and test:  ${CYN}ssh -p ${NEW_SSH_PORT:-22} ${ADMIN_USER}@${SERVER_IP}${RST}"
     echo -e "    2. After verifying login, run:    ${CYN}ops${RST}"
     echo -e "    3. Select 'Production Setup Wizard' to complete the stack."
     echo ""
