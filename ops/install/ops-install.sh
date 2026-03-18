@@ -21,7 +21,7 @@ IFS=$'\\n\\t'
 readonly OPS_INSTALL_DIR="/opt/ops"
 readonly OPS_CONFIG_DIR="/etc/ops"
 readonly OPS_REPO_URL="https://github.com/daotaolaixe-quangthang/ops-script.git"
-readonly OPS_VERSION="0.1.0"
+readonly OPS_VERSION="0.2.0"
 readonly OPS_SOURCE_SUBDIR="ops"
 
 # Colours (inline — do not depend on core/ui.sh before install)
@@ -310,7 +310,52 @@ EOF
     ok "Capacity profile written to ${conf}."
 }
 
-# ── 8. Run ops-setup.sh ───────────────────────────────────────
+# ── 9. Shell aliases & login hook ─────────────────────────────
+
+_append_if_missing() {
+    local file="$1"
+    local marker="$2"
+    local block="$3"
+    [[ -f "$file" ]] || touch "$file"
+    grep -qF "$marker" "$file" 2>/dev/null && return 0
+    printf '\n%s\n' "$block" >> "$file"
+}
+
+setup_shell_aliases() {
+    local alias_marker="# OPS shortcut: alias 1"
+    local alias_block="${alias_marker}
+alias 1='ops'"
+
+    local hook_marker="# OPS login dashboard"
+    local hook_block="${hook_marker} — show on interactive SSH login only
+if [[ \$- == *i* ]] && [[ -t 0 ]] && [[ -n \"\${SSH_CONNECTION:-}\" ]]; then
+    if [[ -x /usr/local/bin/ops-dashboard ]]; then
+        /usr/local/bin/ops-dashboard
+    elif [[ -x /opt/ops/bin/ops-dashboard ]]; then
+        /opt/ops/bin/ops-dashboard
+    fi
+fi"
+
+    # Apply to root
+    _append_if_missing "/root/.bashrc"       "$alias_marker" "$alias_block"
+    _append_if_missing "/root/.bash_profile" "$hook_marker"  "$hook_block"
+    ok "Shell aliases set for root."
+
+    # Apply to admin user
+    if [[ -n "${ADMIN_USER:-}" ]] && id "$ADMIN_USER" &>/dev/null; then
+        local admin_home
+        admin_home=$(getent passwd "$ADMIN_USER" | cut -d: -f6)
+        if [[ -n "$admin_home" && -d "$admin_home" ]]; then
+            _append_if_missing "${admin_home}/.bashrc"       "$alias_marker" "$alias_block"
+            _append_if_missing "${admin_home}/.bash_profile" "$hook_marker"  "$hook_block"
+            chown "${ADMIN_USER}:${ADMIN_USER}" \
+                "${admin_home}/.bashrc" \
+                "${admin_home}/.bash_profile" 2>/dev/null || true
+            ok "Shell aliases set for ${ADMIN_USER}."
+        fi
+    fi
+}
+
 
 run_setup() {
     local setup_script="${OPS_INSTALL_DIR}/bin/ops-setup.sh"
@@ -364,6 +409,7 @@ main() {
 
     write_capacity_conf
     install_ops_core
+    setup_shell_aliases
     run_setup
 
     detect_server_ip
