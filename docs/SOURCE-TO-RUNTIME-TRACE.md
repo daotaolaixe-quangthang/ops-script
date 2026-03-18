@@ -163,6 +163,51 @@ Model chung:
 - **Rollback**:
   - revert config/hook and disable integration if broken
 
+### Notifications / scheduled checks (future optional)
+
+- **Modules du kien**:
+  - notification/check module hoac expansion trong `modules/monitoring.sh`
+- **Runtime state**:
+  - `/etc/ops/notifications.conf`
+  - `/etc/ops/checks/*`
+  - scheduler artefacts
+- **Verify**:
+  - test notification
+  - scheduler state
+  - generated check output/logs
+- **Rollback**:
+  - disable checks
+  - remove scheduler entries
+
+### Advanced web controls (future optional)
+
+- **Modules du kien**:
+  - `modules/nginx.sh` hoac module web-control tach rieng
+- **Runtime state**:
+  - Nginx snippets/site config
+  - PHP-secondary `.htaccess` file neu co
+- **Verify**:
+  - `nginx -t`
+  - header/log/request behavior tests
+- **Rollback**:
+  - revert snippets/config backups
+
+### Remote uploads backup transport (future optional)
+
+- **Modules du kien**:
+  - backup remote module trong Phase 4
+- **Runtime state**:
+  - `/etc/ops/backups/telegram.conf`
+  - `/etc/ops/backups/uploads/*`
+  - local staging and metadata files
+  - scheduler artefacts neu auto backup duoc bat
+- **Verify**:
+  - upload/download flow
+  - metadata state
+- **Rollback**:
+  - disable schedule
+  - remove local config/meta moi
+
 ## Fast trace by artefact
 
 | Runtime artefact | Thuong quay nguoc ve dau |

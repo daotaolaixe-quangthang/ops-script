@@ -25,6 +25,7 @@ This document defines non‑negotiable security rules for OPS. Any change that v
   - Bind to localhost or Unix sockets.
   - Never listen publicly on 0.0.0.0 for production ports.
 - There should be a default Nginx server that rejects unknown hosts (e.g. 444 or 404).
+- Direct access by `http://<SERVER_IP>` should be blocked or rejected by the default server path unless explicitly required for a controlled maintenance case.
 
 ### 3. 9router exposure
 
@@ -37,6 +38,7 @@ This document defines non‑negotiable security rules for OPS. Any change that v
   - Keep Cloudflare proxy enabled and use `Full (strict)` when applicable.
   - Treat Cloudflare Access as an additional gate, not a replacement for loopback binding and firewall rules.
 - Keep a default Nginx server that rejects unknown hosts.
+- If Cloudflare sits in front of a domain, real visitor IP logging must use a managed and auditable real-IP configuration path rather than ad hoc edits.
 
 ### 4. Firewall and fail2ban
 
@@ -100,6 +102,10 @@ This document defines non‑negotiable security rules for OPS. Any change that v
 - When prompting for secrets, prefer:
   - Hidden input (no echo).
   - Clear instructions on how to rotate or regenerate secrets.
+- Notification and remote-backup integrations (Telegram, Email, provider APIs) must:
+  - store secrets in restricted files
+  - document secret locations but never literal values
+  - make rotation and disable paths explicit
 
 ### 10. AI and automation considerations
 

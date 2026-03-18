@@ -216,3 +216,52 @@ Expected behaviour:
 
 This reference must be kept in sync with the actual menu layout in `bin/ops`.
 
+---
+
+### 11. Planned future menu extensions (Phase 2 / Phase 4)
+
+These do **not** change the Phase 1 menu contract. They are planned placements for future feature groups.
+
+#### Notifications & Checks (planned, Phase 2)
+
+Planned actions:
+
+1. **Enable / disable website uptime-downtime checks**
+2. **Enable / disable SSL expiry alerts**
+3. **Enable / disable domain expiry alerts**
+4. **Configure Telegram and Email notifications**
+5. **Enable / disable periodic security scan**
+
+Suggested placement:
+
+- under `System & Monitoring`
+- with links from `SSL Management` and `Domains & Nginx` where relevant
+
+#### Remote Upload Backups (planned, Phase 4)
+
+Planned actions:
+
+1. **Upload website uploads backup to Telegram Cloud**
+2. **Download uploads backup from Telegram Cloud**
+3. **Enable automatic uploads backup to Telegram Cloud**
+4. **Disable automatic uploads backup to Telegram Cloud**
+
+Suggested placement:
+
+- separate optional submenu
+- or under backup-related future actions in `System & Monitoring`
+
+#### Advanced Web Controls (planned, Phase 2)
+
+Planned actions:
+
+1. **Factory reset website `.htaccess`**
+2. **Show real visitor IP logging behind Cloudflare**
+3. **Customize `X-Powered-By` header**
+4. **Block direct `http://IP` access**
+
+Suggested placement:
+
+- under `Domains & Nginx`
+- PHP-secondary compatibility note applies to `.htaccess`
+

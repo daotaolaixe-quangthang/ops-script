@@ -8,6 +8,7 @@ Phase 4 tap trung vao:
 - snapshot/backup provider integrations
 - cloud-aware DNS, domain, SSL workflows
 - Codex-assisted runbook automation
+- provider-specific remote backup transports nhu Telegram Cloud
 
 Khong bao gom trong Phase 4:
 
@@ -81,6 +82,12 @@ Tat ca implementers phai coi nhung diem sau la fixed contract:
 - provider snapshot create/list/delete hooks
 - retention policy docs
 - rollback expectations docs
+
+Cu the co the gom:
+
+- Telegram Cloud transport cho uploads backups
+- manual upload/download flow
+- automatic upload scheduling enable/disable
 
 ### D. Codex-assisted runbook automation
 
@@ -206,17 +213,29 @@ Ly do:
    - delete snapshot
    - retention note
 2. define relation giua snapshot provider va local backup helpers
-3. document restore expectations:
+3. define provider-specific remote backup transport contract:
+   - Telegram Cloud uploads backup
+   - local metadata map
+   - manual upload/download
+   - scheduled auto upload
+4. document restore expectations:
    - OPS co the trigger create/list
    - restore co the van can manual approvals
 
 **Output**
 
 - snapshot/backup provider docs
+- remote backup transport docs for provider-specific integrations
 
 **Verify**
 
 - 1 snapshot workflow co the mo ta du:
+ - 1 Telegram backup transport workflow co the mo ta du:
+   - upload
+   - metadata save
+   - download
+   - disable auto schedule
+ - 1 snapshot workflow co the mo ta du:
    - trigger
    - identify result
    - rollback/cleanup
@@ -224,6 +243,7 @@ Ly do:
 **Review checklist**
 
 - khong tao ao tuong "1-click disaster recovery" neu thuc te khong dam bao
+- provider-specific transport khong duoc thay the local backup hygiene
 
 ---
 
@@ -270,6 +290,7 @@ Ly do:
 **Tasks**
 
 1. xac dinh config paths cho provider creds
+   - gom Telegram bot token/chat/channel config neu feature nay duoc support
 2. xac dinh permission model
 3. xac dinh log redaction rules
 4. xac dinh rotation/update workflow

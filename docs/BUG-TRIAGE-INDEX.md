@@ -18,6 +18,8 @@ Nguyen tac:
    - PHP / PHP-FPM
    - DB
    - security / SSH / firewall / fail2ban
+   - notifications / scheduler / external delivery
+   - advanced web controls / Cloudflare real IP / direct IP block
    - monitoring / logs / scheduler
 2. Doc:
    - `ARCHITECTURE.md`
@@ -163,6 +165,37 @@ Nguyen tac:
   - commands show dung service status
 - **Rollback**:
   - tat job/service moi, khoi phuc output path cu
+
+### I. Notifications, alerts, hoac scheduled checks sai
+
+- **Doc truoc**:
+  - `FEATURE-EXPANSION-SPEC.md`
+  - `RUNBOOKS.md`
+  - `RUNTIME-ARTEFACT-INVENTORY.md`
+- **Runtime state can xem**:
+  - `/etc/ops/notifications.conf`
+  - `/etc/ops/checks/*`
+  - scheduler artefacts
+- **Verify**:
+  - test notification
+  - kiem tra disable path
+- **Rollback**:
+  - tat checks/scheduler moi
+
+### J. Cloudflare real IP / direct IP block / custom header sai
+
+- **Doc truoc**:
+  - `FEATURE-EXPANSION-SPEC.md`
+  - `SOURCE-TO-RUNTIME-TRACE.md`
+  - `RUNBOOKS.md`
+- **Runtime state can xem**:
+  - Nginx snippets/site config
+  - PHP-secondary `.htaccess` neu co feature reset
+- **Verify**:
+  - `nginx -t`
+  - request/log/header tests
+- **Rollback**:
+  - revert snippet/config backup
 
 ## 5 cau hoi bat buoc truoc khi sua bug
 

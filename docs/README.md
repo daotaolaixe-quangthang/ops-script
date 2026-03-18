@@ -42,6 +42,7 @@ Neu task la clone logic/control plane:
 - `RUNTIME-ARTEFACT-INVENTORY.md`: inventory runtime artefacts ma OPS tao/quan ly.
 - `ROADMAP.md`: phase tasks va backlog.
 - `PROMPTS-TEMPLATES.md`: prompt templates.
+- `FEATURE-EXPANSION-SPEC.md`: map cac tinh nang mo rong vao phase, menu, state, verify, rollback.
 - `BUG-TRIAGE-INDEX.md`: duong vao nhanh khi fix bug.
 - `SOURCE-TO-RUNTIME-TRACE.md`: map tu menu/module sang runtime state, service, verify, rollback.
 - `KNOWN-RISKS-PATTERNS.md`: mau rui ro lap lai can check khi review/fix.
@@ -72,6 +73,7 @@ Rule quan trong:
 - Neu thay doi co side effects runtime: cap nhat `SOURCE-TO-RUNTIME-TRACE.md`.
 - Neu thay doi lam agent triage khac di: cap nhat `BUG-TRIAGE-INDEX.md`.
 - Neu thay doi lam thay doi logic clone/port: cap nhat `PLATFORM-AGNOSTIC-CAPABILITIES.md` va `PORTING-MAP-NODE-FIRST.md`.
+- Neu thay doi/add future optional features: cap nhat `FEATURE-EXPANSION-SPEC.md`, phase spec tuong ung, `RUNBOOKS.md`, va `RUNTIME-ARTEFACT-INVENTORY.md` neu co runtime state moi.
 - Neu thay doi scope, task order, task IDs, acceptance, hoac implementation sequence cua phase:
   - cap nhat phase spec tuong ung
   - cap nhat `ROADMAP.md` neu overview phase thay doi

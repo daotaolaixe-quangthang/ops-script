@@ -6,10 +6,11 @@ Phase 2 tap trung vao:
 
 - observability tot hon
 - health verification thong nhat
-- alerts nhe, phu hop VPS
+- alerts va scheduled checks nhe, phu hop VPS
 - backup helpers thuc dung
 - runtime artefact inventory thuc te
 - rollback playbooks sat voi implementation that
+- advanced web controls cho Nginx/PHP-secondary
 
 Khong bao gom trong Phase 2:
 
@@ -60,9 +61,17 @@ Tat ca implementers phai coi nhung diem sau la fixed contract:
 ### A. Monitoring va health layer
 
 - menu advanced monitoring opt-in
-- alerts threshold scripts nhe
+- alerts, scheduled checks, va threshold scripts nhe
 - unified verify stack action
 - deeper service checks cho Nginx, Node/PM2, PHP-FPM, DB, SSL, 9router
+
+Cu the phai cover:
+
+- website uptime/downtime checks
+- SSL expiry alerts
+- domain expiry alerts
+- Telegram and Email notification channels
+- periodic security scan
 
 ### B. Backup helper layer
 
@@ -81,6 +90,13 @@ Tat ca implementers phai coi nhung diem sau la fixed contract:
 - service status sau hon
 - quick logs de dung hon
 - verify summary screen co the doc nhanh
+
+### E. Advanced web controls
+
+- Cloudflare real IP logging
+- direct `http://IP` access block
+- custom `X-Powered-By`
+- `.htaccess` factory reset for PHP-secondary compatibility only
 
 ---
 
@@ -174,7 +190,7 @@ Ly do:
 
 ---
 
-### P2-03 Alerts and thresholds
+### P2-03 Alerts, scheduled checks, and thresholds
 
 **Muc tieu**
 
@@ -182,31 +198,74 @@ Ly do:
 
 **Tasks**
 
-1. chot threshold policy:
+1. chot checks va threshold policy:
    - CPU/load
    - RAM/swap
    - disk usage
+   - website uptime/downtime
+   - SSL expiry windows
+   - domain expiry windows
 2. tao scripts check nhe
 3. chot scheduler contract:
    - cron hoac systemd timer, nhung phai doc va inventory duoc
 4. optional notification targets:
    - email/webhook
+   - Telegram
 5. define quiet mode / spam control
+6. define periodic security scan schedule and reporting contract
 
 **Output**
 
-- alerting baseline cho operator
+- alerting and scheduled-check baseline cho operator
 
 **Verify**
 
 - script check return dung status
 - scheduler chay dung chu ky
 - test threshold co tao canh bao mong doi
+- test website/SSL/domain/security-scan cases tao dung alert state
 
 **Review checklist**
 
 - khong spam alert
 - khong tao tai nguyen nen qua nang
+- scheduler artefacts phai inventory duoc
+
+---
+
+### P2-03A Advanced web controls planning and implementation
+
+**Muc tieu**
+
+- them bo utility cho Nginx/PHP-secondary ma khong lam mo edge contract cua OPS
+
+**Tasks**
+
+1. xac dinh Nginx snippets/managed config cho:
+   - Cloudflare real IP logging
+   - block direct `http://IP`
+   - custom `X-Powered-By`
+2. xac dinh `.htaccess` factory reset contract:
+   - chi PHP-secondary
+   - chi la app-level compatibility/reset utility
+3. define per-domain state va rollback
+
+**Output**
+
+- web controls feature plan va target runtime state
+
+**Verify**
+
+- `nginx -t`
+- real IP log dung
+- direct IP access bi chan
+- header `X-Powered-By` dung nhu mong doi
+- `.htaccess` reset khoi phuc file mong doi khi ap dung cho PHP-secondary
+
+**Review checklist**
+
+- khong mo ta `.htaccess` nhu edge control chinh
+- moi rule Nginx moi phai backup va rollback duoc
 
 ---
 
@@ -366,7 +425,8 @@ Ly do:
 3. test unified verify stack
 4. test backup helpers
 5. test docs inventory va runbooks doi chieu runtime
-6. cap nhat docs neu implementation lech spec
+6. test notifications/checks and advanced web controls neu da implement
+7. cap nhat docs neu implementation lech spec
 
 **Output**
 

@@ -83,6 +83,10 @@ AI agents must **not**:
   - `docs/PLATFORM-AGNOSTIC-CAPABILITIES.md`
   - `docs/PORTING-MAP-NODE-FIRST.md`
   - `docs/DESIGN-PATTERNS-EXTRACTED.md`
+- If the task touches future optional features such as notifications, external backup transports, or advanced web controls, also read:
+  - `docs/FEATURE-EXPANSION-SPEC.md`
+  - `docs/RUNBOOKS.md`
+  - `docs/RUNTIME-ARTEFACT-INVENTORY.md`
 
 ### 7. Coding style
 

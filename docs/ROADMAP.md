@@ -144,9 +144,10 @@ Suggested task groups:
 
 - runtime observation and health signals
 - advanced monitoring integration
-- alerts and thresholds
+- alerts, scheduled checks, and thresholds
 - unified verify stack
 - backup helpers
+- optional web controls for Nginx/PHP-secondary
 - runtime artefact inventory expansion
 - rollback playbooks expansion
 
@@ -164,6 +165,19 @@ Additional Phase 2 docs/ops tasks:
    - Add one action to verify SSH, Nginx, Node, PHP, DB, SSL, and monitoring paths.
 3. **Rollback playbooks**
    - Add concise rollback-first runbooks for SSH, Nginx, Node process manager, PHP-FPM, DB, and firewall changes.
+4. **Notifications and checks**
+   - Add docs and implementation plan for:
+     - website uptime/downtime checks
+     - SSL expiry alerts
+     - domain expiry alerts
+     - Telegram/Email delivery
+     - periodic security scan
+5. **Advanced web controls**
+   - Add docs and implementation plan for:
+     - `.htaccess` factory reset (PHP-secondary only)
+     - Cloudflare real IP logging
+     - custom `X-Powered-By`
+     - direct IP access block
 
 ---
 
@@ -205,6 +219,7 @@ Suggested task groups:
 - provider abstraction audit
 - DNS provider abstraction
 - snapshot/backup provider abstraction
+- Telegram Cloud backup transport
 - cloud-aware SSL and domain workflows
 - secret and credential handling model
 - Codex-assisted runbook automation

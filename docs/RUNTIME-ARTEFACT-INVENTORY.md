@@ -14,6 +14,7 @@ Luu y: day la target inventory cho script production; mot so artefact se xuat hi
 | `/etc/ops/ops.conf` | global config |
 | `/etc/ops/capacity.conf` or JSON | VPS capacity profile |
 | `/var/log/ops/ops.log` | high-level operations log |
+| `/etc/ops/notifications.conf` | global notification channels and policy (future optional) |
 
 ## 2. Login and operator access
 
@@ -53,6 +54,17 @@ Node services va 9router deu theo PM2 contract:
 | live cert paths | active cert/key material |
 | Nginx SSL snippets | TLS wiring |
 
+## 5.1 Future checks and notifications
+
+| Artefact | Muc dich |
+|---|---|
+| `/etc/ops/checks/uptime/*.conf` | website uptime/downtime checks (future optional) |
+| `/etc/ops/checks/ssl-expiry/*.conf` | SSL expiry checks (future optional) |
+| `/etc/ops/checks/domain-expiry/*.conf` | domain expiry checks (future optional) |
+| `/etc/ops/checks/security-scan/*.conf` | scheduled security scan configs (future optional) |
+| scheduler entries for checks | chay dinh ky checks/alerts |
+| notification delivery config | Telegram/Email channel wiring |
+
 ## 6. PHP
 
 | Artefact | Muc dich |
@@ -77,6 +89,25 @@ Node services va 9router deu theo PM2 contract:
 | UFW rules | inbound access policy |
 | `/etc/fail2ban/*` | ban policy |
 | default closed ports except approved ones | host exposure contract |
+
+## 8.1 Future web-control artefacts
+
+| Artefact | Muc dich |
+|---|---|
+| Nginx real IP snippet | Cloudflare-aware real visitor IP logging |
+| Nginx direct-IP block snippet | chan truy cap truc tiep bang IP |
+| Nginx custom header snippet | custom `X-Powered-By` handling |
+| PHP-secondary `.htaccess` backup/reset target | app-level compatibility reset only |
+
+## 8.2 Future remote backup artefacts
+
+| Artefact | Muc dich |
+|---|---|
+| `/etc/ops/backups/telegram.conf` | Telegram Cloud backup transport config |
+| `/etc/ops/backups/uploads/*.conf` | uploads backup policies per app/site |
+| local backup staging dir | tao archive truoc khi upload |
+| backup metadata map | map local backup voi Telegram file/message identifiers |
+| auto-backup scheduler entries | lich chay uploads backup tu dong |
 
 ## 9. Verification expectations
 

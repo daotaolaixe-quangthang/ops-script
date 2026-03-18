@@ -120,3 +120,65 @@ Muc tieu: cung cap runbook ngan theo format `pre-check -> change -> verify -> ro
 - **Rollback**:
   - bo hook
   - khoi phuc rc file backup
+
+## 8. Notification checks and delivery
+
+- **Pre-check**:
+  - xac nhan website/domain/list checks can bat
+  - xac nhan kenh Telegram va Email da duoc cau hinh
+  - xac nhan scheduler contract dang dung
+- **Change**:
+  - bat/tat uptime-downtime checks
+  - bat/tat SSL expiry checks
+  - bat/tat domain expiry checks
+  - bat/tat periodic security scan
+- **Verify**:
+  - scheduler artefact ton tai/bi go dung nhu mong doi
+  - test notification di dung kenh
+  - disable check thi khong con execution moi
+- **Rollback**:
+  - disable check
+  - xoa scheduler artefact moi
+  - khoi phuc notification config neu can
+
+## 9. Telegram Cloud uploads backup
+
+- **Pre-check**:
+  - xac nhan uploads path/site can backup
+  - xac nhan Telegram transport config va local staging path
+  - xac nhan metadata file se duoc luu o dau
+- **Change**:
+  - manual upload backup
+  - manual download backup
+  - enable/disable auto backup schedule
+- **Verify**:
+  - archive local tao thanh cong
+  - upload hoac download thanh cong
+  - metadata duoc cap nhat dung
+  - scheduler auto-backup chay dung lich neu bat
+- **Rollback**:
+  - disable auto-backup
+  - remove local config/meta moi neu can
+  - khong xoa remote backup neu chua co xac nhan ro rang
+
+## 10. Advanced web controls
+
+- **Pre-check**:
+  - xac nhan domain/site bi anh huong
+  - backup Nginx config/snippets va `.htaccess` neu feature co dung toi
+  - nhac lai: `.htaccess` chi la PHP-secondary compatibility utility
+- **Change**:
+  - bat/tat Cloudflare real IP logging
+  - them/xoa custom `X-Powered-By`
+  - bat/tat block direct `http://IP`
+  - factory reset `.htaccess`
+- **Verify**:
+  - `nginx -t`
+  - request logs hien real IP dung
+  - direct IP request bi chan
+  - header dung nhu mong doi
+  - `.htaccess` duoc reset dung file mong doi
+- **Rollback**:
+  - khoi phuc snippet/config backup
+  - bo custom header/rule moi
+  - khoi phuc `.htaccess` backup neu reset sai
