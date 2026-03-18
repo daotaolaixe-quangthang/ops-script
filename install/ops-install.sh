@@ -320,8 +320,9 @@ run_setup() {
     fi
 
     info "Running ops-setup.sh as root (will use ADMIN_USER=${ADMIN_USER})..."
+    # OPS_VERSION is already readonly+exported — no need to re-pass it.
+    # Passing ADMIN_USER explicitly so ops-setup.sh sees it even if env is clean.
     ADMIN_USER="$ADMIN_USER" \
-    OPS_VERSION="$OPS_VERSION" \
     bash "$setup_script"
 }
 
