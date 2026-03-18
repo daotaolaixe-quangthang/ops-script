@@ -1,12 +1,12 @@
 ## OPS Security Rules
 
-This document defines non‑negotiable security rules for OPS. Any change that violates these rules is a bug and must be rejected or fixed.
+This document defines non-negotiable security rules for OPS. Any change that violates these rules is a bug and must be rejected or fixed.
 
 ### 1. SSH and user accounts
 
 - OPS must:
-  - Encourage use of a **non‑root admin user** for SSH and operations.
-  - Support changing the SSH port from 22 to a user‑defined port.
+  - Encourage use of a **non-root admin user** for SSH and operations.
+  - Support changing the SSH port from 22 to a user-defined port.
   - Keep port 22 open only during the transition period.
   - Offer a guided step to close port 22 and reboot once everything is verified.
 - Prompts must clearly show the **new SSH port and admin username**, for example:
@@ -21,22 +21,26 @@ This document defines non‑negotiable security rules for OPS. Any change that v
 ### 2. Network exposure and Nginx
 
 - Nginx must be the **only public HTTP(S) entrypoint**.
-- Backend services (Node.js apps, 9router, PHP‑FPM sockets) must:
-  - Bind to localhost or Unix sockets.
-  - Never listen publicly on 0.0.0.0 for production ports.
+- Backend services (Node.js apps, PHP-FPM sockets) must:
+  - Bind to localhost (`127.0.0.1`) or Unix sockets.
+  - Never listen publicly without Nginx proxying in front.
+- **Exception — 9router only**: Next.js requires `HOSTNAME=0.0.0.0` to bind its HTTP server.
+  This is permitted under the following conditions (all three must hold):
+  1. UFW **does not** open port 20128 (verified by `ufw status | grep 20128`).
+  2. Nginx proxies 9router via `proxy_pass http://127.0.0.1:20128`.
+  3. A default-deny Nginx server block is in place to reject unknown hosts.
 - There should be a default Nginx server that rejects unknown hosts (e.g. 444 or 404).
-- Direct access by `http://<SERVER_IP>` should be blocked or rejected by the default server path unless explicitly required for a controlled maintenance case.
+- Direct access by `http://<SERVER_IP>` should be blocked or rejected by the default server path.
 
 ### 3. 9router exposure
 
 - 9router must:
-  - Bind only to loopback (e.g. `127.0.0.1:20128`).
-  - Never be exposed directly through firewall.
+  - Never be exposed directly through firewall (UFW must not open port 20128).
   - Be reachable only via Nginx and, where applicable, Cloudflare Access.
 - For Cloudflare Access setups:
   - Protect only the intended router domain.
   - Keep Cloudflare proxy enabled and use `Full (strict)` when applicable.
-  - Treat Cloudflare Access as an additional gate, not a replacement for loopback binding and firewall rules.
+  - Treat Cloudflare Access as an additional gate, not a replacement for firewall rules.
 - Keep a default Nginx server that rejects unknown hosts.
 - If Cloudflare sits in front of a domain, real visitor IP logging must use a managed and auditable real-IP configuration path rather than ad hoc edits.
 
@@ -47,19 +51,19 @@ This document defines non‑negotiable security rules for OPS. Any change that v
     - SSH port(s) in use (22 + new port during transition, then only new port).
     - HTTP (80).
     - HTTPS (443).
-  - Deny other inbound ports by default.
+  - Deny other inbound ports by default — **including port 20128 (9router)**.
 - `fail2ban`:
   - Must be installed and enabled at least for SSH.
   - Configuration changes must be conservative; avoid breaking legitimate SSH access.
 
 ### 5. TLS and certificates
 
-- Certbot is the default ACME client.
+- Certbot is the default ACME client — install via **snap** (primary), apt as fallback.
 - Certificates should:
   - Use secure defaults (strong ciphers, modern TLS versions).
   - Be renewed automatically or via simple periodic commands.
 - OPS must not:
-  - Store private keys in world‑readable locations.
+  - Store private keys in world-readable locations.
   - Print private keys directly to the terminal except where explicitly requested by the user.
 
 ### 6. PHP security
@@ -68,27 +72,29 @@ This document defines non‑negotiable security rules for OPS. Any change that v
   - Disable dangerous functions where appropriate.
   - Set sensible `memory_limit`, `max_execution_time`, `post_max_size`, `upload_max_filesize`.
   - Enable and correctly tune opcache.
-- PHP‑FPM pools:
-  - Run under non‑root users.
+- PHP-FPM pools:
+  - Run under non-root users.
   - Have file/directory permissions restricted to what applications need.
 
 ### 7. Database security
 
-- Only MySQL/MariaDB is supported.
+- Default DB engine: **MariaDB** (drop-in replacement; chosen for Ubuntu repo availability and performance).
+- MySQL is alternative; operator must explicitly choose MySQL over MariaDB.
 - Secure setup must:
   - Remove anonymous users.
   - Disable remote root login unless the user explicitly opts in.
   - Remove test databases.
-  - Require passwords for all non‑local accounts.
+  - Require passwords for all non-local accounts.
 - Database users created by OPS:
-  - Should have least privilege (e.g. per‑database accounts).
+  - Should have least privilege (e.g. per-database accounts).
+- DB root password stored in `/etc/ops/.db-root-password` (0600) — never printed to terminal.
 
 ### 8. File safety and backups
 
 - Before writing or replacing critical config files, OPS must:
   - Create backup copies with clear timestamps or suffixes.
   - Fail safely on errors rather than producing partial configs.
-- For Nginx, PHP‑FPM, and systemd:
+- For Nginx, PHP-FPM, and systemd:
   - Changes must be validated (e.g. `nginx -t`) before reloading services.
 - For PM2-managed Node services:
   - Verify process health, restart behaviour, and localhost binding after changes.
@@ -97,15 +103,20 @@ This document defines non‑negotiable security rules for OPS. Any change that v
 
 - OPS must avoid:
   - Printing secrets (passwords, tokens, API keys) into logs.
-  - Storing secrets in world‑readable files.
-- Secrets files (e.g. `.env`, DB passwords) must have restrictive permissions (`0600` or similar).
+  - Storing secrets in world-readable files.
+- Secret files must have restrictive permissions (`0600`, owned by admin user):
+  - `/opt/9router/.env` (JWT_SECRET, INITIAL_PASSWORD, API_KEY_SECRET)
+  - `/etc/ops/.nine-router-password` (9router dashboard password)
+  - `/etc/ops/.db-root-password` (MariaDB/MySQL root password)
+  - `/etc/ops/.codex-api-key` (Codex CLI API key)
+  - `~/.codex/config.toml` (Codex CLI config with API key)
 - When prompting for secrets, prefer:
   - Hidden input (no echo).
   - Clear instructions on how to rotate or regenerate secrets.
 - Notification and remote-backup integrations (Telegram, Email, provider APIs) must:
-  - store secrets in restricted files
-  - document secret locations but never literal values
-  - make rotation and disable paths explicit
+  - Store secrets in restricted files.
+  - Document secret locations but never literal values.
+  - Make rotation and disable paths explicit.
 
 ### 10. AI and automation considerations
 
@@ -113,10 +124,9 @@ This document defines non‑negotiable security rules for OPS. Any change that v
   - Respect all rules in this document and in `rules/`.
   - Avoid introducing features that weaken defaults (e.g. opening extra ports) without:
     - A clear, documented reason.
-    - An explicit, opt‑in prompt to the user.
-- Any new module or feature that touches security‑sensitive areas must:
+    - An explicit, opt-in prompt to the user.
+- Any new module or feature that touches security-sensitive areas must:
   - Add or update relevant sections here.
-  - Be designed opt‑in by default when risk is non‑trivial.
+  - Be designed opt-in by default when risk is non-trivial.
 
 Security rules are intentionally conservative; usability should be improved without relaxing these guarantees unless the spec is explicitly updated.
-

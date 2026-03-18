@@ -56,19 +56,30 @@ Model chung:
 - **Modules du kien**:
   - `modules/node.sh`
   - `modules/nine-router.sh`
-- **Runtime state**:
+- **Runtime state — Node apps**:
   - app directories
-  - `.env`
+  - `.env` (0600)
   - PM2 process list and ecosystem config
   - `/etc/ops/apps/*.conf` neu tao state file
+- **Runtime state — 9router specific**:
+  - `/opt/9router/` (source + build)
+  - `/opt/9router/.env` (0600: JWT_SECRET, INITIAL_PASSWORD, API keys)
+  - `/var/lib/9router/db.json` (providers, combos, API keys)
+  - `/etc/ops/nine-router.conf` (OPS state: installed, domain, ssl flag)
+  - `/etc/ops/.nine-router-password` (0600: dashboard password)
+  - `~/.9router/usage.json` (usage stats)
+  - `/var/log/ops/nine-router.{out,err}.log`
 - **Public path**:
-  - Nginx reverse proxy -> localhost app
+  - Nginx reverse proxy -> localhost:20128 (9router)
+  - Nginx reverse proxy -> localhost:<port> (Node apps)
 - **Verify**:
-  - process manager status
-  - localhost health endpoint
+  - `pm2 status`
+  - `curl -s http://127.0.0.1:20128/v1/models` (9router)
+  - `ufw status | grep 20128` (must return empty)
   - domain proxy request
 - **Rollback**:
   - revert ecosystem/service config, rollback Nginx target
+
 
 ### Domains & Nginx
 
@@ -155,13 +166,19 @@ Model chung:
 - **Runtime state**:
   - `/var/log/ops/ops.log`
   - logrotate rules
-  - `/etc/ops/codex-cli.conf`
+  - `/etc/ops/codex-cli.conf` (mode, endpoint, model, version)
+  - `/etc/ops/.codex-api-key` (0600: API key)
+  - `~/.codex/config.toml` (0600: endpoint + model config)
 - **Verify**:
   - quick logs menu
   - service status screen
-  - Codex CLI test
+  - `codex --version`
+  - `curl -s http://127.0.0.1:20128/v1/models` (neu dung 9router mode)
 - **Rollback**:
-  - revert config/hook and disable integration if broken
+  - `disable_codex_auto_env` de xoa export OPENAI_API_KEY khoi ~/.bash_profile
+  - `rm ~/.codex/config.toml /etc/ops/.codex-api-key`
+  - `npm uninstall -g @openai/codex`
+
 
 ### Notifications / scheduled checks (future optional)
 
@@ -213,13 +230,20 @@ Model chung:
 | Runtime artefact | Thuong quay nguoc ve dau |
 |---|---|
 | `/etc/ops/ops.conf` | installer, `ops-setup.sh`, global architecture |
-| shell rc hook | dashboard/login flow, security/user experience |
+| `~/.bash_profile` (login hook) | dashboard/login flow, security/user experience |
 | `/etc/nginx/sites-available/*` | Domains & Nginx, SSL |
-| PM2 app state | Node.js Services, 9router |
+| PM2 app state | Node.js Services, 9router (`nine-router`) |
+| `/opt/9router/.env` | nine-router.sh install flow |
+| `/var/lib/9router/db.json` | 9router dashboard state |
+| `/etc/ops/.nine-router-password` | nine-router.sh install (0600) |
+| `/etc/ops/.db-root-password` | database.sh install (0600) |
+| `/etc/ops/.codex-api-key` | codex-cli.sh configure (0600) |
+| `~/.codex/config.toml` | codex-cli.sh configure (0600) |
 | `/etc/php/*/fpm/*` | PHP management |
-| MySQL/MariaDB config | Database management |
+| **MariaDB** config (default) | Database management |
 | UFW/fail2ban/sshd config | Security module |
 | `/var/log/ops/ops.log` | monitoring/audit flow |
+
 
 ## Rule
 

@@ -8,11 +8,25 @@ Values below are guidelines; actual implementation can interpolate between tiers
 
 Define rough tiers based on RAM and CPU cores:
 
-- **Tier S (small)**: 1 GB RAM, 1 vCPU
-- **Tier M (medium)**: 2–4 GB RAM, 2 vCPU
-- **Tier L (large)**: 8+ GB RAM, 4+ vCPU
+- **Tier S (small)**: < 1500 MB RAM, 1 vCPU
+- **Tier M (medium)**: 1500–5000 MB RAM, 2 vCPU
+- **Tier L (large)**: > 5000 MB RAM, 4+ vCPU
+
+**RAM threshold mapping (chốt — dùng trong `core/env.sh`):**
+
+```bash
+# RAM_MB < 1500     → Tier S
+# RAM_MB 1500-5000  → Tier M
+# RAM_MB > 5000     → Tier L
+if   (( RAM_MB < 1500 ));                   then OPS_TIER="S"
+elif (( RAM_MB >= 1500 && RAM_MB < 5000 )); then OPS_TIER="M"
+else                                             OPS_TIER="L"
+fi
+```
 
 OPS should detect actual RAM/CPU and map to the closest tier.
+
+
 
 ---
 

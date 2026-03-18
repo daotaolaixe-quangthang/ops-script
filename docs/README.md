@@ -20,23 +20,29 @@ Doc theo thu tu nay truoc khi viet script:
 6. `BUG-TRIAGE-INDEX.md`
 7. `SOURCE-TO-RUNTIME-TRACE.md`
 8. `KNOWN-RISKS-PATTERNS.md`
-9. `PHASE-01-IMPLEMENTATION-SPEC.md` when starting implementation
-10. `PHASE-02-IMPLEMENTATION-SPEC.md` when preparing post-Phase-1 hardening and observability
-11. `PHASE-03-IMPLEMENTATION-SPEC.md` when preparing extensibility or multi-OS work
-12. `PHASE-04-IMPLEMENTATION-SPEC.md` when preparing cloud integrations or AI-assisted runbook automation
+9. **`CODE-SKELETON-GUIDE.md`** — doc truoc khi viet bat ky module nao
+10. `PHASE-01-IMPLEMENTATION-SPEC.md` when starting implementation
+11. `PHASE-02-IMPLEMENTATION-SPEC.md` when preparing post-Phase-1 hardening and observability
+12. `PHASE-03-IMPLEMENTATION-SPEC.md` when preparing extensibility or multi-OS work
+13. `PHASE-04-IMPLEMENTATION-SPEC.md` when preparing cloud integrations or AI-assisted runbook automation
+
+Neu task lien quan den 9router hoac Codex CLI:
+
+- `NINE-ROUTER-SPEC.md` — nine-router install, env, PM2, Nginx, verify, rollback, security
+- `CODEX-CLI-SPEC.md` — Codex CLI install, configure (9router mode), secrets, menu actions
 
 Neu task la clone logic/control plane:
 
-13. `PLATFORM-AGNOSTIC-CAPABILITIES.md`
-14. `PORTING-MAP-NODE-FIRST.md`
-15. `DESIGN-PATTERNS-EXTRACTED.md`
+- `PLATFORM-AGNOSTIC-CAPABILITIES.md`
+- `PORTING-MAP-NODE-FIRST.md`
+- `DESIGN-PATTERNS-EXTRACTED.md`
 
 ## Docs hien co
 
 - `ARCHITECTURE.md`: layer, runtime paths, module boundaries.
-- `FLOW-INSTALL.md`: installer va first-time wizard flow.
+- `FLOW-INSTALL.md`: installer va first-time wizard flow. Installer URL: `https://raw.githubusercontent.com/daotaolaixe-quangthang/ops-script/main/install/ops-install.sh`
 - `MENU-REFERENCE.md`: menu contract.
-- `PERF-TUNING.md`: tuning theo tai nguyen.
+- `PERF-TUNING.md`: tuning theo tai nguyen (tier S/M/L theo RAM threshold cu the).
 - `SECURITY-RULES.md`: invariants khong duoc pha.
 - `RUNBOOKS.md`: pre-check, change, verify, rollback cho tac vu production nguy hiem.
 - `RUNTIME-ARTEFACT-INVENTORY.md`: inventory runtime artefacts ma OPS tao/quan ly.
@@ -46,7 +52,10 @@ Neu task la clone logic/control plane:
 - `BUG-TRIAGE-INDEX.md`: duong vao nhanh khi fix bug.
 - `SOURCE-TO-RUNTIME-TRACE.md`: map tu menu/module sang runtime state, service, verify, rollback.
 - `KNOWN-RISKS-PATTERNS.md`: mau rui ro lap lai can check khi review/fix.
-- `PHASE-01-IMPLEMENTATION-SPEC.md`: task-level implementation spec de code va review Phase 1.
+- **`CODE-SKELETON-GUIDE.md`**: skeleton code thuc te cho core helpers, module pattern, convention cheat sheet. **Doc truoc khi viet bat ky module nao.**
+- **`NINE-ROUTER-SPEC.md`**: spec day du cho 9router install, configure, PM2, Nginx, secrets, verify, rollback.
+- **`CODEX-CLI-SPEC.md`**: spec day du cho Codex CLI install, configure (9router mode + API key), menu actions.
+- `PHASE-01-IMPLEMENTATION-SPEC.md`: task-level spec Phase 1 — bao gom technology decisions da chot.
 - `PHASE-02-IMPLEMENTATION-SPEC.md`: task-level implementation spec de code va review Phase 2.
 - `PHASE-03-IMPLEMENTATION-SPEC.md`: task-level implementation spec de code va review Phase 3.
 - `PHASE-04-IMPLEMENTATION-SPEC.md`: task-level implementation spec de code va review Phase 4.

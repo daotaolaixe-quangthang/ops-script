@@ -15,17 +15,24 @@ When a task involves the `ops/` directory, AI agents must first read:
 - `docs/BUG-TRIAGE-INDEX.md` when fixing bugs or reviewing risk
 - `docs/SOURCE-TO-RUNTIME-TRACE.md` when touching runtime state/configs
 - `docs/KNOWN-RISKS-PATTERNS.md` for production-safe changes
+- **`docs/CODE-SKELETON-GUIDE.md`** before writing any module — contains coding spine, helpers pattern, convention cheat sheet
 - `rules/PROJECT-RULES.md`
 - `rules/BASH-STYLE.md`
 
 When the task is implementation planning or execution by phase, AI agents must also read the corresponding phase spec:
 
-- `docs/PHASE-01-IMPLEMENTATION-SPEC.md`
+- `docs/PHASE-01-IMPLEMENTATION-SPEC.md` — contains technology decisions (Node method, PHP PPA, Certbot, MariaDB, etc.)
 - `docs/PHASE-02-IMPLEMENTATION-SPEC.md`
 - `docs/PHASE-03-IMPLEMENTATION-SPEC.md`
 - `docs/PHASE-04-IMPLEMENTATION-SPEC.md`
 
+When the task involves **9router** or **Codex CLI**:
+
+- `docs/NINE-ROUTER-SPEC.md` — clone URL, install, env (INITIAL_PASSWORD flow), PM2, Nginx (SSE), security contract
+- `docs/CODEX-CLI-SPEC.md` — install, configure (9router mode / API key / OAuth), menu actions, secret file paths
+
 Do not skip this step; these documents contain project-level contracts.
+
 
 ### 2. Default responsibilities
 

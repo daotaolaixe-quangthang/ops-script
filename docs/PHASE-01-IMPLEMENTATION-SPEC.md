@@ -38,6 +38,20 @@ Truoc khi code, tat ca implementers phai coi nhung diem sau la "fixed contract":
    - verify
    - rollback minimum
 
+### 1.1 Technology decisions (chốt, không thay đổi trong Phase 1)
+
+| Component | Quyết định | Lý do |
+|---|---|---|
+| Node.js install | **nodesource apt** (`setup_lts.x`) | `/usr/bin/node` cố định, PM2 startup an toàn |
+| PHP multi-version | **`ppa:ondrej/php`** | Duy nhất hỗ trợ 7.4/8.1/8.2/8.3 cùng lúc trên Ubuntu |
+| Certbot | **snap primary**, apt fallback | EFF recommend; auto-renewal built-in |
+| Login hook | **`~/.bash_profile`** của admin user | Chỉ áp dụng admin, dễ rollback, không ảnh hưởng scp/non-interactive |
+| `/etc/ops/*.conf` format | **Bash key=value** shell-sourceable | Không cần parser ngoài, source trực tiếp trong script |
+| 9router install | **git clone + npm build + PM2** | Chi tiết: `docs/NINE-ROUTER-SPEC.md` |
+| Codex CLI install | **npm install -g @openai/codex** | Consistent với Node ecosystem đã có |
+
+**Code skeleton reference**: `docs/CODE-SKELETON-GUIDE.md` — đọc trước khi viết bất kỳ module nào.
+
 ---
 
 ## 2) Phase 1 deliverables
@@ -238,6 +252,40 @@ Ly do:
    - tao `/etc/ops/capacity.conf`
    - wire login hook interactive shell
 
+**Login hook implementation (chốt):**
+
+```bash
+# Append to ~/.bash_profile của ADMIN_USER — KHÔNG dùng /etc/profile.d/
+# Guard: chỉ kích hoạt khi là interactive shell có SSH_TTY
+if [[ $- == *i* ]] && [[ -n "${SSH_TTY:-}" ]]; then
+    /usr/local/bin/ops-dashboard
+    read -r -t 30 -p "Press 1 to open OPS menu, or Enter to continue: " _ops_ans 2>/dev/null || true
+    [[ "${_ops_ans:-}" == "1" ]] && /usr/local/bin/ops
+fi
+```
+
+**`/etc/ops/ops.conf` schema:**
+
+```bash
+OPS_VERSION="1.0.0"
+OPS_ROOT="/opt/ops"
+OPS_CONFIG_DIR="/etc/ops"
+OPS_LOG_DIR="/var/log/ops"
+OPS_ADMIN_USER=""
+OPS_SSH_PORT=""
+OPS_INSTALL_DATE=""
+```
+
+**`/etc/ops/capacity.conf` schema:**
+
+```bash
+OPS_RAM_MB=""
+OPS_CPU_CORES=""
+OPS_DISK_GB=""
+OPS_TIER=""   # S | M | L
+OPS_MAX_SITES=""
+```
+
 **Output**
 
 - login lai bang admin user thay dashboard
@@ -331,9 +379,9 @@ Ly do:
 
 **Tasks**
 
-1. install Nginx
+1. install Nginx (from Ubuntu apt — version trong Ubuntu 22.04/24.04 repo là đủ)
 2. apply global tuning tu `PERF-TUNING.md`
-3. create default deny server
+3. create default deny server (template: `templates/nginx/default-deny.conf.tpl`)
 4. create helpers:
    - list domains
    - add domain
@@ -341,10 +389,35 @@ Ly do:
    - remove domain
    - test + reload
 5. support backend type:
-   - Node reverse proxy
-   - PHP fastcgi
+   - Node reverse proxy (template: `templates/nginx/node_vhost.conf.tpl`)
+   - PHP fastcgi (template: `templates/nginx/php_vhost.conf.tpl`)
    - static site
 6. tao `/etc/ops/domains/<domain>.conf`
+
+**Certbot install method (chốt):**
+
+```bash
+# Primary: snap
+if command -v snap &>/dev/null; then
+    snap install --classic certbot
+    ln -sf /snap/bin/certbot /usr/local/bin/certbot
+else
+    # Fallback: apt
+    apt_install certbot python3-certbot-nginx
+fi
+```
+
+**`/etc/ops/domains/<domain>.conf` schema:**
+
+```bash
+DOMAIN=""
+DOMAIN_BACKEND_TYPE=""   # node | php | static
+DOMAIN_BACKEND_TARGET="" # e.g. 127.0.0.1:3000 or /run/php/php8.1-fpm-site.sock
+DOMAIN_SSL="no"          # yes | no
+DOMAIN_PHP_VERSION=""    # e.g. 8.1 (only if backend_type=php)
+DOMAIN_APP_NAME=""       # linked app name if node
+DOMAIN_CREATED=""
+```
 
 **Output**
 
@@ -369,18 +442,41 @@ Ly do:
 
 - Cai Node.js LTS, PM2, va quan ly Node services
 
+**Node.js install method (chốt: nodesource apt):**
+
+```bash
+# Không dùng nvm, snap, hoặc OS repo — chỉ dùng nodesource
+curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+apt_install nodejs
+# Verify: /usr/bin/node phải tồn tại
+node -v
+```
+
 **Tasks**
 
-1. install Node.js LTS
-2. install PM2 global
-3. configure PM2 startup cho admin user
+1. install Node.js LTS (via nodesource apt — xem trên)
+2. install PM2 global: `npm install -g pm2`
+3. configure PM2 startup cho admin user: `pm2 startup systemd -u $ADMIN_USER --hp /home/$ADMIN_USER`
 4. helpers:
    - list services
    - create service
    - start/stop/restart
    - view logs
 5. tao `/etc/ops/apps/<app>.conf`
-6. support ecosystem template render
+6. support ecosystem template render (template: `templates/pm2/ecosystem.config.js.tpl`)
+
+**`/etc/ops/apps/<appname>.conf` schema:**
+
+```bash
+APP_NAME=""
+APP_DIR=""
+APP_PORT=""
+APP_ENTRY=""        # e.g. dist/index.js
+APP_PM2_NAME=""
+APP_NODE_ENV="production"
+APP_DOMAIN=""       # empty until linked via Domains menu
+APP_CREATED=""
+```
 
 **Output**
 
@@ -406,17 +502,67 @@ Ly do:
 
 - Multi-PHP install, PHP-FPM pool config, default CLI switching
 
+**PHP install method (chốt: ppa:ondrej/php):**
+
+```bash
+# Bắt buộc dùng PPA này — Ubuntu repo không có multi-version
+add-apt-repository ppa:ondrej/php -y
+apt_update
+
+# Cài từng version được chọn (7.4, 8.1, 8.2, 8.3)
+PHP_COMMON_EXTS="cli fpm common mysql curl gd intl mbstring opcache xml zip soap bcmath"
+for ver in "$@"; do
+    apt_install $(printf "php${ver}-%s " $PHP_COMMON_EXTS)
+done
+```
+
+**PHP pool naming convention (chốt):**
+
+Khi nhiều sites dùng cùng PHP version, tên pool và socket phải unique:
+
+```
+Pool name:    <site-name>
+Pool file:    /etc/php/<ver>/fpm/pool.d/<site-name>.conf
+Socket path:  /run/php/php<ver>-fpm-<site-name>.sock
+
+Ví dụ:
+  site: myshop   PHP: 8.1
+  Pool file: /etc/php/8.1/fpm/pool.d/myshop.conf
+  Socket:    /run/php/php8.1-fpm-myshop.sock
+
+  site: blog     PHP: 8.1
+  Pool file: /etc/php/8.1/fpm/pool.d/blog.conf
+  Socket:    /run/php/php8.1-fpm-blog.sock
+```
+
+Nginx fastcgi target:
+```nginx
+fastcgi_pass unix:/run/php/php8.1-fpm-myshop.sock;
+```
+
 **Tasks**
 
-1. install selected PHP versions: 7.4, 8.1, 8.2, 8.3
-2. install common extensions
+1. add `ppa:ondrej/php` và apt update
+2. install selected PHP versions: 7.4, 8.1, 8.2, 8.3 với common extensions
 3. tune php.ini va opcache theo `PERF-TUNING.md`
 4. pool helpers:
    - list installed versions
-   - configure pools
-   - set CLI default
+   - configure pools (dùng naming convention trên)
+   - set CLI default (`update-alternatives --set php /usr/bin/phpX.Y`)
    - show FPM status
 5. tao `/etc/ops/php-sites/<site>.conf`
+
+**`/etc/ops/php-sites/<site>.conf` schema:**
+
+```bash
+SITE_NAME=""
+SITE_DIR=""
+SITE_PHP_VERSION=""  # e.g. 8.1
+SITE_FPM_POOL=""     # pool name in /etc/php/X.Y/fpm/pool.d/
+SITE_FPM_SOCKET=""   # e.g. /run/php/php8.1-fpm-mysite.sock
+SITE_DOMAIN=""
+SITE_CREATED=""
+```
 
 **Output**
 
@@ -441,15 +587,41 @@ Ly do:
 
 - Cai, secure, tune DB va tao DB/user
 
+**Database default (chốt: MariaDB):**
+
+```bash
+# Default: MariaDB — không hỏi nếu operator không chọn gì
+# Lý do: có sẵn trong Ubuntu repo, performance tốt hơn MySQL với workload nhỏ,
+#         thiếu biết drop-in replacement cho MySQL.
+apt_install mariadb-server mariadb-client
+
+# Secure setup tương đương mysql_secure_installation:
+mysql -e "DELETE FROM mysql.user WHERE User='';"          # remove anonymous
+mysql -e "DELETE FROM mysql.user WHERE User='root' AND Host != 'localhost';"  # remove remote root
+mysql -e "DROP DATABASE IF EXISTS test;"                   # remove test db
+mysql -e "FLUSH PRIVILEGES;"
+```
+
 **Tasks**
 
-1. install MySQL hoac MariaDB
-2. secure setup
+1. install **MariaDB** (default) — prompt operator nếu muốn MySQL thay thế
+2. secure setup (tương đương `mysql_secure_installation`)
 3. tune theo `PERF-TUNING.md`
 4. create DB and user
 5. list DBs/users
 6. show DB status
 7. optional `/etc/ops/database.conf`
+
+**`/etc/ops/database.conf` schema:**
+
+```bash
+DB_ENGINE="mariadb"   # mariadb | mysql
+DB_VERSION=""         # detected from dpkg
+DB_ROOT_PASSWORD_FILE="/etc/ops/.db-root-password"  # (0600)
+DB_INSTALL_DATE=""
+```
+
+> **Secret**: Root password lưu tại `/etc/ops/.db-root-password` (0600) — không lưu vào `database.conf`.
 
 **Output**
 

@@ -115,3 +115,27 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
   - mang theo phu thuoc stack cu, script kho maintain
 - **Safe action**:
   - clone capability, source of truth, verify/rollback discipline
+
+## 13) 9router HOSTNAME=0.0.0.0 va UFW check
+
+- **Pattern**:
+  - sau khi install 9router, quet port tren server thay port 20128 "mo" (netstat/ss bind 0.0.0.0)
+  - tuong nham rang UFW da expose port nay ra ngoai
+- **Rui ro**:
+  - UFW co the da block, nhung neu ai do chay `ufw allow 20128` nham la 9router bi expose truc tiep
+- **Safe action**:
+  - 9router BUOC PHAI bind HOSTNAME=0.0.0.0 (Next.js requirement)
+  - Bao mat phu thuoc vao UFW (port 20128 KHONG duoc allow) va Nginx (proxy in front)
+  - Luon verify: `ufw status | grep 20128` phai tra ve trong sau moi install/update 9router
+  - Neu co doubt: `curl -x "" http://<PUBLIC_IP>:20128` tu ngoai phai bi tu choi (timeout/refused)
+
+## 14) Secret files permissions drift
+
+- **Pattern**:
+  - `/etc/ops/.nine-router-password`, `/etc/ops/.db-root-password`, `/etc/ops/.codex-api-key`
+    bi su dung trong script va vu tinh doi permission hoac owned by root
+- **Rui ro**:
+  - admin user khong doc duoc secret, hoac secret bi lo neu group-readable
+- **Safe action**:
+  - Chay sau moi install/update: `ls -la /etc/ops/.*` verify 0600 owned by admin user
+  - Bat ky script nao ghi file secret phai co: `chmod 600 <file> && chown $ADMIN_USER:$ADMIN_USER <file>`

@@ -182,3 +182,22 @@ Muc tieu: cung cap runbook ngan theo format `pre-check -> change -> verify -> ro
   - khoi phuc snippet/config backup
   - bo custom header/rule moi
   - khoi phuc `.htaccess` backup neu reset sai
+
+## 11. OPS self-upgrade
+
+- **Pre-check**:
+  - xac nhan phien ban OPS dang chay: `cat /etc/ops/ops.conf | grep OPS_VERSION`
+  - snapshot VPS neu co the, hoac backup `/opt/ops` va `/etc/ops`
+  - kiem tra changelog / release notes truoc khi upgrade
+- **Change**:
+  - `cd /opt/ops && git fetch origin`
+  - `git log HEAD..origin/main --oneline` — xem truoc nhung gi se thay doi
+  - `git pull origin main`
+- **Verify**:
+  - `bash -n bin/ops` — syntax check
+  - `ops --version` hoac chay menu de confirm khong bi broken
+  - kiem tra cac module lien quan neu co thay doi trong release notes
+- **Rollback**:
+  - `git log --oneline -10` — tim commit truoc do
+  - `git checkout <previous-commit>`
+  - restart khong can thiet (OPS la shell script, khong phai long-running service)

@@ -1,4 +1,4 @@
-## OPS Install & First‑Run Flow
+## OPS Install & First‑Run Flow
 
 This document describes the exact end‑to‑end flow from a fresh VPS to a production‑ready stack managed by OPS. It is the primary reference for how installers and wizards should behave.
 
@@ -9,8 +9,11 @@ This document describes the exact end‑to‑end flow from a fresh VPS to a prod
 The recommended entrypoint for users:
 
 ```bash
-curl -sO https://<public-url>/ops-install.sh && bash ops-install.sh
+curl -sO https://raw.githubusercontent.com/daotaolaixe-quangthang/ops-script/main/install/ops-install.sh \
+  && bash ops-install.sh
 ```
+
+> **Installer URL (chốt)**: `https://raw.githubusercontent.com/daotaolaixe-quangthang/ops-script/main/install/ops-install.sh`
 
 The `ops-install.sh` script **must**:
 
@@ -18,7 +21,7 @@ The `ops-install.sh` script **must**:
 2. Gather basic VPS info (RAM, CPU cores, disk).
 3. Show a short summary and confirmation prompt.
 
-### 2. SSH, user, and capacity step (inside installer)
+
 
 Installer asks for:
 

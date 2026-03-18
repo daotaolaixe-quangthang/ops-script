@@ -28,13 +28,28 @@ Luu y: day la target inventory cho script production; mot so artefact se xuat hi
 
 Node services va 9router deu theo PM2 contract:
 
+**Node apps:**
+
 | Artefact | Muc dich |
 |---|---|
 | app dir | Node source/build/runtime files |
-| `.env` files | app secrets and runtime env |
+| `.env` files | app secrets and runtime env (0600) |
 | PM2 process list | process supervision |
 | PM2 ecosystem config | declarative process config neu dung |
 | `/etc/ops/apps/<app>.conf` | app source of truth neu OPS tao |
+
+**9router specific:**
+
+| Artefact | Path | Muc dich |
+|---|---|---|
+| Source + build | `/opt/9router` | Next.js app code |
+| Env config | `/opt/9router/.env` | Secrets + runtime (0600) |
+| DB state | `/var/lib/9router/db.json` | Providers, combos, API keys |
+| Usage history | `~/.9router/usage.json` | Per-admin quota stats |
+| PM2 process | `nine-router` | PM2-managed duy nhat |
+| OPS state | `/etc/ops/nine-router.conf` | OPS-level metadata (0640) |
+| Nginx vhost | `/etc/nginx/sites-available/nine-router.*` | Public routing |
+| App log | `/var/log/ops/nine-router.{out,err}.log` | PM2 logs |
 
 ## 4. Nginx and domains
 
@@ -78,9 +93,10 @@ Node services va 9router deu theo PM2 contract:
 
 | Artefact | Muc dich |
 |---|---|
-| MySQL/MariaDB service config | DB server tuning |
+| **MariaDB** service config (default) | DB server tuning |
 | DB users and databases | app data access |
-| `/etc/ops/database.conf` | optional global DB config for OPS |
+| `/etc/ops/database.conf` | global DB config for OPS (engine, version) |
+
 
 ## 8. Security
 
@@ -89,6 +105,21 @@ Node services va 9router deu theo PM2 contract:
 | UFW rules | inbound access policy |
 | `/etc/fail2ban/*` | ban policy |
 | default closed ports except approved ones | host exposure contract |
+
+## 8.0 Secret files (0600 — non-negotiable)
+
+Cac file sau phai luon co permission `0600` va owned by admin user:
+
+| File | Noi dung |
+|---|---|
+| `/opt/9router/.env` | JWT_SECRET, INITIAL_PASSWORD, API_KEY_SECRET, MACHINE_ID_SALT |
+| `/etc/ops/.nine-router-password` | 9router dashboard initial password |
+| `/etc/ops/.db-root-password` | MariaDB/MySQL root password |
+| `/etc/ops/.codex-api-key` | Codex CLI / 9router API key |
+| `~/.codex/config.toml` | Codex CLI config with inline API key |
+
+> Bat co file nao trong danh sach tren bi set khac 0600 la bug bao mat.
+
 
 ## 8.1 Future web-control artefacts
 
@@ -109,7 +140,16 @@ Node services va 9router deu theo PM2 contract:
 | backup metadata map | map local backup voi Telegram file/message identifiers |
 | auto-backup scheduler entries | lich chay uploads backup tu dong |
 
-## 9. Verification expectations
+## 9. Codex CLI
+
+| Artefact | Path | Muc dich |
+|---|---|---|
+| Binary | `/usr/local/bin/codex` (npm global) | Codex CLI entry |
+| Config | `~/.codex/config.toml` | Endpoint, model, API key (0600) |
+| API key | `/etc/ops/.codex-api-key` | Key rieng biet (0600) |
+| OPS state | `/etc/ops/codex-cli.conf` | OPS metadata: mode, endpoint, version |
+
+## 10. Verification expectations
 
 Moi artefact quan trong phai co:
 
