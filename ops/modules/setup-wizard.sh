@@ -372,27 +372,197 @@ _wizard_print_summary() {
 }
 
 # ── Status screen ─────────────────────────────────────────────
+_wizard_detect_ssh_port() {
+    local ssh_port=""
+
+    ssh_port="$(ops_conf_get "ops.conf" "OPS_SSH_PORT" 2>/dev/null || true)"
+    if [[ -n "$ssh_port" ]]; then
+        echo "$ssh_port"
+        return 0
+    fi
+
+    if declare -f security_get_current_ssh_port >/dev/null 2>&1; then
+        ssh_port="$(security_get_current_ssh_port 2>/dev/null || true)"
+    else
+        ssh_port="$(sshd -T 2>/dev/null | awk '/^port / {print $2; exit}' || true)"
+        if [[ -z "$ssh_port" && -f /etc/ssh/sshd_config ]]; then
+            ssh_port=$(awk '
+                BEGIN { p="" }
+                /^[[:space:]]*#/ { next }
+                tolower($1) == "port" { p=$2; print p; exit }
+            ' /etc/ssh/sshd_config 2>/dev/null || true)
+        fi
+    fi
+
+    echo "${ssh_port:-22}"
+}
+
+_wizard_tier_capacity_text() {
+    case "${OPS_TIER:-unknown}" in
+        S) echo "small VPS profile (~1-5 websites, ~20-100 concurrent users est.)" ;;
+        M) echo "medium VPS profile (~5-15 websites, ~100-300 concurrent users est.)" ;;
+        L) echo "large VPS profile (~15-40 websites, ~300-1500 concurrent users est.)" ;;
+        *) echo "unknown capacity profile" ;;
+    esac
+}
+
+_wizard_print_wrapped_csv() {
+    local label="$1"
+    local text="$2"
+    local width=54
+    local first=1
+
+    if [[ -z "$text" ]]; then
+        printf "  %-22s  %s\n" "$label" "none"
+        return 0
+    fi
+
+    while [[ -n "$text" ]]; do
+        local chunk="$text"
+        if (( ${#chunk} > width )); then
+            chunk="${text:0:width}"
+            if [[ "$text" == *,* && "$chunk" != *, ]]; then
+                chunk="${chunk%,*}"
+            fi
+            [[ -z "$chunk" ]] && chunk="${text:0:width}"
+        fi
+
+        if (( first == 1 )); then
+            printf "  %-22s  %s\n" "$label" "$chunk"
+            first=0
+        else
+            printf "  %-22s  %s\n" "" "$chunk"
+        fi
+
+        text="${text#"$chunk"}"
+        text="${text#, }"
+    done
+}
+
 wizard_status() {
     print_section "Setup Status"
 
     # Load ops.conf if present
     ops_load_conf "ops.conf" 2>/dev/null || true
 
+    local ssh_port tier_text runtime_user pm2_online_count
+    local managed_domains=0 node_sites=0 php_sites=0 static_sites=0
+    local node_apps=0 php_pools=0 ssl_active=0
+    local node_domains_csv=""
+    local state_file domain backend_type
+    local php_ver active_php_versions=()
+
+    ssh_port="$(_wizard_detect_ssh_port)"
+    tier_text="$(_wizard_tier_capacity_text)"
+    runtime_user="$(ops_conf_get "ops.conf" "OPS_RUNTIME_USER" 2>/dev/null || true)"
+    [[ -z "$runtime_user" ]] && runtime_user="${OPS_ADMIN_USER:-${ADMIN_USER:-unknown}}"
+
+    if [[ -d /etc/ops/domains ]]; then
+        for state_file in /etc/ops/domains/*.conf; do
+            [[ -f "$state_file" ]] || continue
+            ((managed_domains++))
+            domain=$(grep '^DOMAIN=' "$state_file" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '"')
+            backend_type=$(grep '^DOMAIN_BACKEND_TYPE=' "$state_file" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '"')
+            case "$backend_type" in
+                node)
+                    ((node_sites++))
+                    if [[ -n "$domain" ]]; then
+                        if [[ -n "$node_domains_csv" ]]; then
+                            node_domains_csv+=", "
+                        fi
+                        node_domains_csv+="$domain"
+                    fi
+                    ;;
+                php) ((php_sites++)) ;;
+                static) ((static_sites++)) ;;
+            esac
+        done
+    fi
+
+    if [[ -d /etc/ops/apps ]]; then
+        for state_file in /etc/ops/apps/*.conf; do
+            [[ -f "$state_file" ]] || continue
+            ((node_apps++))
+        done
+    fi
+
+    if [[ -d /etc/ops/php-sites ]]; then
+        for state_file in /etc/ops/php-sites/*.conf; do
+            [[ -f "$state_file" ]] || continue
+            ((php_pools++))
+        done
+    fi
+
+    if [[ -d /etc/letsencrypt/live ]]; then
+        for state_file in /etc/letsencrypt/live/*; do
+            [[ -d "$state_file" ]] || continue
+            [[ "$(basename "$state_file")" == "README" ]] && continue
+            ((ssl_active++))
+        done
+    fi
+
+    pm2_online_count="0"
+    if command -v pm2 >/dev/null 2>&1; then
+        pm2_online_count=$(pm2 jlist 2>/dev/null | python3 -c '
+import sys, json
+try:
+    procs = json.load(sys.stdin)
+    print(sum(1 for p in procs if p.get("pm2_env", {}).get("status") == "online"))
+except Exception:
+    print(0)
+' 2>/dev/null || echo "0")
+    [[ -z "$pm2_online_count" ]] && pm2_online_count="0"
+    [[ ! "$pm2_online_count" =~ ^[0-9]+$ ]] && pm2_online_count="0"
+    print_ok "pm2: installed ($(pm2 --version 2>/dev/null))"
+    print_ok "pm2 online apps: ${pm2_online_count}"
+    if [[ "$node_apps" -gt 0 ]]; then
+        print_ok "node registry apps: ${node_apps}"
+    fi
+    if [[ "$node_sites" -gt 0 ]]; then
+        print_ok "node managed sites: ${node_sites}"
+    fi
+    if [[ "$pm2_online_count" -ne "$node_sites" ]]; then
+        print_warn "pm2 online app count may differ from node site count (one app can serve multiple domains)."
+    fi
+    echo ""
+fi
+
+    for php_ver in 7.4 8.1 8.2 8.3; do
+        if systemctl list-unit-files 2>/dev/null | grep -q "^php${php_ver}-fpm\\.service"; then
+            if service_active "php${php_ver}-fpm" 2>/dev/null; then
+                active_php_versions+=("${php_ver}")
+            fi
+        fi
+    done
+
     echo "  ── OPS Installation ──────────────────────────────"
-    printf "  %-22s  %s\n" "OPS version"    "${OPS_VERSION:-unknown}"
-    printf "  %-22s  %s\n" "Install date"   "${OPS_INSTALL_DATE:-unknown}"
-    printf "  %-22s  %s\n" "Wizard date"    "${OPS_WIZARD_DATE:-not run}"
-    printf "  %-22s  %s\n" "SSH port"       "${OPS_SSH_PORT:-unknown}"
-    printf "  %-22s  %s\n" "Admin user"     "${OPS_ADMIN_USER:-${ADMIN_USER:-unknown}}"
-    printf "  %-22s  %s\n" "Tier"           "${OPS_TIER:-unknown}"
+    printf "  %-22s  %s\n" "OPS version"       "${OPS_VERSION:-unknown}"
+    printf "  %-22s  %s\n" "Install date"      "${OPS_INSTALL_DATE:-unknown}"
+    printf "  %-22s  %s\n" "Wizard date"       "${OPS_WIZARD_DATE:-not run}"
+    printf "  %-22s  %s\n" "SSH port"          "$ssh_port"
+    printf "  %-22s  %s\n" "Admin user"        "${OPS_ADMIN_USER:-${ADMIN_USER:-unknown}}"
+    printf "  %-22s  %s\n" "Runtime user"      "$runtime_user"
+    printf "  %-22s  %s\n" "Tier"              "${OPS_TIER:-unknown}"
+    printf "  %-22s  %s\n" "Tier capacity"     "$tier_text"
+
+    echo ""
+    echo "  ── Managed Web Stack ─────────────────────────────"
+    printf "  %-22s  %s\n" "Managed domains"   "$managed_domains"
+    printf "  %-22s  %s\n" "SSL active"        "$ssl_active"
+    printf "  %-22s  %s\n" "Node.js sites"     "$node_sites"
+    printf "  %-22s  %s\n" "Node.js apps"      "$node_apps"
+    printf "  %-22s  %s\n" "PHP sites"         "$php_sites"
+    printf "  %-22s  %s\n" "PHP pools"         "$php_pools"
+    printf "  %-22s  %s\n" "Static sites"      "$static_sites"
+    _wizard_print_wrapped_csv "Node.js domains" "$node_domains_csv"
 
     echo ""
     echo "  ── Wizard Steps ──────────────────────────────────"
     local steps=(SYSTEM_UPDATE SECURITY NGINX NODE PHP DATABASE FULL_WIZARD)
+    local s val icon
     for s in "${steps[@]}"; do
-        local val
         val=$(ops_conf_get "ops.conf" "WIZARD_DONE_${s}" 2>/dev/null || echo "no")
-        local icon="✗"
+        icon="✗"
         [[ "$val" == "yes" ]] && icon="✓"
         printf "  %s  %s\n" "$icon" "$s"
     done
@@ -400,6 +570,7 @@ wizard_status() {
     echo ""
     echo "  ── Service Status ────────────────────────────────"
     local services=(nginx mariadb)
+    local svc
     for svc in "${services[@]}"; do
         if service_active "$svc" 2>/dev/null; then
             print_ok "${svc}: active"
@@ -407,12 +578,6 @@ wizard_status() {
             print_warn "${svc}: inactive / not installed"
         fi
     done
-
-    if command -v pm2 >/dev/null 2>&1; then
-        print_ok "pm2: installed ($(pm2 --version 2>/dev/null))"
-    else
-        print_warn "pm2: not installed"
-    fi
 
     if command -v node >/dev/null 2>&1; then
         print_ok "node: $(node --version)"
@@ -422,6 +587,11 @@ wizard_status() {
 
     if command -v php >/dev/null 2>&1; then
         print_ok "php (CLI default): $(php --version | head -n1)"
+        if [[ ${#active_php_versions[@]} -gt 0 ]]; then
+            print_ok "php-fpm active: ${active_php_versions[*]}"
+        else
+            print_warn "php-fpm active: none"
+        fi
     else
         print_warn "php: not installed"
     fi
