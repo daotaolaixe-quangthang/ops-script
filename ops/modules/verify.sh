@@ -36,17 +36,159 @@ _vs_fail() {
 
 # ── Individual check functions ────────────────────────────────
 
+_vs_get_ops_runtime_user() {
+    local runtime_user
+    runtime_user="$(ops_conf_get "ops.conf" "OPS_RUNTIME_USER" 2>/dev/null || true)"
+    if [[ -z "$runtime_user" ]]; then
+        runtime_user="$(ops_conf_get "ops.conf" "OPS_ADMIN_USER" 2>/dev/null || true)"
+    fi
+    echo "${runtime_user:-root}"
+}
+
+_vs_get_ops_runtime_home() {
+    local runtime_user
+    runtime_user="$(_vs_get_ops_runtime_user)"
+    getent passwd "$runtime_user" | cut -d: -f6
+}
+
+_vs_run_as_runtime_user() {
+    local runtime_user home_dir
+    runtime_user="$(_vs_get_ops_runtime_user)"
+    home_dir="$(_vs_get_ops_runtime_home)"
+    runuser -u "$runtime_user" -- env HOME="$home_dir" PM2_HOME="$home_dir/.pm2" PATH="$PATH" "$@"
+}
+
 _vs_check_ssh() {
-    local ssh_port
-    ssh_port="$(ops_conf_get "ops.conf" "SSH_PORT" 2>/dev/null || true)"
+    local ssh_port transition_port effective_ports root_login password_auth x11_forwarding tcp_forwarding agent_forwarding
+    ssh_port="$(ops_conf_get "ops.conf" "OPS_SSH_PORT" 2>/dev/null || true)"
     ssh_port="${ssh_port:-22}"
-    if ss -tlnp 2>/dev/null | grep -qE ":${ssh_port}\b"; then
-        _vs_pass "SSH" "port ${ssh_port} listening"
-        return 0
-    else
-        _vs_fail "SSH" "port ${ssh_port} not found in ss output" "check sshd: systemctl status sshd"
+    transition_port="$(ops_conf_get "ops.conf" "OPS_SSH_TRANSITION_PORT" 2>/dev/null || true)"
+    effective_ports="$(sshd -T 2>/dev/null | awk '/^port / {print $2}' | paste -sd, -)"
+    root_login="$(sshd -T 2>/dev/null | awk '/^permitrootlogin / {print $2; exit}')"
+    password_auth="$(sshd -T 2>/dev/null | awk '/^passwordauthentication / {print $2; exit}')"
+    x11_forwarding="$(sshd -T 2>/dev/null | awk '/^x11forwarding / {print $2; exit}')"
+    tcp_forwarding="$(sshd -T 2>/dev/null | awk '/^allowtcpforwarding / {print $2; exit}')"
+    agent_forwarding="$(sshd -T 2>/dev/null | awk '/^allowagentforwarding / {print $2; exit}')"
+
+    if ! ss -tln 2>/dev/null | grep -qE ":${ssh_port}\b"; then
+        _vs_fail "SSH" "locked port ${ssh_port} not listening" "check ssh service and managed SSH include"
         return 2
     fi
+
+    if [[ "$root_login" != "no" ]]; then
+        _vs_fail "SSH" "PermitRootLogin=${root_login:-unknown}" "set PermitRootLogin no"
+        return 2
+    fi
+
+    if [[ "$x11_forwarding" != "no" || "$tcp_forwarding" != "no" || "$agent_forwarding" != "no" ]]; then
+        _vs_fail "SSH" "forwarding still enabled (x11=${x11_forwarding:-?}, tcp=${tcp_forwarding:-?}, agent=${agent_forwarding:-?})" "disable forwarding in managed SSH config"
+        return 2
+    fi
+
+    if [[ -z "$transition_port" && "$password_auth" != "no" ]]; then
+        _vs_fail "SSH" "PasswordAuthentication=${password_auth:-unknown} outside transition window" "disable password auth after key verification"
+        return 2
+    fi
+
+    if [[ -n "$transition_port" ]]; then
+        if ss -tln 2>/dev/null | grep -qE ":${transition_port}\b"; then
+            _vs_warn "SSH" "transition active: locked=${ssh_port}, transition=${transition_port}, password_auth=${password_auth:-unknown}" "finalize SSH transition after login test succeeds"
+            return 1
+        fi
+        _vs_warn "SSH" "transition port ${transition_port} recorded in state but not listening" "clean OPS_SSH_TRANSITION_PORT and reconcile SSH config"
+        return 1
+    fi
+
+    _vs_pass "SSH" "locked port ${ssh_port} listening, effective ports=${effective_ports:-unknown}, root/password hardening active"
+    return 0
+}
+
+_vs_check_ufw() {
+    if ! command -v ufw >/dev/null 2>&1; then
+        _vs_warn "UFW" "not installed" "install and reconcile firewall baseline"
+        return 1
+    fi
+
+    local status_output expected_port transition_port found_stale=0 allowed_tcp_ports=() port
+    status_output="$(ufw status 2>/dev/null || true)"
+    expected_port="$(ops_conf_get "ops.conf" "OPS_SSH_PORT" 2>/dev/null || true)"
+    expected_port="${expected_port:-22}"
+    transition_port="$(ops_conf_get "ops.conf" "OPS_SSH_TRANSITION_PORT" 2>/dev/null || true)"
+
+    if ! printf '%s\n' "$status_output" | grep -q "Status: active"; then
+        _vs_fail "UFW" "firewall inactive" "enable UFW and apply OPS baseline"
+        return 2
+    fi
+
+    if ! printf '%s\n' "$status_output" | grep -Eq "${expected_port}/tcp[[:space:]]+ALLOW"; then
+        _vs_fail "UFW" "locked SSH port ${expected_port}/tcp not allowed" "reconcile UFW baseline"
+        return 2
+    fi
+
+    if ! printf '%s\n' "$status_output" | grep -Eq "80/tcp[[:space:]]+ALLOW" || ! printf '%s\n' "$status_output" | grep -Eq "443/tcp[[:space:]]+ALLOW"; then
+        _vs_warn "UFW" "HTTP/HTTPS baseline not fully present" "reconcile UFW baseline if this host serves public web traffic"
+        return 1
+    fi
+
+    if printf '%s\n' "$status_output" | grep -Eq "20128/tcp[[:space:]]+ALLOW"; then
+        _vs_fail "UFW" "9router port 20128 is publicly allowed" "remove allow rule and keep only nginx public"
+        return 2
+    fi
+
+    while IFS= read -r port; do
+        [[ -n "$port" ]] && allowed_tcp_ports+=("$port")
+    done < <(printf '%s\n' "$status_output" | awk '/\/tcp/ && /ALLOW/ {print $1}' | cut -d/ -f1 | grep -E '^[0-9]+$' | sort -u)
+
+    for port in "${allowed_tcp_ports[@]}"; do
+        if [[ "$port" == "80" || "$port" == "443" || "$port" == "$expected_port" || "$port" == "$transition_port" ]]; then
+            continue
+        fi
+        found_stale=1
+        break
+    done
+
+    if [[ "$found_stale" -eq 1 ]]; then
+        _vs_warn "UFW" "stale SSH allow rule detected" "reconcile UFW and finalize old SSH transition ports"
+        return 1
+    fi
+
+    _vs_pass "UFW" "active, managed SSH/http/https rules present, 20128 not exposed"
+    return 0
+}
+
+_vs_check_fail2ban() {
+    if ! command -v fail2ban-client >/dev/null 2>&1; then
+        _vs_warn "fail2ban" "not installed" "install fail2ban baseline"
+        return 1
+    fi
+
+    local status_all status_sshd expected_ports transition_port
+    status_all="$(fail2ban-client status 2>/dev/null || true)"
+    status_sshd="$(fail2ban-client status sshd 2>/dev/null || true)"
+    expected_ports="$(ops_conf_get "ops.conf" "OPS_SSH_PORT" 2>/dev/null || true)"
+    expected_ports="${expected_ports:-22}"
+    transition_port="$(ops_conf_get "ops.conf" "OPS_SSH_TRANSITION_PORT" 2>/dev/null || true)"
+    if [[ -n "$transition_port" && "$transition_port" != "$expected_ports" ]]; then
+        expected_ports="${expected_ports},${transition_port}"
+    fi
+
+    if ! systemctl is-active fail2ban >/dev/null 2>&1; then
+        _vs_fail "fail2ban" "service inactive" "systemctl enable --now fail2ban"
+        return 2
+    fi
+
+    if ! printf '%s\n' "$status_all" | grep -q 'sshd'; then
+        _vs_fail "fail2ban" "sshd jail missing" "write OPS fail2ban jail and restart service"
+        return 2
+    fi
+
+    if ! printf '%s\n' "$status_sshd" | grep -Eq "Port:[[:space:]]*${expected_ports//,/|}"; then
+        _vs_warn "fail2ban" "sshd jail ports do not match OPS state (${expected_ports})" "rewrite fail2ban jail from OPS baseline"
+        return 1
+    fi
+
+    _vs_pass "fail2ban" "active, sshd jail present, expected ports=${expected_ports}"
+    return 0
 }
 
 _vs_check_nginx() {
@@ -75,8 +217,8 @@ _vs_check_pm2() {
         _vs_warn "PM2" "not installed" "install via OPS: Node.js Services"
         return 1
     fi
-    local online_count
-    online_count=$(pm2 jlist 2>/dev/null | python3 -c "
+    local online_count runtime_user pm2_owner
+    online_count=$(_vs_run_as_runtime_user pm2 jlist 2>/dev/null | python3 -c "
 import sys,json
 try:
     procs=json.load(sys.stdin)
@@ -85,16 +227,29 @@ try:
 except:
     print(0)
 " 2>/dev/null || echo "0")
-    _vs_pass "PM2" "${online_count} process(es) online"
+    runtime_user="$(_vs_get_ops_runtime_user)"
+    pm2_owner="$(ps -eo user=,comm= 2>/dev/null | awk '$2=="PM2"{print $1; exit}')"
+
+    if [[ -n "$pm2_owner" && "$pm2_owner" == "root" ]]; then
+        _vs_fail "PM2" "daemon running as root" "migrate PM2 to runtime user ${runtime_user}"
+        return 2
+    fi
+
+    if [[ -n "$pm2_owner" && "$pm2_owner" != "$runtime_user" ]]; then
+        _vs_warn "PM2" "daemon owner=${pm2_owner}, expected=${runtime_user}" "reconcile PM2 startup user"
+        return 1
+    fi
+
+    _vs_pass "PM2" "${online_count} process(es) online, owner=${pm2_owner:-unknown}"
     return 0
 }
 
 _vs_check_nine_router() {
     if ! command -v pm2 >/dev/null 2>&1; then
-        return 0  # PM2 not present, skip
+        return 0
     fi
-    local status
-    status=$(pm2 jlist 2>/dev/null | python3 -c "
+    local status listening_public
+    status=$(_vs_run_as_runtime_user pm2 jlist 2>/dev/null | python3 -c "
 import sys,json
 try:
     procs=json.load(sys.stdin)
@@ -108,14 +263,18 @@ except SystemExit:
 except:
     print('error')
 " 2>/dev/null || echo "not-found")
+    listening_public=$(ss -tln 2>/dev/null | awk '$4 ~ /:20128$/ {print $4}' | grep -E '(^0\.0\.0\.0:20128$|^\[::\]:20128$)' || true)
     case "$status" in
         online)
-            # Also bind-check
+            if [[ -n "$listening_public" ]]; then
+                _vs_warn "9router" "PM2 online and binding publicly on 20128 (${listening_public})" "verify UFW deny rule and keep nginx as sole public entrypoint"
+                return 1
+            fi
             if curl -sf --max-time 2 "http://127.0.0.1:20128" >/dev/null 2>&1 || \
                curl -sf --max-time 2 "http://127.0.0.1:20128/health" >/dev/null 2>&1; then
-                _vs_pass "9router" "online, port 20128 reachable"
+                _vs_pass "9router" "online, localhost 20128 reachable"
             else
-                _vs_pass "9router" "online (bind check inconclusive)"
+                _vs_pass "9router" "online (localhost health probe inconclusive)"
             fi
             return 0
             ;;
@@ -124,7 +283,7 @@ except:
             return 1
             ;;
         *)
-            _vs_fail "9router" "PM2 status: ${status}" "pm2 logs nine-router  to diagnose"
+            _vs_fail "9router" "PM2 status: ${status}" "pm2 logs nine-router to diagnose"
             return 2
             ;;
     esac
@@ -150,12 +309,19 @@ _vs_check_php_fpm() {
 }
 
 _vs_check_mariadb() {
-    local svc=""
+    local svc="" rescue_proc
     if systemctl list-unit-files 2>/dev/null | grep -q '^mariadb\.service'; then
         svc="mariadb"
     elif systemctl list-unit-files 2>/dev/null | grep -q '^mysql\.service'; then
         svc="mysql"
     fi
+    rescue_proc="$(ps -eo args= 2>/dev/null | grep -E '[m]ariadbd?.*--skip-grant-tables|[m]ysqld.*--skip-grant-tables' || true)"
+
+    if [[ -n "$rescue_proc" ]]; then
+        _vs_fail "Database" "rescue mode detected: --skip-grant-tables still running" "stop unmanaged DB process and restore managed service mode"
+        return 2
+    fi
+
     if [[ -z "$svc" ]]; then
         _vs_warn "Database" "MariaDB/MySQL not installed" "install via OPS: Database Management"
         return 1
@@ -223,7 +389,34 @@ _vs_check_monitoring() {
             _vs_warn "Netdata" "installed but inactive" "systemctl start netdata"
         fi
     fi
-    # If not installed — skip silently (opt-in feature)
+}
+
+_vs_check_sysctl_swap() {
+    local send_all send_default martians_all martians_default swappiness swap_count
+    send_all="$(sysctl -n net.ipv4.conf.all.send_redirects 2>/dev/null || true)"
+    send_default="$(sysctl -n net.ipv4.conf.default.send_redirects 2>/dev/null || true)"
+    martians_all="$(sysctl -n net.ipv4.conf.all.log_martians 2>/dev/null || true)"
+    martians_default="$(sysctl -n net.ipv4.conf.default.log_martians 2>/dev/null || true)"
+    swappiness="$(sysctl -n vm.swappiness 2>/dev/null || true)"
+    swap_count="$(swapon --show --noheadings 2>/dev/null | wc -l | tr -d ' ')"
+
+    if [[ "$send_all" != "0" || "$send_default" != "0" || "$martians_all" != "1" || "$martians_default" != "1" ]]; then
+        _vs_fail "Sysctl" "hardening drift detected (send_redirects/log_martians)" "reapply OPS host baseline"
+        return 2
+    fi
+
+    if [[ -z "$swappiness" || "$swappiness" -gt 20 ]]; then
+        _vs_warn "Swappiness" "vm.swappiness=${swappiness:-unknown}" "set low swappiness in OPS sysctl baseline"
+        return 1
+    fi
+
+    if [[ "$swap_count" -eq 0 ]]; then
+        _vs_warn "Swap" "no active swap detected" "apply OPS host baseline to provision swap if policy allows"
+        return 1
+    fi
+
+    _vs_pass "Host Kernel" "sysctl hardening active, swappiness=${swappiness}, swap devices=${swap_count}"
+    return 0
 }
 
 # ── Main verify_stack function ────────────────────────────────
@@ -248,13 +441,16 @@ verify_stack() {
     }
 
     _vs_run _vs_check_ssh
+    _vs_run _vs_check_ufw
+    _vs_run _vs_check_fail2ban
     _vs_run _vs_check_nginx
     _vs_run _vs_check_pm2
     _vs_run _vs_check_nine_router
     _vs_run _vs_check_php_fpm
     _vs_run _vs_check_mariadb
     _vs_run _vs_check_ssl
-    _vs_check_monitoring 2>/dev/null || true   # always optional
+    _vs_run _vs_check_sysctl_swap
+    _vs_check_monitoring 2>/dev/null || true
 
     echo ""
     echo "  ═══════════════════════════════════════════════════"

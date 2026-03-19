@@ -5,10 +5,11 @@ This document defines non-negotiable security rules for OPS. Any change that vio
 ### 1. SSH and user accounts
 
 - OPS must:
-  - Encourage use of a **non-root admin user** for SSH and operations.
+  - Enforce use of a **non-root admin/runtime user** for SSH and day-2 operations.
   - Support changing the SSH port from 22 to a user-defined port.
-  - Keep port 22 open only during the transition period.
-  - Offer a guided step to close port 22 and reboot once everything is verified.
+  - Keep only the locked SSH port active in steady state, with an explicitly recorded transition port allowed only during controlled migration.
+  - Reconcile both `/etc/ssh/sshd_config` and `/etc/ssh/sshd_config.d/*.conf` so stale overrides cannot silently re-enable insecure settings.
+  - Offer a guided step to close the old SSH port once login on the new port has been verified.
 - Prompts must clearly show the **new SSH port and admin username**, for example:
 
   ```text
@@ -16,7 +17,16 @@ This document defines non-negotiable security rules for OPS. Any change that vio
     ssh -p <NEW_PORT> <ADMIN_USER>@<SERVER_IP_OR_HOSTNAME>
   ```
 
-- Root login should be minimised or disabled according to best practices once the admin user is set up.
+- Root login must be disabled once the admin user is set up.
+- Password authentication must be disabled after the controlled transition window is complete.
+- SSH hardening baseline must disable at least:
+  - `PermitRootLogin`
+  - `PasswordAuthentication` (outside transition)
+  - `X11Forwarding`
+  - `AllowTcpForwarding`
+  - `AllowAgentForwarding`
+  - `AllowStreamLocalForwarding`
+  - `PermitTunnel`
 
 ### 2. Network exposure and Nginx
 
@@ -47,13 +57,17 @@ This document defines non-negotiable security rules for OPS. Any change that vio
 ### 4. Firewall and fail2ban
 
 - UFW (or equivalent firewall) must:
+  - Be reconciled from OPS state, not left as an append-only ruleset.
   - Allow only:
-    - SSH port(s) in use (22 + new port during transition, then only new port).
+    - SSH port(s) currently recorded in OPS state.
     - HTTP (80).
     - HTTPS (443).
+  - Remove stale SSH allow rules once transition is finalized.
   - Deny other inbound ports by default — **including port 20128 (9router)**.
 - `fail2ban`:
   - Must be installed and enabled at least for SSH.
+  - Must follow the real SSH port set in OPS state, including temporary multi-port transition windows.
+  - Should include a minimal Nginx-facing baseline when the host serves public web traffic.
   - Configuration changes must be conservative; avoid breaking legitimate SSH access.
 
 ### 5. TLS and certificates
@@ -62,6 +76,10 @@ This document defines non-negotiable security rules for OPS. Any change that vio
 - Certificates should:
   - Use secure defaults (strong ciphers, modern TLS versions).
   - Be renewed automatically or via simple periodic commands.
+- Nginx global baseline must enforce at least:
+  - `server_tokens off`
+  - `ssl_protocols TLSv1.2 TLSv1.3`
+  - validation with `nginx -t` before reload
 - OPS must not:
   - Store private keys in world-readable locations.
   - Print private keys directly to the terminal except where explicitly requested by the user.
@@ -97,6 +115,9 @@ This document defines non-negotiable security rules for OPS. Any change that vio
 - For Nginx, PHP-FPM, and systemd:
   - Changes must be validated (e.g. `nginx -t`) before reloading services.
 - For PM2-managed Node services:
+  - Run processes under a non-root runtime user.
+  - Keep PM2 startup bound to that runtime user rather than `root`.
+  - Reconcile app directory ownership to that runtime user where OPS manages the deployment path.
   - Verify process health, restart behaviour, and localhost binding after changes.
 
 ### 9. Logging and secrets
@@ -104,7 +125,7 @@ This document defines non-negotiable security rules for OPS. Any change that vio
 - OPS must avoid:
   - Printing secrets (passwords, tokens, API keys) into logs.
   - Storing secrets in world-readable files.
-- Secret files must have restrictive permissions (`0600`, owned by admin user):
+- Secret files must have restrictive permissions (`0600`, owned by admin or runtime service user as appropriate):
   - `/opt/9router/.env` (JWT_SECRET, INITIAL_PASSWORD, API_KEY_SECRET)
   - `/etc/ops/.nine-router-password` (9router dashboard password)
   - `/etc/ops/.db-root-password` (MariaDB/MySQL root password)
@@ -118,7 +139,27 @@ This document defines non-negotiable security rules for OPS. Any change that vio
   - Document secret locations but never literal values.
   - Make rotation and disable paths explicit.
 
-### 10. AI and automation considerations
+### 10. Host kernel and memory baseline
+
+- OPS host baseline should be idempotent and re-runnable.
+- At minimum, OPS should be able to enforce:
+  - `net.ipv4.conf.all.send_redirects = 0`
+  - `net.ipv4.conf.default.send_redirects = 0`
+  - `net.ipv4.conf.all.log_martians = 1`
+  - `net.ipv4.conf.default.log_martians = 1`
+  - low `vm.swappiness`
+- Swap provisioning may be policy-driven, but if enabled by OPS it must:
+  - create a managed swapfile with restrictive permissions
+  - persist in `/etc/fstab`
+  - remain safe to re-run without duplicate entries
+
+### 11. Database runtime safety
+
+- MariaDB must bind localhost unless the operator explicitly chooses otherwise.
+- Rescue or break-glass startup modes such as `--skip-grant-tables` must never remain in place after setup.
+- OPS verify/audit must treat an unmanaged MariaDB rescue process as a production blocker.
+
+### 12. AI and automation considerations
 
 - AI agents modifying OPS must:
   - Respect all rules in this document and in `rules/`.

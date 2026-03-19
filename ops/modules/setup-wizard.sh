@@ -111,8 +111,8 @@ wizard_step_security() {
     if [[ -f "$sec_mod" ]]; then
         # shellcheck source=/dev/null
         source "$sec_mod"
-        if declare -f security_baseline >/dev/null 2>&1; then
-            security_baseline
+        if declare -f security_wizard_baseline >/dev/null 2>&1; then
+            security_wizard_baseline
         else
             _wizard_inline_security
         fi
@@ -128,59 +128,13 @@ wizard_step_security() {
 _wizard_inline_security() {
     log_info "Wizard: inline security baseline"
 
-    # Install UFW + fail2ban (may already be installed)
-    apt_install ufw fail2ban
-
-    # Read actual SSH port — NEVER assume 22
-    local current_ssh_port
-    current_ssh_port=$(grep -i '^Port ' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -n1 || echo "22")
-    print_warn "Current SSH port detected: ${current_ssh_port}"
-    print_warn "IMPORTANT: verify SSH access on new port BEFORE closing old port."
-
-    prompt_input "New SSH port (keep blank to leave as ${current_ssh_port})" "$current_ssh_port"
-    local new_ssh_port="$REPLY"
-
-    # UFW — open both ports during transition (rollback-first)
-    ufw_allow "${current_ssh_port}/tcp" "SSH-current"
-    if [[ "$new_ssh_port" != "$current_ssh_port" ]]; then
-        ufw_allow "${new_ssh_port}/tcp" "SSH-new"
-    fi
-    ufw_allow "80/tcp"  "HTTP"
-    ufw_allow "443/tcp" "HTTPS"
-
-    echo "y" | ufw enable || true
-    log_info "UFW enabled with ports: $current_ssh_port $new_ssh_port 80 443"
-
-    # fail2ban basic SSH jail
-    local jail_conf="/etc/fail2ban/jail.d/ops-ssh.conf"
-    if [[ ! -f "$jail_conf" ]]; then
-        cat > "$jail_conf" <<EOF
-[sshd]
-enabled  = true
-port     = ${new_ssh_port}
-maxretry = 5
-bantime  = 3600
-findtime = 600
-EOF
-        service_enable fail2ban
-        service_restart fail2ban
-        print_ok "fail2ban SSH jail configured on port ${new_ssh_port}"
+    if declare -f security_wizard_baseline >/dev/null 2>&1; then
+        security_wizard_baseline
+        return $?
     fi
 
-    # Update SSH port in sshd_config if changed
-    if [[ "$new_ssh_port" != "$current_ssh_port" ]]; then
-        backup_file /etc/ssh/sshd_config
-        sed -i "s/^#\?Port .*/Port ${new_ssh_port}/" /etc/ssh/sshd_config
-        if sshd -t 2>/dev/null; then
-            service_restart sshd
-            ops_conf_set "ops.conf" "OPS_SSH_PORT" "$new_ssh_port"
-            print_ok "SSH port changed to ${new_ssh_port} — verify new SSH session BEFORE closing old port"
-        else
-            print_error "sshd config test failed — restoring backup"
-            cp "${jail_conf}.bak."* /etc/ssh/sshd_config 2>/dev/null || true
-            return 1
-        fi
-    fi
+    print_error "Security module baseline is unavailable; cannot safely manage SSH transition inline."
+    return 1
 }
 
 # Step 2: Nginx
@@ -411,7 +365,7 @@ _wizard_print_summary() {
     echo "    • Configure domains    → Main menu → Domains & Nginx"
     echo "    • Issue SSL certs      → Main menu → SSL Management"
     echo "    • Deploy 9router       → Main menu → 9router Management"
-    echo "    • Finalise SSH port    → Main menu → Security (close port 22)"
+    echo "    • Finalise SSH port    → Main menu → Security (close old SSH port)"
     echo ""
     print_ok "Wizard complete. Server is ready for production setup."
     log_info "wizard_run_full: completed"

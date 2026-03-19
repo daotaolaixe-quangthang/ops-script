@@ -21,6 +21,27 @@ _nine_router_tpl_dir() {
     echo "${OPS_ROOT}/modules/templates"
 }
 
+_nine_router_runtime_user() {
+    local runtime_user
+    runtime_user="$(ops_conf_get "ops.conf" "OPS_RUNTIME_USER" 2>/dev/null || true)"
+    if [[ -z "$runtime_user" ]]; then
+        runtime_user="$(ops_conf_get "ops.conf" "OPS_ADMIN_USER" 2>/dev/null || true)"
+    fi
+    echo "${runtime_user:-${ADMIN_USER}}"
+}
+
+_nine_router_runtime_home() {
+    local runtime_user="$(_nine_router_runtime_user)"
+    getent passwd "$runtime_user" | cut -d: -f6
+}
+
+_nine_router_run_as_runtime_user() {
+    local runtime_user home_dir
+    runtime_user="$(_nine_router_runtime_user)"
+    home_dir="$(_nine_router_runtime_home)"
+    runuser -u "$runtime_user" -- env HOME="$home_dir" PM2_HOME="$home_dir/.pm2" PATH="$PATH" "$@"
+}
+
 _nine_router_set_state() {
     local key="$1"
     local value="$2"
@@ -107,7 +128,7 @@ REQUIRE_API_KEY=false
 EOF
 
     chmod 600 "$NINE_ROUTER_ENV_FILE"
-    chown "$ADMIN_USER:$ADMIN_USER" "$NINE_ROUTER_ENV_FILE"
+    chown "$(_nine_router_runtime_user):$(_nine_router_runtime_user)" "$NINE_ROUTER_ENV_FILE"
 }
 
 _nine_router_render_pm2_config() {
@@ -125,7 +146,7 @@ _nine_router_render_pm2_config() {
         "NINE_ROUTER_PORT=${NINE_ROUTER_PORT}" \
         | write_file "$NINE_ROUTER_PM2_CONFIG"
 
-    chown "$ADMIN_USER:$ADMIN_USER" "$NINE_ROUTER_PM2_CONFIG"
+    chown "$(_nine_router_runtime_user):$(_nine_router_runtime_user)" "$NINE_ROUTER_PM2_CONFIG"
 }
 
 install_nine_router() {
@@ -160,29 +181,30 @@ install_nine_router() {
 ${init_password}
 EOF
     chmod 600 "$NINE_ROUTER_PASSWORD_FILE"
-    chown "$ADMIN_USER:$ADMIN_USER" "$NINE_ROUTER_PASSWORD_FILE"
+    chown "$(_nine_router_runtime_user):$(_nine_router_runtime_user)" "$NINE_ROUTER_PASSWORD_FILE"
     log_info "9router initial password saved to ${NINE_ROUTER_PASSWORD_FILE} (0600)"
     print_warn "This password unlocks the 9router dashboard. Keep it safe."
 
     _nine_router_write_env "$init_password"
 
     mkdir -p "$NINE_ROUTER_DATA_DIR"
-    chown "$ADMIN_USER:$ADMIN_USER" "$NINE_ROUTER_DATA_DIR"
+    chown "$(_nine_router_runtime_user):$(_nine_router_runtime_user)" "$NINE_ROUTER_DATA_DIR"
     chmod 750 "$NINE_ROUTER_DATA_DIR"
 
     _nine_router_render_pm2_config
 
-    if pm2 describe "$NINE_ROUTER_PM2_NAME" >/dev/null 2>&1; then
-        pm2 delete "$NINE_ROUTER_PM2_NAME"
+    if _nine_router_run_as_runtime_user pm2 describe "$NINE_ROUTER_PM2_NAME" >/dev/null 2>&1; then
+        _nine_router_run_as_runtime_user pm2 delete "$NINE_ROUTER_PM2_NAME"
     fi
 
-    pm2 start "$NINE_ROUTER_PM2_CONFIG"
-    pm2 save
+    _nine_router_run_as_runtime_user pm2 start "$NINE_ROUTER_PM2_CONFIG"
+    _nine_router_run_as_runtime_user pm2 save
 
-    local admin_home
-    admin_home=$(getent passwd "$ADMIN_USER" | cut -d: -f6)
-    if [[ -n "$admin_home" ]]; then
-        pm2 startup systemd -u "$ADMIN_USER" --hp "$admin_home" >/dev/null 2>&1 || true
+    local runtime_user runtime_home
+    runtime_user="$(_nine_router_runtime_user)"
+    runtime_home="$(_nine_router_runtime_home)"
+    if [[ -n "$runtime_home" ]]; then
+        pm2 startup systemd -u "$runtime_user" --hp "$runtime_home" >/dev/null 2>&1 || true
     fi
 
     _nine_router_set_state "NINE_ROUTER_INSTALLED" "yes"
@@ -190,6 +212,7 @@ EOF
     _nine_router_set_state "NINE_ROUTER_DATA_DIR" "$NINE_ROUTER_DATA_DIR"
     _nine_router_set_state "NINE_ROUTER_PORT" "$NINE_ROUTER_PORT"
     _nine_router_set_state "NINE_ROUTER_PM2_NAME" "$NINE_ROUTER_PM2_NAME"
+    _nine_router_set_state "NINE_ROUTER_RUNTIME_USER" "$(_nine_router_runtime_user)"
     _nine_router_set_state "NINE_ROUTER_DOMAIN" ""
     _nine_router_set_state "NINE_ROUTER_SSL" "no"
     _nine_router_set_state "NINE_ROUTER_REQUIRE_API_KEY" "no"
@@ -246,7 +269,7 @@ link_nine_router_domain() {
         else
             printf '\nAUTH_COOKIE_SECURE=true\n' >> "$NINE_ROUTER_ENV_FILE"
         fi
-        pm2 restart "$NINE_ROUTER_PM2_NAME"
+        _nine_router_run_as_runtime_user pm2 restart "$NINE_ROUTER_PM2_NAME"
         ssl_enabled="yes"
         log_info "9router AUTH_COOKIE_SECURE=true (SSL active for ${domain})"
     fi
@@ -289,7 +312,7 @@ toggle_require_api_key() {
         printf '\nREQUIRE_API_KEY=%s\n' "$require_api_key" >> "$NINE_ROUTER_ENV_FILE"
     fi
 
-    pm2 restart "$NINE_ROUTER_PM2_NAME"
+    _nine_router_run_as_runtime_user pm2 restart "$NINE_ROUTER_PM2_NAME"
     _nine_router_set_state "NINE_ROUTER_REQUIRE_API_KEY" "$state_value"
 
     _nine_router_assert_ufw_closed
@@ -300,7 +323,7 @@ verify_nine_router() {
     print_section "Verify 9router"
 
     local pm2_line
-    pm2_line=$(pm2 status "$NINE_ROUTER_PM2_NAME" 2>/dev/null | grep "$NINE_ROUTER_PM2_NAME" | head -n1 || true)
+    pm2_line=$(_nine_router_run_as_runtime_user pm2 status "$NINE_ROUTER_PM2_NAME" 2>/dev/null | grep "$NINE_ROUTER_PM2_NAME" | head -n1 || true)
     if [[ -z "$pm2_line" ]] || [[ "$pm2_line" != *"online"* ]]; then
         log_error "PM2 process ${NINE_ROUTER_PM2_NAME} is not online"
         return 1
@@ -328,12 +351,12 @@ update_nine_router() {
     fi
 
     cd "$NINE_ROUTER_DIR"
-    pm2 stop "$NINE_ROUTER_PM2_NAME" || true
+    _nine_router_run_as_runtime_user pm2 stop "$NINE_ROUTER_PM2_NAME" || true
     git pull origin main
     npm install
     npm run build
-    pm2 start "$NINE_ROUTER_PM2_NAME"
-    pm2 save
+    _nine_router_run_as_runtime_user pm2 start "$NINE_ROUTER_PM2_NAME"
+    _nine_router_run_as_runtime_user pm2 save
 
     _nine_router_assert_ufw_closed
     print_ok "9router updated"
@@ -346,13 +369,13 @@ nine_router_update() { update_nine_router; }
 
 nine_router_restart() {
     print_section "Restart 9router"
-    pm2 restart "$NINE_ROUTER_PM2_NAME"
+    _nine_router_run_as_runtime_user pm2 restart "$NINE_ROUTER_PM2_NAME"
     _nine_router_assert_ufw_closed
 }
 
 nine_router_start() {
     print_section "Start 9router"
-    pm2 start "$NINE_ROUTER_PM2_NAME"
+    _nine_router_run_as_runtime_user pm2 start "$NINE_ROUTER_PM2_NAME"
     _nine_router_assert_ufw_closed
 }
 

@@ -108,6 +108,35 @@ _nginx_ensure_nine_router_rate_zone() {
     fi
 }
 
+_nginx_ensure_http_directive() {
+    local conf="$1"
+    local key="$2"
+    local value="$3"
+    local rendered="${key} ${value};"
+
+    if grep -Eq "^[[:space:]]*${key}[[:space:]]+" "$conf"; then
+        sed -i -E "s|^[[:space:]]*${key}[[:space:]]+.*;|    ${rendered}|" "$conf"
+        return 0
+    fi
+
+    if awk -v rendered="$rendered" '
+        BEGIN { inserted=0 }
+        /^\s*http\s*\{/ && inserted==0 {
+            print
+            print "    " rendered
+            inserted=1
+            next
+        }
+        { print }
+        END { if (inserted==0) exit 2 }
+    ' "$conf" > "${conf}.tmp"; then
+        mv "${conf}.tmp" "$conf"
+    else
+        rm -f "${conf}.tmp"
+        return 1
+    fi
+}
+
 _nginx_apply_global_tuning() {
     local conf="/etc/nginx/nginx.conf"
     local tuning worker_processes worker_connections
@@ -121,8 +150,16 @@ _nginx_apply_global_tuning() {
     sed -i -E "s/^\s*worker_processes\s+[^;]+;/worker_processes ${worker_processes};/" "$conf"
     sed -i -E "s/^\s*worker_connections\s+[^;]+;/    worker_connections ${worker_connections};/" "$conf"
 
+    _nginx_ensure_http_directive "$conf" "server_tokens" "off"
+    _nginx_ensure_http_directive "$conf" "ssl_protocols" "TLSv1.2 TLSv1.3"
+    _nginx_ensure_http_directive "$conf" "ssl_prefer_server_ciphers" "off"
+    _nginx_ensure_http_directive "$conf" "add_header Strict-Transport-Security" '"max-age=31536000; includeSubDomains" always'
+    _nginx_ensure_http_directive "$conf" "add_header X-Frame-Options" '"SAMEORIGIN" always'
+    _nginx_ensure_http_directive "$conf" "add_header X-Content-Type-Options" '"nosniff" always'
+    _nginx_ensure_http_directive "$conf" "add_header Referrer-Policy" '"strict-origin-when-cross-origin" always'
+
     _nginx_ensure_nine_router_rate_zone
-    log_info "Applied nginx tuning: worker_processes=${worker_processes}, worker_connections=${worker_connections}."
+    log_info "Applied nginx tuning: worker_processes=${worker_processes}, worker_connections=${worker_connections}, TLS/security baseline enforced."
 }
 
 _nginx_test_and_reload() {

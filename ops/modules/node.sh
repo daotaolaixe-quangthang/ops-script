@@ -46,6 +46,46 @@ menu_node() {
 # _node_apps_dir: returns /etc/ops/apps
 _node_apps_dir() { echo "${OPS_CONFIG_DIR:-/etc/ops}/apps"; }
 
+_node_runtime_user() {
+    local runtime_user
+    runtime_user="$(ops_conf_get "ops.conf" "OPS_RUNTIME_USER" 2>/dev/null || true)"
+    if [[ -z "$runtime_user" ]]; then
+        runtime_user="$(ops_conf_get "ops.conf" "OPS_ADMIN_USER" 2>/dev/null || true)"
+    fi
+    if [[ -z "$runtime_user" ]]; then
+        runtime_user="${ADMIN_USER:-${SUDO_USER:-$(whoami)}}"
+    fi
+    echo "$runtime_user"
+}
+
+_node_runtime_home() {
+    local runtime_user="$(_node_runtime_user)"
+    getent passwd "$runtime_user" | cut -d: -f6
+}
+
+_node_require_runtime_user() {
+    local runtime_user="$(_node_runtime_user)"
+    if ! id "$runtime_user" >/dev/null 2>&1; then
+        print_error "OPS runtime user does not exist: ${runtime_user}"
+        return 1
+    fi
+}
+
+_node_run_as_runtime_user() {
+    local runtime_user home_dir
+    runtime_user="$(_node_runtime_user)"
+    home_dir="$(_node_runtime_home)"
+    runuser -u "$runtime_user" -- env HOME="$home_dir" PM2_HOME="$home_dir/.pm2" PATH="$PATH" "$@"
+}
+
+_node_reconcile_app_ownership() {
+    local app_dir="$1"
+    local runtime_user="$(_node_runtime_user)"
+    if [[ -d "$app_dir" ]]; then
+        chown -R "${runtime_user}:${runtime_user}" "$app_dir"
+    fi
+}
+
 # _node_list_conf_names: lists registered app names (from /etc/ops/apps/*.conf)
 _node_list_conf_names() {
     local apps_dir
@@ -74,6 +114,7 @@ _node_write_app_conf() {
         for kv in "$@"; do
             echo "${kv%%=*}=\"${kv#*=}\""
         done
+        echo "APP_RUNTIME_USER=\"$(_node_runtime_user)\""
     } > "$conf"
     chmod 640 "$conf"
     log_info "Wrote app conf: $conf"
@@ -154,11 +195,12 @@ node_install() {
 node_install_pm2() {
     print_section "Install / Update PM2"
 
-    # Require node first
     if ! command -v node >/dev/null 2>&1; then
         print_error "Node.js is not installed. Run option 1 first."
         return 1
     fi
+
+    _node_require_runtime_user || return 1
 
     log_info "Installing pm2 globally…"
     npm install -g pm2
@@ -169,31 +211,24 @@ node_install_pm2() {
     fi
     print_ok "PM2 installed: $(pm2 --version)"
 
-    # Detect admin user (env.sh sets ADMIN_USER)
-    local admin_user="${ADMIN_USER:-}"
-    if [[ -z "$admin_user" ]]; then
-        prompt_input "Admin user for PM2 startup" "$(whoami)"
-        admin_user="$REPLY"
-    fi
+    local runtime_user home_dir startup_cmd
+    runtime_user="$(_node_runtime_user)"
+    home_dir="$(_node_runtime_home)"
 
-    local home_dir
-    home_dir=$(eval echo "~${admin_user}")
-
-    log_info "Configuring PM2 systemd startup for user: $admin_user"
-    # pm2 startup generates a systemd unit; we capture and run the command
-    local startup_cmd
-    startup_cmd=$(pm2 startup systemd -u "$admin_user" --hp "$home_dir" | grep 'sudo env' | head -n1 || true)
+    log_info "Configuring PM2 systemd startup for runtime user: $runtime_user"
+    startup_cmd=$(pm2 startup systemd -u "$runtime_user" --hp "$home_dir" | grep 'sudo env' | head -n1 || true)
     if [[ -n "$startup_cmd" ]]; then
         eval "$startup_cmd"
         log_info "PM2 startup command executed: $startup_cmd"
     else
-        # Fallback: systemd unit may already be configured
         log_warn "Could not extract PM2 startup command — may already be configured."
     fi
 
-    pm2 save || true
-    print_ok "PM2 startup configured for: $admin_user"
-    log_info "node_install_pm2: done"
+    _node_run_as_runtime_user pm2 ping >/dev/null 2>&1 || true
+    _node_run_as_runtime_user pm2 save || true
+    ops_conf_set "ops.conf" "OPS_RUNTIME_USER" "$runtime_user"
+    print_ok "PM2 startup configured for runtime user: $runtime_user"
+    log_info "node_install_pm2: done user=$runtime_user"
 }
 
 # P1-06 task 4 (list): Show PM2 process list + registered conf
@@ -235,6 +270,7 @@ node_add_app() {
         print_error "PM2 not installed. Run option 2 first."
         return 1
     fi
+    _node_require_runtime_user || return 1
 
     # Gather inputs
     prompt_input "App name (slug, no spaces)"
@@ -263,6 +299,7 @@ node_add_app() {
         fi
         ensure_dir "$app_dir"
     fi
+    _node_reconcile_app_ownership "$app_dir"
 
     prompt_input "Entry point (relative to app dir, e.g. dist/index.js)" "index.js"
     local app_entry="$REPLY"
@@ -328,12 +365,14 @@ EOF
         print_ok "Created minimal ecosystem.config.js (template not found)"
     fi
 
-    # Start with PM2
-    log_info "Starting app with PM2: pm2 start $eco_dest"
-    pm2 start "$eco_dest"
-    pm2 save
+    _node_reconcile_app_ownership "$app_dir"
 
-    print_ok "App '${app_name}' registered and started on 127.0.0.1:${app_port}"
+    # Start with PM2
+    log_info "Starting app with PM2 as runtime user: $(_node_runtime_user) -> pm2 start $eco_dest"
+    _node_run_as_runtime_user pm2 start "$eco_dest"
+    _node_run_as_runtime_user pm2 save
+
+    print_ok "App '${app_name}' registered and started on 127.0.0.1:${app_port} using runtime user $(_node_runtime_user)"
     print_warn "To expose via Nginx, use the Domains & Nginx menu."
     log_info "node_add_app: registered $app_name port=$app_port dir=$app_dir"
 }
@@ -356,8 +395,8 @@ node_remove_app() {
     if _node_load_app_conf "$app_name"; then
         local pm2_name="${APP_PM2_NAME:-$app_name}"
         if command -v pm2 >/dev/null 2>&1; then
-            pm2 delete "$pm2_name" 2>/dev/null || true
-            pm2 save
+            _node_run_as_runtime_user pm2 delete "$pm2_name" 2>/dev/null || true
+            _node_run_as_runtime_user pm2 save
             print_ok "PM2 process '${pm2_name}' removed."
         fi
     fi
@@ -383,7 +422,7 @@ node_restart_app() {
     _node_load_app_conf "$app_name" || return 1
     local pm2_name="${APP_PM2_NAME:-$app_name}"
 
-    pm2 restart "$pm2_name"
+    _node_run_as_runtime_user pm2 restart "$pm2_name"
     print_ok "Restarted: ${pm2_name}"
     log_info "node_restart_app: $pm2_name restarted"
 }
@@ -405,6 +444,6 @@ node_show_logs() {
     local lines="$REPLY"
     [[ "$lines" =~ ^[0-9]+$ ]] || lines=100
 
-    pm2 logs "$pm2_name" --lines "$lines" --nostream
+    _node_run_as_runtime_user pm2 logs "$pm2_name" --lines "$lines" --nostream
     log_info "node_show_logs: $pm2_name $lines lines"
 }

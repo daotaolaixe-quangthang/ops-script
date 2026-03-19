@@ -51,6 +51,17 @@ _db_detect_mariadb_version() {
     dpkg-query -W -f='${Version}' mariadb-server 2>/dev/null || echo "unknown"
 }
 
+_db_assert_not_rescue_mode() {
+    local rescue_proc
+    rescue_proc="$(ps -eo args= 2>/dev/null | grep -E '[m]ariadbd?.*--skip-grant-tables|[m]ysqld.*--skip-grant-tables' || true)"
+    if [[ -n "$rescue_proc" ]]; then
+        print_error "MariaDB rescue mode detected (--skip-grant-tables). Stop unmanaged process before continuing."
+        log_error "database guard blocked action due to rescue mode: ${rescue_proc}"
+        return 1
+    fi
+    return 0
+}
+
 _db_set_bind_localhost() {
     [[ -f "$MARIADB_SERVER_CNF" ]] || {
         print_error "MariaDB config not found: ${MARIADB_SERVER_CNF}"
@@ -121,6 +132,8 @@ _db_save_database_conf() {
 install_mariadb() {
     print_section "Install MariaDB"
 
+    _db_assert_not_rescue_mode || return 1
+
     apt_update
     apt_install mariadb-server mariadb-client
     service_enable mariadb
@@ -150,6 +163,8 @@ install_mariadb() {
 
 tune_mariadb() {
     print_section "Tune MariaDB (Tier: ${OPS_TIER:-M})"
+
+    _db_assert_not_rescue_mode || return 1
 
     local innodb_buffer_pool_size max_connections tmp_table_size max_heap_table_size
     case "${OPS_TIER:-M}" in
@@ -265,6 +280,7 @@ db_install() {
 }
 
 db_secure() {
+    _db_assert_not_rescue_mode || return 1
     install_mariadb
 }
 
