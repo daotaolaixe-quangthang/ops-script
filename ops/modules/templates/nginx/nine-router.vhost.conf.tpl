@@ -12,6 +12,7 @@ server {
     limit_req zone=nine_router burst=10 nodelay;
     limit_req_status 429;
 
+{{SSL_HTTP_BLOCK}}
     location / {
         proxy_pass         http://127.0.0.1:{{NINE_ROUTER_PORT}};
         proxy_http_version 1.1;
@@ -29,3 +30,5 @@ server {
         proxy_buffering       off;
     }
 }
+
+{{SSL_HTTPS_BLOCK}}

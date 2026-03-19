@@ -238,7 +238,7 @@ node_list_apps() {
     echo ""
     echo "  ── PM2 process list ──────────────────────────────"
     if command -v pm2 >/dev/null 2>&1; then
-        pm2 list --no-interaction 2>/dev/null || print_warn "PM2 not running or no processes."
+        pm2 list 2>/dev/null || print_warn "PM2 not running or no processes."
     else
         print_warn "PM2 not installed."
     fi

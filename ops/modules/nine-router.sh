@@ -100,6 +100,107 @@ _nine_router_ensure_limit_req_zone() {
     log_info "Added limit_req_zone for nine-router to nginx http block"
 }
 
+_nine_router_ssl_cert_ready() {
+    local domain="$1"
+    [[ -f "/etc/letsencrypt/live/${domain}/fullchain.pem" ]] && [[ -f "/etc/letsencrypt/live/${domain}/privkey.pem" ]]
+}
+
+_nine_router_sync_cookie_secure() {
+    local enabled="$1"
+    local secure_value="false"
+
+    if [[ ! -f "$NINE_ROUTER_ENV_FILE" ]]; then
+        log_warn "Missing ${NINE_ROUTER_ENV_FILE}; skipped AUTH_COOKIE_SECURE sync"
+        return 0
+    fi
+
+    if [[ "$enabled" == "yes" ]]; then
+        secure_value="true"
+    fi
+
+    if grep -q '^AUTH_COOKIE_SECURE=' "$NINE_ROUTER_ENV_FILE"; then
+        sed -i "s/^AUTH_COOKIE_SECURE=.*/AUTH_COOKIE_SECURE=${secure_value}/" "$NINE_ROUTER_ENV_FILE"
+    else
+        printf '\nAUTH_COOKIE_SECURE=%s\n' "$secure_value" >> "$NINE_ROUTER_ENV_FILE"
+    fi
+
+    if _nine_router_run_as_runtime_user pm2 describe "$NINE_ROUTER_PM2_NAME" >/dev/null 2>&1; then
+        _nine_router_run_as_runtime_user pm2 restart "$NINE_ROUTER_PM2_NAME"
+    fi
+
+    log_info "9router AUTH_COOKIE_SECURE=${secure_value}"
+}
+
+_nine_router_render_vhost() {
+    local domain="$1"
+    local nginx_tpl
+    local vhost_path
+    local enabled_path
+    local ssl_enabled="no"
+    local ssl_http_block=""
+    local ssl_https_block=""
+
+    nginx_tpl="$(_nine_router_tpl_dir)/nginx/nine-router.vhost.conf.tpl"
+    vhost_path="/etc/nginx/sites-available/nine-router.${domain}"
+    enabled_path="/etc/nginx/sites-enabled/nine-router.${domain}"
+
+    if [[ ! -f "$nginx_tpl" ]]; then
+        log_error "Missing nginx template: ${nginx_tpl}"
+        return 1
+    fi
+
+    if _nine_router_ssl_cert_ready "$domain"; then
+        ssl_enabled="yes"
+        ssl_http_block="    return 301 https://\$host\$request_uri;"
+        ssl_https_block=$(cat <<EOF
+server {
+    listen 443 ssl;
+    server_name ${domain};
+
+    access_log /var/log/nginx/nine-router.access.log;
+    error_log  /var/log/nginx/nine-router.error.log;
+
+    # Rate limiting: max 30 req/min per IP (burst 10)
+    limit_req zone=nine_router burst=10 nodelay;
+    limit_req_status 429;
+
+    ssl_certificate /etc/letsencrypt/live/${domain}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    location / {
+        proxy_pass         http://127.0.0.1:${NINE_ROUTER_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade \$http_upgrade;
+        proxy_set_header   Connection 'upgrade';
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Real-IP \$remote_addr;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
+        proxy_cache_bypass \$http_upgrade;
+
+        proxy_connect_timeout 10s;
+        proxy_read_timeout    120s;
+        proxy_send_timeout    60s;
+        proxy_buffering       off;
+    }
+}
+EOF
+)
+    fi
+
+    backup_file "$vhost_path" >/dev/null || true
+    render_template "$nginx_tpl" \
+        "DOMAIN=${domain}" \
+        "NINE_ROUTER_PORT=${NINE_ROUTER_PORT}" \
+        "SSL_HTTP_BLOCK=${ssl_http_block}" \
+        "SSL_HTTPS_BLOCK=${ssl_https_block}" \
+        | write_file "$vhost_path"
+
+    safe_symlink "$vhost_path" "$enabled_path"
+}
+
 _nine_router_write_env() {
     local init_password="$1"
     local jwt_secret
@@ -234,45 +335,18 @@ link_nine_router_domain() {
         return 1
     fi
 
-    local nginx_tpl
-    local vhost_path
-    local enabled_path
-
-    nginx_tpl="$(_nine_router_tpl_dir)/nginx/nine-router.vhost.conf.tpl"
-    vhost_path="/etc/nginx/sites-available/nine-router.${domain}"
-    enabled_path="/etc/nginx/sites-enabled/nine-router.${domain}"
-
-    if [[ ! -f "$nginx_tpl" ]]; then
-        log_error "Missing nginx template: ${nginx_tpl}"
-        return 1
-    fi
-
     _nine_router_ensure_limit_req_zone
     create_default_deny
 
-    backup_file "$vhost_path" >/dev/null || true
-    render_template "$nginx_tpl" \
-        "DOMAIN=${domain}" \
-        "NINE_ROUTER_PORT=${NINE_ROUTER_PORT}" \
-        | write_file "$vhost_path"
-
-    safe_symlink "$vhost_path" "$enabled_path"
+    local ssl_enabled="no"
+    if _nine_router_ssl_cert_ready "$domain"; then ssl_enabled="yes"; fi
+    _nine_router_render_vhost "$domain" || return 1
 
     nginx -t
     service_enable nginx
     service_reload nginx
 
-    local ssl_enabled="no"
-    if [[ -f "/etc/letsencrypt/live/${domain}/fullchain.pem" ]] && [[ -f "/etc/letsencrypt/live/${domain}/privkey.pem" ]]; then
-        if grep -q '^AUTH_COOKIE_SECURE=' "$NINE_ROUTER_ENV_FILE"; then
-            sed -i 's/^AUTH_COOKIE_SECURE=.*/AUTH_COOKIE_SECURE=true/' "$NINE_ROUTER_ENV_FILE"
-        else
-            printf '\nAUTH_COOKIE_SECURE=true\n' >> "$NINE_ROUTER_ENV_FILE"
-        fi
-        _nine_router_run_as_runtime_user pm2 restart "$NINE_ROUTER_PM2_NAME"
-        ssl_enabled="yes"
-        log_info "9router AUTH_COOKIE_SECURE=true (SSL active for ${domain})"
-    fi
+    _nine_router_sync_cookie_secure "$ssl_enabled"
 
     _nine_router_set_state "NINE_ROUTER_DOMAIN" "$domain"
     _nine_router_set_state "NINE_ROUTER_SSL" "$ssl_enabled"

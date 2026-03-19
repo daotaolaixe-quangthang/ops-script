@@ -5,6 +5,7 @@ server {
     root  {{WEBROOT}};
     index index.html index.htm;
 
+{{SSL_HTTP_BLOCK}}
     # Strict static: no PHP, no proxy
     location / {
         try_files $uri $uri/ =404;
@@ -31,3 +32,5 @@ server {
     access_log  /var/log/nginx/{{DOMAIN}}.access.log;
     error_log   /var/log/nginx/{{DOMAIN}}.error.log;
 }
+
+{{SSL_HTTPS_BLOCK}}

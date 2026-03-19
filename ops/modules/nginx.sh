@@ -207,6 +207,244 @@ _create_site_from_template() {
     render_template "$template" "$@" | write_file "$output"
 }
 
+_domain_ssl_cert_ready() {
+    local domain="$1"
+    [[ -f "/etc/letsencrypt/live/${domain}/fullchain.pem" ]] && [[ -f "/etc/letsencrypt/live/${domain}/privkey.pem" ]]
+}
+
+_render_node_vhost() {
+    local domain="$1"
+    local port="$2"
+    local available="$3"
+    local ssl_http_block=""
+    local ssl_https_block=""
+
+    if _domain_ssl_cert_ready "$domain"; then
+        ssl_http_block="    return 301 https://\$host\$request_uri;"
+        ssl_https_block=$(cat <<EOF
+server {
+    listen 443 ssl;
+    server_name ${domain};
+
+    location / {
+        proxy_pass         http://127.0.0.1:${port};
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade \$http_upgrade;
+        proxy_set_header   Connection 'upgrade';
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Real-IP \$remote_addr;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
+        proxy_cache_bypass \$http_upgrade;
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout    60s;
+        proxy_read_timeout    60s;
+    }
+
+    location ~ /\\. {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+
+    ssl_certificate /etc/letsencrypt/live/${domain}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+}
+EOF
+)
+    fi
+
+    _create_site_from_template "${NGINX_TEMPLATE_DIR}/node_vhost.conf.tpl" "$available" \
+        "DOMAIN=${domain}" \
+        "PORT=${port}" \
+        "SSL_HTTP_BLOCK=${ssl_http_block}" \
+        "SSL_HTTPS_BLOCK=${ssl_https_block}"
+}
+
+_render_php_vhost() {
+    local domain="$1"
+    local web_root="$2"
+    local php_version="$3"
+    local php_socket="$4"
+    local available="$5"
+    local rendered ssl_http_block="" ssl_https_block=""
+
+    if _domain_ssl_cert_ready "$domain"; then
+        ssl_http_block="    return 301 https://\$host\$request_uri;"
+        ssl_https_block=$(cat <<EOF
+server {
+    listen 443 ssl;
+    server_name ${domain};
+
+    root ${web_root};
+    index index.php index.html;
+
+    location ~ /\\. {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+
+    location ~ \\.php$ {
+        include        snippets/fastcgi-php.conf;
+        fastcgi_pass   unix:${php_socket};
+        fastcgi_param  SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
+        include        fastcgi_params;
+
+        fastcgi_connect_timeout 60s;
+        fastcgi_read_timeout    120s;
+    }
+
+    location ~* \\.(jpg|jpeg|png|gif|ico|css|js|woff2?)$ {
+        expires 30d;
+        add_header Cache-Control "public, no-transform";
+    }
+
+    access_log  /var/log/nginx/${domain}.access.log;
+    error_log   /var/log/nginx/${domain}.error.log;
+
+    ssl_certificate /etc/letsencrypt/live/${domain}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+}
+EOF
+)
+    fi
+
+    rendered="$(render_template "${NGINX_TEMPLATE_DIR}/php_vhost.conf.tpl" \
+        "DOMAIN=${domain}" \
+        "WEBROOT=${web_root}" \
+        "PHP_VERSION=${php_version}" \
+        "SSL_HTTP_BLOCK=${ssl_http_block}" \
+        "SSL_HTTPS_BLOCK=${ssl_https_block}")"
+    rendered="$(printf '%s\n' "$rendered" | sed -E "s|fastcgi_pass[[:space:]]+unix:/run/php/php${php_version}-fpm\\.sock;|fastcgi_pass   unix:${php_socket};|")"
+    printf '%s\n' "$rendered" | write_file "$available"
+}
+
+_render_static_vhost() {
+    local domain="$1"
+    local web_root="$2"
+    local available="$3"
+    local ssl_http_block=""
+    local ssl_https_block=""
+
+    if _domain_ssl_cert_ready "$domain"; then
+        ssl_http_block="    return 301 https://\$host\$request_uri;"
+        ssl_https_block=$(cat <<EOF
+server {
+    listen 443 ssl;
+    server_name ${domain};
+
+    root  ${web_root};
+    index index.html index.htm;
+
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+
+    location ~* \\.(jpg|jpeg|png|gif|ico|svg|css|js|woff2?|ttf|eot)$ {
+        expires     30d;
+        add_header  Cache-Control "public, immutable";
+        access_log  off;
+    }
+
+    location ~ /\\. {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+
+    location ~ \\.(env|log|sh|conf)$ {
+        deny all;
+    }
+
+    access_log  /var/log/nginx/${domain}.access.log;
+    error_log   /var/log/nginx/${domain}.error.log;
+
+    ssl_certificate /etc/letsencrypt/live/${domain}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+}
+EOF
+)
+    fi
+
+    _create_site_from_template "${NGINX_TEMPLATE_DIR}/static_vhost.conf.tpl" "$available" \
+        "DOMAIN=${domain}" \
+        "WEBROOT=${web_root}" \
+        "SSL_HTTP_BLOCK=${ssl_http_block}" \
+        "SSL_HTTPS_BLOCK=${ssl_https_block}"
+}
+
+_rebuild_domain_vhost() {
+    local domain="$1"
+    local state_file="${OPS_DOMAINS_DIR}/${domain}.conf"
+    local type backend_target php_version php_socket web_root available enabled port
+
+    if [[ ! -f "$state_file" ]]; then
+        log_warn "No state file for domain ${domain}; skipped vhost rebuild"
+        return 0
+    fi
+
+    type=$(grep '^DOMAIN_BACKEND_TYPE=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
+    backend_target=$(grep '^DOMAIN_BACKEND_TARGET=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
+    php_version=$(grep '^DOMAIN_PHP_VERSION=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
+    php_socket=$(grep '^DOMAIN_PHP_SOCKET=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
+    web_root=$(grep '^DOMAIN_WEB_ROOT=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
+
+    available="${NGINX_SITES_AVAILABLE}/${domain}"
+    enabled="${NGINX_SITES_ENABLED}/${domain}"
+
+    case "$type" in
+        node)
+            port="${backend_target#127.0.0.1:}"
+            _render_node_vhost "$domain" "$port" "$available"
+            ;;
+        php)
+            _render_php_vhost "$domain" "$web_root" "$php_version" "$php_socket" "$available"
+            ;;
+        static)
+            _render_static_vhost "$domain" "$web_root" "$available"
+            ;;
+        *)
+            log_warn "Unsupported backend type '${type}' for ${domain}; skipped vhost rebuild"
+            return 0
+            ;;
+    esac
+
+    safe_symlink "$available" "$enabled"
+    log_info "Rebuilt vhost for ${domain} (type=${type}, ssl=$(_domain_ssl_cert_ready "$domain" && echo yes || echo no))"
+}
+
+_sync_all_managed_vhosts() {
+    local state_file domain nine_router_domain
+
+    ensure_dir "$OPS_DOMAINS_DIR"
+
+    if ls "${OPS_DOMAINS_DIR}"/*.conf >/dev/null 2>&1; then
+        for state_file in "${OPS_DOMAINS_DIR}"/*.conf; do
+            domain=$(grep '^DOMAIN=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
+            [[ -n "$domain" ]] || continue
+            _rebuild_domain_vhost "$domain"
+        done
+    fi
+
+    nine_router_domain=$(ops_conf_get "nine-router.conf" "NINE_ROUTER_DOMAIN" || true)
+    if [[ -n "$nine_router_domain" ]] && declare -F link_nine_router_domain >/dev/null 2>&1; then
+        log_info "Re-syncing nine-router vhost for ${nine_router_domain}"
+        link_nine_router_domain "$nine_router_domain"
+    fi
+}
+
 _install_certbot_snap() {
     if ! command -v snap >/dev/null 2>&1; then
         apt_update
@@ -390,16 +628,13 @@ add_domain() {
                 return 1
             fi
             backend_target="127.0.0.1:${port}"
-            tpl="${NGINX_TEMPLATE_DIR}/node_vhost.conf.tpl"
-            _create_site_from_template "$tpl" "$available" \
-                "DOMAIN=${domain}" \
-                "PORT=${port}"
+            _render_node_vhost "$domain" "$port" "$available"
             if [[ -n "$pm2_service" ]]; then
                 log_info "Operator selected PM2 service: ${pm2_service}"
             fi
             ;;
         php)
-            local site_slug rendered
+            local site_slug
             prompt_input "Enter PHP version (e.g. 8.2)"
             php_version="$REPLY"
             if [[ ! "$php_version" =~ ^[0-9]+\.[0-9]+$ ]]; then
@@ -409,20 +644,11 @@ add_domain() {
             site_slug="$(_domain_slug "$domain")"
             php_socket="/run/php/php${php_version}-fpm-${site_slug}.sock"
             backend_target="$php_socket"
-            tpl="${NGINX_TEMPLATE_DIR}/php_vhost.conf.tpl"
-            rendered="$(render_template "$tpl" \
-                "DOMAIN=${domain}" \
-                "WEBROOT=${web_root}" \
-                "PHP_VERSION=${php_version}")"
-            rendered="$(printf '%s\n' "$rendered" | sed -E "s|fastcgi_pass[[:space:]]+unix:/run/php/php${php_version}-fpm\\.sock;|fastcgi_pass   unix:${php_socket};|")"
-            printf '%s\n' "$rendered" | write_file "$available"
+            _render_php_vhost "$domain" "$web_root" "$php_version" "$php_socket" "$available"
             ;;
         static)
             backend_target="$web_root"
-            tpl="${NGINX_TEMPLATE_DIR}/static_vhost.conf.tpl"
-            _create_site_from_template "$tpl" "$available" \
-                "DOMAIN=${domain}" \
-                "WEBROOT=${web_root}"
+            _render_static_vhost "$domain" "$web_root" "$available"
             ;;
     esac
 
@@ -481,16 +707,17 @@ issue_ssl() {
     _install_certbot_snap
     certbot --nginx -d "$domain"
 
+    log_info "Post-issue SSL sync for managed vhosts"
+    _rebuild_domain_vhost "$domain"
+
     local nine_router_domain
     nine_router_domain=$(ops_conf_get "nine-router.conf" "NINE_ROUTER_DOMAIN" || true)
-    if [[ "$domain" == "$nine_router_domain" ]] && [[ -f /opt/9router/.env ]]; then
-        sed -i 's/AUTH_COOKIE_SECURE=false/AUTH_COOKIE_SECURE=true/g' /opt/9router/.env
-        pm2 restart nine-router
-        ops_conf_set "nine-router.conf" "NINE_ROUTER_SSL" "yes"
-        log_info "Enabled AUTH_COOKIE_SECURE=true for 9router and restarted PM2 app."
+    if [[ "$domain" == "$nine_router_domain" ]] && declare -F link_nine_router_domain >/dev/null 2>&1; then
+        log_info "Re-rendering nine-router vhost after SSL issuance for ${domain}."
+        link_nine_router_domain "$domain"
     fi
 
-    nginx -t || true
+    _nginx_test_and_reload || true
     curl -I "https://${domain}" || true
     certbot certificates || true
 }
@@ -539,6 +766,9 @@ ssl_issue_cert() {
 ssl_renew_all() {
     _install_certbot_snap
     certbot renew
+    log_info "Post-renew SSL sync for all managed vhosts"
+    _sync_all_managed_vhosts
+    _nginx_test_and_reload || true
 }
 ssl_list_certs() {
     _install_certbot_snap
