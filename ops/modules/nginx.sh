@@ -84,10 +84,27 @@ _nginx_ensure_default_tls_cert() {
 
 _nginx_ensure_nine_router_rate_zone() {
     local conf="/etc/nginx/nginx.conf"
-    local marker='limit_req_zone $binary_remote_addr zone=nine_router_api:10m rate=30r/m;'
+    local marker='limit_req_zone $binary_remote_addr zone=nine_router:10m rate=30r/m;'
+    # Also remove legacy nine_router_api zone if present to keep nginx.conf clean
+    local legacy_marker='limit_req_zone $binary_remote_addr zone=nine_router_api:10m rate=30r/m;'
 
-    grep -Fq "$marker" "$conf" && return 0
+    if grep -Fq "$marker" "$conf" 2>/dev/null; then
+        # Correct zone already present — remove legacy if it snuck in
+        if grep -Fq "$legacy_marker" "$conf" 2>/dev/null; then
+            backup_file "$conf" >/dev/null || true
+            sed -i "s|${legacy_marker}||g" "$conf"
+            log_info "Removed legacy nine_router_api limit_req_zone from nginx.conf."
+        fi
+        return 0
+    fi
     backup_file "$conf" >/dev/null || true
+
+    # Migrate legacy zone name if present instead of adding a second zone
+    if grep -Fq "$legacy_marker" "$conf" 2>/dev/null; then
+        sed -i "s|${legacy_marker}|${marker}|g" "$conf"
+        log_info "Migrated nine_router_api → nine_router limit_req_zone in nginx.conf."
+        return 0
+    fi
 
     if awk -v marker="$marker" '
         BEGIN { inserted=0 }
@@ -101,10 +118,10 @@ _nginx_ensure_nine_router_rate_zone() {
         END { if (inserted==0) exit 2 }
     ' "$conf" > "${conf}.tmp"; then
         mv "${conf}.tmp" "$conf"
-        log_info "Added nine_router_api limit_req_zone to nginx.conf."
+        log_info "Added nine_router limit_req_zone to nginx.conf."
     else
         rm -f "${conf}.tmp"
-        log_warn "Could not inject nine_router_api limit_req_zone automatically."
+        log_warn "Could not inject nine_router limit_req_zone automatically."
     fi
 }
 
@@ -225,6 +242,9 @@ _render_node_vhost() {
 server {
     listen 443 ssl;
     server_name ${domain};
+
+    access_log /var/log/nginx/${domain}.access.log;
+    error_log  /var/log/nginx/${domain}.error.log;
 
     location / {
         proxy_pass         http://127.0.0.1:${port};

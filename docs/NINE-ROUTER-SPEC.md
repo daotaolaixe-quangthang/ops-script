@@ -240,8 +240,8 @@ pm2 save
 | Source code | `/opt/9router` | App code + build output |
 | Env config | `/opt/9router/.env` | Secrets and runtime config (0600) |
 | DB state | `/var/lib/9router/db.json` | Providers, combos, aliases, API keys |
-| Usage history | `~/.9router/usage.json` | Per-admin usage stats |
-| Usage log | `~/.9router/log.txt` | Usage log |
+| Usage history | `~/.9router/usage.json` | Per-admin usage stats *(app-managed, not created by OPS)* |
+| Usage log | `~/.9router/log.txt` | Usage log *(app-managed, not created by OPS)* |
 | PM2 process | `nine-router` | Managed by PM2 |
 | OPS state file | `/etc/ops/nine-router.conf` | OPS-level metadata |
 | Nginx vhost | `/etc/nginx/sites-available/nine-router.*` | Public routing |
@@ -256,6 +256,7 @@ NINE_ROUTER_DIR="/opt/9router"
 NINE_ROUTER_DATA_DIR="/var/lib/9router"
 NINE_ROUTER_PORT="20128"
 NINE_ROUTER_PM2_NAME="nine-router"
+NINE_ROUTER_RUNTIME_USER=""         # Linux user that owns PM2 and runs the process
 NINE_ROUTER_DOMAIN=""              # empty until linked via Domains menu
 NINE_ROUTER_SSL="no"               # updated to "yes" after certbot issues SSL
 NINE_ROUTER_REQUIRE_API_KEY="no"   # updated via Enable/Disable menu action

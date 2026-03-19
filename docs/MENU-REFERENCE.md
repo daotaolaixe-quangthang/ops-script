@@ -68,6 +68,8 @@ Submenu:
 3. **Edit domain**
 4. **Remove domain**
 5. **Test Nginx config & reload**
+6. **Install / update Nginx** — install from apt, apply global tuning (worker, TLS, security headers)
+7. **Advanced web controls** → submenu (Cloudflare real IP, custom X-Powered-By)
 0. **Back to main menu**
 
 **Add new domain flow (chốt):**
@@ -121,6 +123,7 @@ Submenu:
 1. **Issue SSL certificate for a domain**
 2. **Renew all certificates**
 3. **Show certificate status**
+4. **Install / repair Certbot (snap)**
 0. **Back to main menu**
 
 Guidelines:
@@ -150,6 +153,7 @@ Submenu:
 7. **View 9router logs**
 8. **Enable API key requirement** *(REQUIRE_API_KEY=true)*
 9. **Disable API key requirement** *(REQUIRE_API_KEY=false)*
+10. **Verify 9router** — PM2 online, `/v1/models` returns JSON, UFW port 20128 closed
 0. **Back to main menu**
 
 Notes:
@@ -262,11 +266,8 @@ Current implementation (monitoring.sh — đã full Phase 1 + Phase 2):
 **Telegram config implementation (chốt):**
 
 - Bot token: `/etc/ops/.telegram-bot-token` (0600, owned by ADMIN_USER) — never printed to terminal
-- Chat ID và TELEGRAM_ENABLED: hiện lưu trong `ops.conf` (`TELEGRAM_CHAT_ID`, `TELEGRAM_ENABLED`)
-
-> **⚠ Known drift (cần sửa):** Docs kia (`ARCHITECTURE.md`, `FEATURE-EXPANSION-SPEC.md`, `BUG-TRIAGE-INDEX.md`, `SOURCE-TO-RUNTIME-TRACE.md`) quy định Chat ID lưu tại `/etc/ops/notifications.conf`.
-> Implementation thực tế (`monitoring.sh`, `checks.sh`) lưu vào `ops.conf`.
-> **Hành động cần làm:** migrate monitoring.sh + checks.sh sang dùng `notifications.conf` để đồng bộ với toàn bộ docs còn lại.
+- Chat ID và `TELEGRAM_ENABLED`: lưu trong `/etc/ops/notifications.conf` — đúng theo `ARCHITECTURE.md`, `FEATURE-EXPANSION-SPEC.md`
+- Migration: nếu cũ lưu trong `ops.conf`, `monitoring_setup_telegram()` tự động migrate sang `notifications.conf`
 
 
 This reference must be kept in sync with the actual menu layout in `bin/ops`.

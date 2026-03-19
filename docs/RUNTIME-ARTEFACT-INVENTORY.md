@@ -45,7 +45,7 @@ Node services va 9router deu theo PM2 contract:
 | Source + build | `/opt/9router` | Next.js app code |
 | Env config | `/opt/9router/.env` | Secrets + runtime (0600) |
 | DB state | `/var/lib/9router/db.json` | Providers, combos, API keys |
-| Usage history | `~/.9router/usage.json` | Per-admin quota stats |
+| Usage history | `~/.9router/usage.json` | Per-admin quota stats *(app-managed, OPS does not create)* |
 | PM2 process | `nine-router` | PM2-managed duy nhat |
 | OPS state | `/etc/ops/nine-router.conf` | OPS-level metadata (0640) |
 | Nginx vhost | `/etc/nginx/sites-available/nine-router.*` | Public routing |

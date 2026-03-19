@@ -455,12 +455,12 @@ nine_router_start() {
 
 nine_router_stop() {
     print_section "Stop 9router"
-    pm2 stop "$NINE_ROUTER_PM2_NAME"
+    _nine_router_run_as_runtime_user pm2 stop "$NINE_ROUTER_PM2_NAME"
 }
 
 nine_router_status() {
     print_section "9router Status"
-    pm2 status "$NINE_ROUTER_PM2_NAME" || true
+    _nine_router_run_as_runtime_user pm2 status "$NINE_ROUTER_PM2_NAME" || true
     _nine_router_assert_ufw_closed || true
 }
 

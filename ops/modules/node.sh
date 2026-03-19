@@ -336,6 +336,14 @@ node_add_app() {
     local eco_dest="${app_dir}/ecosystem.config.js"
     if [[ -f "$tpl" ]]; then
         local app_path="${app_dir%/}/${app_entry}"
+        # Tier-aware memory ceiling: recycles process before it OOMs the VPS
+        local max_mem
+        case "${OPS_TIER:-M}" in
+            S) max_mem="300M" ;;
+            M) max_mem="500M" ;;
+            L) max_mem="800M" ;;
+            *) max_mem="500M" ;;
+        esac
         render_template "$tpl" \
             "APP_NAME=${pm2_name}" \
             "APP_PATH=${app_path}" \
@@ -343,6 +351,7 @@ node_add_app() {
             "INSTANCES=1" \
             "EXEC_MODE=fork" \
             "NODE_ENV=${app_env}" \
+            "MAX_MEMORY_RESTART=${max_mem}" \
             > "$eco_dest"
         print_ok "Rendered: $eco_dest"
     else

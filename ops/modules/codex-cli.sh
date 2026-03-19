@@ -118,14 +118,17 @@ configure_codex_with_openai_api() {
         return 1
     fi
 
+    prompt_input "Enter model name (e.g. gpt-4o, gpt-4, o1-mini)" "gpt-4o"
+    local model_name="${REPLY:-gpt-4o}"
+
     _codex_write_api_key_file "$api_key"
 
     _codex_set_state "CODEX_MODE" "openai-api"
     _codex_set_state "CODEX_ENDPOINT" "https://api.openai.com/v1"
-    _codex_set_state "CODEX_MODEL" "gpt-5"
+    _codex_set_state "CODEX_MODEL" "$model_name"
     _codex_set_state "CODEX_API_KEY_FILE" "$CODEX_API_KEY_FILE"
 
-    log_info "Codex CLI configured to use OpenAI API key"
+    log_info "Codex CLI configured to use OpenAI API key (model: ${model_name})"
 }
 
 configure_codex_chatgpt_oauth() {
