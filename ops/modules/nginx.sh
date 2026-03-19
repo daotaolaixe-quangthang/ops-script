@@ -477,6 +477,27 @@ _install_certbot_snap() {
     ln -sf /snap/bin/certbot /usr/bin/certbot
 }
 
+# nginx_apply_security_baseline
+# Public function — applies global security tuning to nginx.conf.
+# Idempotent: safe to run on a live server without disrupting sites.
+# Applies: server_tokens off, ssl_protocols TLSv1.2+, HSTS, X-Frame-Options,
+#          X-Content-Type-Options, Referrer-Policy, rate-limit zone.
+nginx_apply_security_baseline() {
+    print_section "Apply Nginx Security Baseline"
+    if ! command -v nginx >/dev/null 2>&1; then
+        print_error "Nginx is not installed."
+        return 1
+    fi
+    _nginx_apply_global_tuning
+    if nginx -t >/dev/null 2>&1; then
+        service_reload nginx
+        print_ok "Nginx security baseline applied and reloaded."
+    else
+        print_error "Nginx config test failed after tuning — check /etc/nginx/nginx.conf"
+        return 1
+    fi
+}
+
 # Public menu entry - Domains & Nginx
 menu_nginx() {
     while true; do
@@ -488,18 +509,20 @@ menu_nginx() {
         echo "  5) Test Nginx config & reload"
         echo "  6) Install / update Nginx"
         echo "  7) Advanced web controls"
+        echo "  8) Apply security baseline (server_tokens, TLS, headers)"
         echo "  0) Back"
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) list_domains             ;;
-            2) nginx_prompt_add_domain  ;;
+            1) list_domains                 ;;
+            2) nginx_prompt_add_domain      ;;
             3) print_warn "Edit domain: not implemented yet." ;;
-            4) nginx_prompt_remove_domain ;;
-            5) _nginx_test_and_reload   ;;
-            6) install_nginx            ;;
-            7) menu_nginx_web_controls  ;;
-            0) return                   ;;
+            4) nginx_prompt_remove_domain   ;;
+            5) _nginx_test_and_reload       ;;
+            6) install_nginx               ;;
+            7) menu_nginx_web_controls     ;;
+            8) nginx_apply_security_baseline ;;
+            0) return                      ;;
             *) print_warn "Invalid option" ;;
         esac
     done

@@ -107,17 +107,49 @@ wizard_step_security() {
     [[ "$WIZARD_SKIP" -eq 1 ]] && return 0
 
     # Source security module if available
-    local sec_mod="${OPS_ROOT:-/opt/ops}/ops/modules/security.sh"
+    local sec_mod="${OPS_ROOT:-/opt/ops}/modules/security.sh"
     if [[ -f "$sec_mod" ]]; then
         # shellcheck source=/dev/null
         source "$sec_mod"
-        if declare -f security_wizard_baseline >/dev/null 2>&1; then
-            security_wizard_baseline
-        else
-            _wizard_inline_security
-        fi
+    fi
+
+    if declare -f security_wizard_baseline >/dev/null 2>&1; then
+        security_wizard_baseline
     else
         _wizard_inline_security
+    fi
+
+    # ── Auto-apply non-interactive security baseline ──────────
+    # These are idempotent and safe for running production systems.
+
+    # 1. Kernel hardening (sysctl): send_redirects, rp_filter, suid_dumpable
+    if declare -f security_apply_sysctl_baseline >/dev/null 2>&1; then
+        log_info "Wizard: applying sysctl security baseline..."
+        security_apply_sysctl_baseline
+        print_ok "Kernel sysctl hardening applied."
+    fi
+
+    # 2. Strip cloud-init SSH overrides (idempotent)
+    if declare -f security_strip_cloud_init_overrides >/dev/null 2>&1; then
+        log_info "Wizard: stripping cloud-init SSH config overrides..."
+        security_strip_cloud_init_overrides
+    fi
+
+    # 3. fail2ban: rewrite config with current live SSH ports + nginx jails
+    if declare -f security_write_fail2ban_config >/dev/null 2>&1; then
+        if command -v fail2ban-client >/dev/null 2>&1; then
+            log_info "Wizard: reconciling fail2ban config..."
+            security_write_fail2ban_config
+            systemctl reload fail2ban >/dev/null 2>&1 || systemctl restart fail2ban >/dev/null 2>&1 || true
+            print_ok "fail2ban config reconciled (SSH ports + nginx jails)."
+        fi
+    fi
+
+    # 4. UFW: remove stale SSH port rules left from previous installs
+    if declare -f security_reconcile_ufw_rules >/dev/null 2>&1; then
+        log_info "Wizard: reconciling UFW rules (removing stale SSH ports)..."
+        security_reconcile_ufw_rules
+        print_ok "UFW rules reconciled."
     fi
 
     _wizard_mark_done "SECURITY"
@@ -142,19 +174,32 @@ wizard_step_nginx() {
     _wizard_step_header "NGINX" "Step 2 — Nginx Install & Tuning"
     [[ "$WIZARD_SKIP" -eq 1 ]] && return 0
 
-    local nginx_mod="${OPS_ROOT:-/opt/ops}/ops/modules/nginx.sh"
+    local nginx_mod="${OPS_ROOT:-/opt/ops}/modules/nginx.sh"
     if [[ -f "$nginx_mod" ]]; then
         # shellcheck source=/dev/null
         source "$nginx_mod"
-        if declare -f nginx_install >/dev/null 2>&1; then
-            nginx_install
-        fi
+    fi
+
+    if declare -f nginx_install >/dev/null 2>&1; then
+        nginx_install
     else
         log_info "Wizard: inline nginx install"
         apt_install nginx
         service_enable nginx
         service_start nginx
         print_ok "Nginx installed and started"
+    fi
+
+    # Always ensure security tuning is applied, even if nginx was pre-installed.
+    # _nginx_apply_global_tuning is idempotent: sets server_tokens off,
+    # TLSv1.2+, security headers. nginx -t + reload only if needed.
+    if command -v nginx >/dev/null 2>&1; then
+        if declare -f _nginx_apply_global_tuning >/dev/null 2>&1; then
+            log_info "Wizard: applying nginx security tuning baseline..."
+            _nginx_apply_global_tuning
+            nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
+            print_ok "Nginx security baseline applied (server_tokens off, TLSv1.2+, security headers)."
+        fi
     fi
 
     _wizard_mark_done "NGINX"

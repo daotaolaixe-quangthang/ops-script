@@ -224,8 +224,38 @@ _configure_sshd_fresh() {
     } > "$tmp"
     mv "$tmp" "$sshd_conf"
 
+    # Strip conflicting SSH directives from cloud-init include files.
+    # cloud-init injects PasswordAuthentication yes and PermitRootLogin
+    # into /etc/ssh/sshd_config.d/ — these must be removed so OPS can
+    # write 99-ops-hardening.conf with the correct hardened values.
+    _strip_cloud_init_ssh_overrides
+
     systemctl reload ssh 2>/dev/null || systemctl reload sshd
     ok "sshd reloaded — now listening on ports 22 and ${NEW_SSH_PORT}."
+}
+
+# _strip_cloud_init_ssh_overrides
+# Removes PasswordAuthentication, PermitRootLogin, X11Forwarding directives
+# from all sshd_config.d/ files EXCEPT 99-ops-hardening.conf.
+# Idempotent: safe to call multiple times.
+_strip_cloud_init_ssh_overrides() {
+    local sshd_inc_dir="/etc/ssh/sshd_config.d"
+    [[ -d "$sshd_inc_dir" ]] || return 0
+
+    local f
+    for f in "$sshd_inc_dir"/*.conf; do
+        [[ -f "$f" ]] || continue
+        [[ "$(basename "$f")" == "99-ops-hardening.conf" ]] && continue
+        if grep -Eq \
+            '^[[:space:]]*(PasswordAuthentication|PermitRootLogin|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|PermitTunnel)[[:space:]]+' \
+            "$f" 2>/dev/null; then
+            cp "$f" "${f}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+            sed -i -E \
+                '/^[[:space:]]*(PasswordAuthentication|PermitRootLogin|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|PermitTunnel)[[:space:]]+/d' \
+                "$f"
+            ok "Stripped conflicting SSH directives from: $(basename "$f")"
+        fi
+    done
 }
 
 configure_ufw() {

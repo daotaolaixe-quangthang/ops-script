@@ -213,6 +213,34 @@ security_reconcile_sshd_main_config() {
     fi
 }
 
+# security_strip_cloud_init_overrides
+# Public helper — strips conflicting SSH directives injected by cloud-init
+# from all include files EXCEPT 99-ops-hardening.conf.
+# Safe to call multiple times (idempotent via sed -i with no-match case).
+security_strip_cloud_init_overrides() {
+    if [[ ! -d "$SECURITY_SSHD_INCLUDE_DIR" ]]; then
+        return 0
+    fi
+
+    local stripped=0
+    local include_file
+    while IFS= read -r -d '' include_file; do
+        # Skip our own managed file
+        [[ "$(basename "$include_file")" == "99-ops-hardening.conf" ]] && continue
+        if grep -Eq '^[[:space:]]*(PasswordAuthentication|PermitRootLogin|Port|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|AllowStreamLocalForwarding|PermitTunnel)[[:space:]]+' "$include_file" 2>/dev/null; then
+            backup_file "$include_file" >/dev/null 2>&1 || true
+            sed -i -E '/^[[:space:]]*(PasswordAuthentication|PermitRootLogin|Port|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|AllowStreamLocalForwarding|PermitTunnel)[[:space:]]+/d' "$include_file"
+            log_info "Stripped conflicting SSH directives from: ${include_file}"
+            stripped=1
+        fi
+    done < <(find "$SECURITY_SSHD_INCLUDE_DIR" -maxdepth 1 -type f -print0 2>/dev/null)
+
+    if [[ "$stripped" -eq 1 ]]; then
+        print_ok "cloud-init SSH overrides stripped from sshd_config.d/"
+    fi
+    return 0
+}
+
 security_list_desired_ssh_ports() {
     local locked_port transition_port
     locked_port="$(security_get_locked_ssh_port)"
@@ -274,26 +302,49 @@ security_reconcile_ufw_rules() {
 
 security_write_fail2ban_config() {
     local ssh_ports
-    ssh_ports=$(security_list_desired_ssh_ports | paste -sd, -)
+    # Detect live SSH ports from ss (more reliable than sshd -T in non-session contexts)
+    ssh_ports=$(ss -tlnp 2>/dev/null \
+        | awk '/sshd/ {print $4}' \
+        | grep -oP ':\K[0-9]+$' \
+        | sort -un \
+        | paste -sd, - || true)
+    # Fallback: use OPS-managed ports from ops.conf
+    if [[ -z "$ssh_ports" ]]; then
+        ssh_ports=$(security_list_desired_ssh_ports | paste -sd, -)
+    fi
+    # Last fallback: port 22
+    ssh_ports="${ssh_ports:-22}"
+
     ensure_dir "/etc/fail2ban/jail.d"
     backup_file "$SECURITY_FAIL2BAN_JAIL_OPS" >/dev/null 2>&1 || true
+
+    # Build conditional nginx jails (only enable if filter file exists)
+    local nginx_auth_jail="" nginx_limit_jail=""
+    if [[ -f /etc/fail2ban/filter.d/nginx-http-auth.conf ]]; then
+        nginx_auth_jail="$(printf '[nginx-http-auth]\nenabled  = true\nport     = http,https\nlogpath  = %%(nginx_error_log)s\nmaxretry = 3\n')"
+    fi
+    if [[ -f /etc/fail2ban/filter.d/nginx-limit-req.conf ]]; then
+        nginx_limit_jail="$(printf '[nginx-limit-req]\nenabled  = true\nport     = http,https\nlogpath  = %%(nginx_error_log)s\nmaxretry = 10\nfindtime = 1m\n')"
+    fi
+
     write_file "$SECURITY_FAIL2BAN_JAIL_OPS" <<EOF_JAIL
+# Managed by OPS — do not edit manually.
 [DEFAULT]
 bantime = 1d
 findtime = 10m
 maxretry = 3
+bantime.increment = true
+bantime.maxtime = 2w
 backend = systemd
 
 [sshd]
-enabled = true
-port = ${ssh_ports}
-logpath = %(sshd_log)s
+enabled  = true
+port     = ${ssh_ports}
+logpath  = %(sshd_log)s
+maxretry = 3
 
-[nginx-http-auth]
-enabled = true
-
-[nginx-badbots]
-enabled = true
+${nginx_auth_jail}
+${nginx_limit_jail}
 EOF_JAIL
     chmod 644 "$SECURITY_FAIL2BAN_JAIL_OPS"
 }
@@ -302,10 +353,21 @@ security_apply_sysctl_baseline() {
     backup_file "$SECURITY_SYSCTL_OPS_CONF" >/dev/null 2>&1 || true
     write_file "$SECURITY_SYSCTL_OPS_CONF" <<EOF_SYSCTL
 # Managed by OPS — do not edit manually.
+# Network: disable ICMP send redirects (server is not a router)
 net.ipv4.conf.all.send_redirects = 0
 net.ipv4.conf.default.send_redirects = 0
+# Network: strict reverse path filtering (prevent IP spoofing)
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+# Network: reject source-routed packets
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+# Network: log martian packets (helps detect spoofing)
 net.ipv4.conf.all.log_martians = 1
 net.ipv4.conf.default.log_martians = 1
+# Kernel: disable core dumps for SUID binaries
+fs.suid_dumpable = 0
+# Memory: reduce swap aggressiveness on VPS
 vm.swappiness = 10
 EOF_SYSCTL
     chmod 644 "$SECURITY_SYSCTL_OPS_CONF"
