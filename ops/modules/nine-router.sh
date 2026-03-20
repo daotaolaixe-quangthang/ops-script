@@ -54,10 +54,32 @@ _nine_router_set_state() {
 }
 
 _nine_router_assert_ufw_closed() {
-    if ufw status 2>/dev/null | grep -q "20128"; then
-        log_error "Security invariant violation: UFW has a rule containing port 20128"
-        print_error "Port 20128 appears in UFW rules. Remove it immediately."
-        return 1
+    local ufw_out
+    ufw_out=$(ufw status 2>/dev/null || true)
+
+    # Only ALLOW rules are a security violation — DENY rules are fine (correct posture).
+    if printf '%s\n' "$ufw_out" | grep -Eq "20128.*ALLOW|ALLOW.*20128"; then
+        log_warn "Security invariant: UFW has an ALLOW rule for port 20128 — removing it automatically"
+        ufw delete allow 20128/tcp  >/dev/null 2>&1 || true
+        ufw delete allow 20128      >/dev/null 2>&1 || true
+        ufw delete allow 20128/udp  >/dev/null 2>&1 || true
+        # Verify removal
+        local ufw_recheck
+        ufw_recheck=$(ufw status 2>/dev/null || true)
+        if printf '%s\n' "$ufw_recheck" | grep -Eq "20128.*ALLOW|ALLOW.*20128"; then
+            log_error "Security invariant violation: UFW still has an ALLOW rule for port 20128"
+            print_error "Port 20128 is publicly allowed in UFW. Remove it manually: sudo ufw delete allow 20128/tcp"
+            return 1
+        fi
+        log_info "UFW ALLOW rule for port 20128 removed automatically"
+    fi
+
+    # Also clean up any stale DENY rule (not a security issue, but keep UFW tidy)
+    if printf '%s\n' "$ufw_out" | grep -Eq "20128.*DENY|DENY.*20128"; then
+        log_info "Removing stale UFW DENY rule for port 20128 (unnecessary — 9router binds only on localhost)"
+        ufw delete deny 20128/tcp >/dev/null 2>&1 || true
+        ufw delete deny 20128     >/dev/null 2>&1 || true
+        ufw delete deny 20128/udp >/dev/null 2>&1 || true
     fi
 
     log_info "Verified UFW: no rule exposes port 20128"
@@ -256,15 +278,29 @@ install_nine_router() {
 
     ensure_dir "$OPS_CONFIG_DIR"
 
-    if [[ -d "${NINE_ROUTER_DIR}/.git" ]]; then
-        log_info "9router repo already exists at ${NINE_ROUTER_DIR}; syncing latest"
-        git -C "$NINE_ROUTER_DIR" pull --ff-only
-    elif [[ -e "$NINE_ROUTER_DIR" ]]; then
-        log_error "${NINE_ROUTER_DIR} exists and is not a git clone"
-        return 1
-    else
-        git clone "$NINE_ROUTER_REPO_URL" "$NINE_ROUTER_DIR"
+    if [[ -e "$NINE_ROUTER_DIR" ]]; then
+        if [[ -d "${NINE_ROUTER_DIR}/.git" ]]; then
+            print_warn "9router is already installed at ${NINE_ROUTER_DIR}."
+        else
+            print_warn "${NINE_ROUTER_DIR} exists but is not a git repository."
+        fi
+        if ! prompt_confirm "Xóa và cài lại từ đầu?"; then
+            print_warn "Installation cancelled."
+            return 0
+        fi
+        log_info "Removing ${NINE_ROUTER_DIR} for fresh install..."
+        if _nine_router_run_as_runtime_user pm2 describe "$NINE_ROUTER_PM2_NAME" >/dev/null 2>&1; then
+            _nine_router_run_as_runtime_user pm2 delete "$NINE_ROUTER_PM2_NAME" || true
+        fi
+        rm -rf "$NINE_ROUTER_DIR"
+        log_info "Removed ${NINE_ROUTER_DIR}"
     fi
+
+    # Ensure git trusts the target directory (fixes "dubious ownership" error
+    # when root clones into a dir previously owned by another user).
+    git config --global --add safe.directory "$NINE_ROUTER_DIR" 2>/dev/null || true
+
+    git clone "$NINE_ROUTER_REPO_URL" "$NINE_ROUTER_DIR"
 
     cd "$NINE_ROUTER_DIR"
     npm install
@@ -504,19 +540,22 @@ _nine_router_show_status() {
     fi
 
     # ── PM2: status + restarts ────────────────────────────────────
-    runtime_user="$(_nine_router_runtime_user)"
     pm2_json="$(_nine_router_run_as_runtime_user pm2 jlist 2>/dev/null || true)"
 
-    # Extract the JSON object for our process by name
-    pm2_entry=""
+    # Split multi-process JSON array into one-object-per-line, then grep our process.
+    # pm2 jlist returns: [{...},{...}] — we split on },{ boundary.
+    local pm2_proc_line
+    pm2_proc_line=""
     if [[ -n "$pm2_json" ]]; then
-        # Use awk to find the block with "name":"nine-router" and capture status + restart_time
-        pm2_entry=$(echo "$pm2_json" | tr ',' '\n' | grep -A2 -B2 '"nine-router"' || true)
+        pm2_proc_line=$(echo "$pm2_json" \
+            | sed 's/},{/}\n{/g' \
+            | grep '"nine-router"' \
+            | head -n1 || true)
     fi
 
-    if [[ -n "$pm2_entry" ]]; then
-        pm2_status=$(echo "$pm2_json" | tr '{' '\n' | grep '"nine-router"' | grep -o '"status":"[^"]*"' | head -n1 | cut -d: -f2 | tr -d '"' || true)
-        restarts=$(echo "$pm2_json" | tr '{' '\n' | grep '"nine-router"' | grep -o '"restart_time":[0-9]*' | head -n1 | cut -d: -f2 | tr -d '"' || true)
+    if [[ -n "$pm2_proc_line" ]]; then
+        pm2_status=$(echo "$pm2_proc_line" | grep -o '"status":"[^"]*"' | head -n1 | cut -d: -f2 | tr -d '"\n' || true)
+        restarts=$(echo "$pm2_proc_line" | grep -o '"restart_time":[0-9]*' | head -n1 | cut -d: -f2 | tr -d '\n' || true)
 
         local pm2_status_label
         case "${pm2_status:-}"
