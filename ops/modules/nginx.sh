@@ -484,6 +484,7 @@ _install_certbot_snap() {
 #          X-Content-Type-Options, Referrer-Policy, rate-limit zone.
 nginx_apply_security_baseline() {
     print_section "Apply Nginx Security Baseline"
+    require_root || return 1
     if ! command -v nginx >/dev/null 2>&1; then
         print_error "Nginx is not installed."
         return 1
@@ -553,6 +554,7 @@ menu_ssl() {
 # install_nginx: install + tune nginx.conf per OPS_TIER, ensure default deny
 install_nginx() {
     print_section "Install Nginx"
+    require_root || return 1
     apt_update
     apt_install nginx
     service_enable nginx
@@ -600,6 +602,7 @@ list_domains() {
 
 nginx_prompt_add_domain() {
     print_section "Add New Domain"
+    require_root || return 1
     prompt_input "Enter domain (e.g. example.com)"
     local domain="$REPLY"
 
@@ -623,6 +626,7 @@ nginx_prompt_add_domain() {
 add_domain() {
     local domain="${1:-}"
     local type="${2:-}"
+    require_root || return 1
 
     if [[ -z "$domain" || -z "$type" ]]; then
         print_error "Usage: add_domain <domain> <node|php|static>"
@@ -706,6 +710,7 @@ add_domain() {
 
 nginx_prompt_remove_domain() {
     print_section "Remove Domain"
+    require_root || return 1
     prompt_input "Enter domain to remove"
     remove_domain "$REPLY"
 }
@@ -713,6 +718,7 @@ nginx_prompt_remove_domain() {
 # remove_domain <domain>
 remove_domain() {
     local domain="${1:-}"
+    require_root || return 1
     if [[ -z "$domain" ]]; then
         print_error "Usage: remove_domain <domain>"
         return 1
@@ -737,6 +743,7 @@ remove_domain() {
 # issue_ssl <domain>
 issue_ssl() {
     local domain="${1:-}"
+    require_root || return 1
     if [[ -z "$domain" ]]; then
         print_error "Usage: issue_ssl <domain>"
         return 1
@@ -807,6 +814,7 @@ ssl_issue_cert() {
     issue_ssl "$REPLY"
 }
 ssl_renew_all() {
+    require_root || return 1
     _install_certbot_snap
     certbot renew
     log_info "Post-renew SSL sync for all managed vhosts"
@@ -845,6 +853,7 @@ menu_nginx_web_controls() {
 
 nginx_enable_cloudflare_real_ip() {
     print_section "Enable Cloudflare Real IP Logging"
+    require_root || return 1
 
     local tpl="${NGINX_TEMPLATE_DIR}/cloudflare-real-ip.conf.tpl"
     local snippet="${NGINX_SNIPPETS_DIR}/cloudflare-real-ip.conf"
@@ -870,6 +879,7 @@ nginx_enable_cloudflare_real_ip() {
 
 nginx_remove_cloudflare_real_ip() {
     print_section "Remove Cloudflare Real IP Snippet"
+    require_root || return 1
     local snippet="${NGINX_SNIPPETS_DIR}/cloudflare-real-ip.conf"
     if [[ ! -f "$snippet" ]]; then
         print_warn "Snippet not found: $snippet (nothing to remove)"
@@ -889,6 +899,7 @@ nginx_remove_cloudflare_real_ip() {
 
 nginx_add_custom_powered_by() {
     print_section "Add Custom X-Powered-By Header"
+    require_root || return 1
 
     local tpl="${NGINX_TEMPLATE_DIR}/custom-powered-by.conf.tpl"
     local snippet="${NGINX_SNIPPETS_DIR}/custom-powered-by.conf"
@@ -921,6 +932,7 @@ nginx_add_custom_powered_by() {
 
 nginx_remove_custom_powered_by() {
     print_section "Remove Custom X-Powered-By Snippet"
+    require_root || return 1
     local snippet="${NGINX_SNIPPETS_DIR}/custom-powered-by.conf"
     if [[ ! -f "$snippet" ]]; then
         print_warn "Snippet not found: $snippet (nothing to remove)"

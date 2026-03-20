@@ -164,6 +164,7 @@ _node_pick_app() {
 # P1-06 task 1: Install Node.js LTS via nodesource apt (chốt)
 node_install() {
     print_section "Install Node.js LTS"
+    require_root || return 1
 
     if command -v node >/dev/null 2>&1; then
         print_ok "Node.js already installed: $(node --version)"
@@ -190,6 +191,7 @@ node_install() {
 # P1-06 task 2+3: Install PM2 global + configure startup
 node_install_pm2() {
     print_section "Install / Update PM2"
+    require_root || return 1
 
     if ! command -v node >/dev/null 2>&1; then
         print_error "Node.js is not installed. Run option 1 first."
@@ -261,6 +263,7 @@ node_list_apps() {
 # P1-06 task 4 (create): Add/register a new Node.js app
 node_add_app() {
     print_section "Add Node.js App"
+    require_root || return 1
 
     if ! command -v pm2 >/dev/null 2>&1; then
         print_error "PM2 not installed. Run option 2 first."
@@ -385,6 +388,7 @@ EOF
 # P1-06: Remove an app
 node_remove_app() {
     print_section "Remove Node.js App"
+    require_root || return 1
 
     if ! _node_pick_app "App to remove"; then
         return 1
@@ -417,6 +421,7 @@ node_remove_app() {
 # P1-06: Restart a PM2 app
 node_restart_app() {
     print_section "Restart Node.js App"
+    require_root || return 1
 
     if ! _node_pick_app "App to restart"; then
         return 1

@@ -86,6 +86,7 @@ _wizard_step_header() {
 # Step 0: System update + base tools
 wizard_step_system_update() {
     _wizard_step_header "SYSTEM_UPDATE" "Step 0 — System Update & Base Tools"
+    require_root || return 1
     [[ "$WIZARD_SKIP" -eq 1 ]] && return 0
 
     log_info "Wizard: system update"
@@ -104,6 +105,7 @@ wizard_step_system_update() {
 # Step 1: Security (SSH port, UFW, fail2ban)
 wizard_step_security() {
     _wizard_step_header "SECURITY" "Step 1 — Security Baseline"
+    require_root || return 1
     [[ "$WIZARD_SKIP" -eq 1 ]] && return 0
 
     # Source security module if available
@@ -172,6 +174,7 @@ _wizard_inline_security() {
 # Step 2: Nginx
 wizard_step_nginx() {
     _wizard_step_header "NGINX" "Step 2 — Nginx Install & Tuning"
+    require_root || return 1
     [[ "$WIZARD_SKIP" -eq 1 ]] && return 0
 
     local nginx_mod="${OPS_ROOT:-/opt/ops}/modules/nginx.sh"
@@ -209,6 +212,7 @@ wizard_step_nginx() {
 # Step 3: Node.js + PM2
 wizard_step_node() {
     _wizard_step_header "NODE" "Step 3 — Node.js LTS & PM2"
+    require_root || return 1
     [[ "$WIZARD_SKIP" -eq 1 ]] && return 0
 
     # node.sh is sourced by bin/ops already; call directly
@@ -235,6 +239,7 @@ wizard_step_node() {
 # Step 4: PHP (multi-version)
 wizard_step_php() {
     _wizard_step_header "PHP" "Step 4 — PHP (multi-version via ondrej/php)"
+    require_root || return 1
     [[ "$WIZARD_SKIP" -eq 1 ]] && return 0
 
     local php_mod="${OPS_ROOT:-/opt/ops}/modules/php.sh"
@@ -269,6 +274,7 @@ wizard_step_php() {
 # Step 5: Database (MariaDB default per spec)
 wizard_step_database() {
     _wizard_step_header "DATABASE" "Step 5 — Database (MariaDB)"
+    require_root || return 1
     [[ "$WIZARD_SKIP" -eq 1 ]] && return 0
 
     local db_mod="${OPS_ROOT:-/opt/ops}/modules/database.sh"
@@ -300,6 +306,7 @@ wizard_step_database() {
 # ── Full wizard orchestration ─────────────────────────────────
 wizard_run_full() {
     print_section "Full Production Wizard"
+    require_root || return 1
 
     # Re-run guard
     if _wizard_is_done "FULL_WIZARD"; then

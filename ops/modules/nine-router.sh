@@ -252,6 +252,7 @@ _nine_router_render_pm2_config() {
 
 install_nine_router() {
     print_section "Install 9router"
+    require_root || return 1
 
     ensure_dir "$OPS_CONFIG_DIR"
 
@@ -324,6 +325,7 @@ EOF
 }
 
 link_nine_router_domain() {
+    require_root || return 1
     local domain="${1:-}"
     if [[ -z "$domain" ]]; then
         prompt_input "Enter domain for 9router"
@@ -356,6 +358,7 @@ link_nine_router_domain() {
 }
 
 toggle_require_api_key() {
+    require_root || return 1
     local mode="${1:-}"
     local require_api_key
     local state_value
@@ -395,6 +398,7 @@ toggle_require_api_key() {
 
 verify_nine_router() {
     print_section "Verify 9router"
+    require_root || return 1
 
     local pm2_line
     pm2_line=$(_nine_router_run_as_runtime_user pm2 status "$NINE_ROUTER_PM2_NAME" 2>/dev/null | grep "$NINE_ROUTER_PM2_NAME" | head -n1 || true)
@@ -418,6 +422,7 @@ verify_nine_router() {
 
 update_nine_router() {
     print_section "Update 9router"
+    require_root || return 1
 
     if [[ ! -d "${NINE_ROUTER_DIR}/.git" ]]; then
         log_error "9router is not installed in ${NINE_ROUTER_DIR}"
@@ -443,18 +448,21 @@ nine_router_update() { update_nine_router; }
 
 nine_router_restart() {
     print_section "Restart 9router"
+    require_root || return 1
     _nine_router_run_as_runtime_user pm2 restart "$NINE_ROUTER_PM2_NAME"
     _nine_router_assert_ufw_closed
 }
 
 nine_router_start() {
     print_section "Start 9router"
+    require_root || return 1
     _nine_router_run_as_runtime_user pm2 start "$NINE_ROUTER_PM2_NAME"
     _nine_router_assert_ufw_closed
 }
 
 nine_router_stop() {
     print_section "Stop 9router"
+    require_root || return 1
     _nine_router_run_as_runtime_user pm2 stop "$NINE_ROUTER_PM2_NAME"
 }
 

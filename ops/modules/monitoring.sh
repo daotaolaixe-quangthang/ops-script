@@ -367,6 +367,7 @@ _monitoring_telegram_token_file() { echo "${OPS_CONFIG_DIR:-/etc/ops}/.telegram-
 
 monitoring_setup_telegram() {
     print_section "Setup Telegram Notifications"
+    require_root || return 1
 
     prompt_secret "Telegram Bot Token (input hidden)"
     local bot_token="${SECRET:-}"
@@ -485,6 +486,7 @@ menu_monitoring_netdata() {
 
 monitoring_install_netdata() {
     print_section "Install Netdata"
+    require_root || return 1
 
     # RAM guard — Netdata idle ~50-80MB, warn on < 512MB
     local ram_mb
@@ -527,6 +529,7 @@ monitoring_install_netdata() {
 
 monitoring_remove_netdata() {
     print_section "Remove Netdata"
+    require_root || return 1
 
     if ! command -v netdata >/dev/null 2>&1 && \
        ! systemctl list-unit-files 2>/dev/null | grep -q '^netdata\.service'; then
@@ -649,6 +652,7 @@ ops_print_update_banner() {
 
 ops_self_update() {
     print_section "Update OPS from GitHub"
+    require_root || return 1
 
     local ops_root="${OPS_ROOT:-}"
     if [[ -z "$ops_root" || ! -d "$ops_root" ]]; then

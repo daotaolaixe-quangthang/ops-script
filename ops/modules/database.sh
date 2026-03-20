@@ -131,6 +131,7 @@ _db_save_database_conf() {
 
 install_mariadb() {
     print_section "Install MariaDB"
+    require_root || return 1
 
     _db_assert_not_rescue_mode || return 1
 
@@ -163,6 +164,7 @@ install_mariadb() {
 
 tune_mariadb() {
     print_section "Tune MariaDB (Tier: ${OPS_TIER:-M})"
+    require_root || return 1
 
     _db_assert_not_rescue_mode || return 1
 
@@ -209,6 +211,7 @@ EOF_TUNE
 }
 
 create_db_user() {
+    require_root || return 1
     local db_name="${1:-}"
     local db_user="${2:-}"
 
@@ -290,6 +293,7 @@ db_apply_tuning() {
 
 db_create() {
     print_section "Create Database"
+    require_root || return 1
     prompt_input "Database name"
     local db_name="$REPLY"
 
@@ -304,6 +308,7 @@ db_create() {
 
 db_create_user() {
     print_section "Create Database User"
+    require_root || return 1
     prompt_input "Database name"
     local db_name="$REPLY"
     prompt_input "Database user"
@@ -313,6 +318,7 @@ db_create_user() {
 
 db_drop() {
     print_section "Drop Database"
+    require_root || return 1
     prompt_input "Database name"
     local db_name="$REPLY"
 

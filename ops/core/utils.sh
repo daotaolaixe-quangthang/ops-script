@@ -135,3 +135,19 @@ file_contains() {
     local pattern="$2"
     grep -q "$pattern" "$file" 2>/dev/null
 }
+
+# ── Root privilege guard ──────────────────────────────────────
+# Usage: require_root || return 1
+# Call at the top of any action function that needs root.
+# Prints a clear warning and returns 1 so the menu loop continues gracefully.
+require_root() {
+    if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+        echo ""
+        print_error "This action requires root privileges."
+        print_warn  "Please run:  sudo ops"
+        echo ""
+        return 1
+    fi
+}
+# alias for compatibility
+assert_root() { require_root; }

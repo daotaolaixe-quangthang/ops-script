@@ -74,6 +74,7 @@ _backup_db_root_exec() {
 # Dumps a single database to /var/backups/ops/db/<dbname>-<ts>.sql.gz
 backup_dump_db() {
     local db_name="${1:-}"
+    require_root || return 1
     if [[ -z "$db_name" ]]; then
         print_error "Usage: backup_dump_db <dbname>"
         return 1
@@ -129,6 +130,7 @@ backup_dump_db() {
 # Dumps all non-system databases to individual files.
 backup_dump_all_dbs() {
     print_section "DB Dump: All Databases"
+    require_root || return 1
 
     local dbs_raw
     if mysql --protocol=socket -u root -e "SHOW DATABASES;" >/dev/null 2>&1; then
@@ -166,6 +168,7 @@ backup_dump_all_dbs() {
 
 backup_archive_configs() {
     print_section "Config Archive"
+    require_root || return 1
 
     _backup_ensure_dirs
     _backup_check_disk "$BACKUP_CONFIG_DIR"
