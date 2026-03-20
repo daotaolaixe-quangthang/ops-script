@@ -477,9 +477,102 @@ nine_router_logs() {
     pm2 logs "$NINE_ROUTER_PM2_NAME" --lines 50
 }
 
+_nine_router_show_status() {
+    local installed_label domain pm2_status restarts api_key log_lines
+    local runtime_user pm2_json pm2_entry
+
+    # ── Installation ─────────────────────────────────────────────
+    if [[ -d "${NINE_ROUTER_DIR}/.git" ]]; then
+        installed_label="${GRN}✓ Installed${RST}  (${NINE_ROUTER_DIR})"
+    else
+        installed_label="${RED}✗ Not installed${RST}"
+    fi
+
+    # ── Domain ───────────────────────────────────────────────────
+    domain="$(ops_conf_get "nine-router.conf" "NINE_ROUTER_DOMAIN" 2>/dev/null || true)"
+    local domain_label
+    if [[ -n "$domain" ]]; then
+        local ssl_val
+        ssl_val="$(ops_conf_get "nine-router.conf" "NINE_ROUTER_SSL" 2>/dev/null || true)"
+        if [[ "$ssl_val" == "yes" ]]; then
+            domain_label="${GRN}${domain}${RST}  (SSL ✓)"
+        else
+            domain_label="${YLW}${domain}${RST}  (no SSL)"
+        fi
+    else
+        domain_label="${BLD}—${RST}  (not configured)"
+    fi
+
+    # ── PM2: status + restarts ────────────────────────────────────
+    runtime_user="$(_nine_router_runtime_user)"
+    pm2_json="$(_nine_router_run_as_runtime_user pm2 jlist 2>/dev/null || true)"
+
+    # Extract the JSON object for our process by name
+    pm2_entry=""
+    if [[ -n "$pm2_json" ]]; then
+        # Use awk to find the block with "name":"nine-router" and capture status + restart_time
+        pm2_entry=$(echo "$pm2_json" | tr ',' '\n' | grep -A2 -B2 '"nine-router"' || true)
+    fi
+
+    if [[ -n "$pm2_entry" ]]; then
+        pm2_status=$(echo "$pm2_json" | tr '{' '\n' | grep '"nine-router"' | grep -o '"status":"[^"]*"' | head -n1 | cut -d: -f2 | tr -d '"' || true)
+        restarts=$(echo "$pm2_json" | tr '{' '\n' | grep '"nine-router"' | grep -o '"restart_time":[0-9]*' | head -n1 | cut -d: -f2 | tr -d '"' || true)
+
+        local pm2_status_label
+        case "${pm2_status:-}"
+        in
+            online)   pm2_status_label="${GRN}✓ online${RST}" ;;
+            stopping) pm2_status_label="${YLW}⏸ stopping${RST}" ;;
+            stopped)  pm2_status_label="${YLW}■ stopped${RST}" ;;
+            errored)  pm2_status_label="${RED}✗ errored${RST}" ;;
+            *)        pm2_status_label="${YLW}${pm2_status:-unknown}${RST}" ;;
+        esac
+
+        restarts="${restarts:-0}"
+    else
+        pm2_status_label="${BLD}—${RST}  (not registered)"
+        restarts="${BLD}—${RST}"
+    fi
+
+    # ── API Key requirement ───────────────────────────────────────
+    local api_key_raw
+    api_key_raw="$(ops_conf_get "nine-router.conf" "NINE_ROUTER_REQUIRE_API_KEY" 2>/dev/null || true)"
+    if [[ "$api_key_raw" == "yes" ]]; then
+        api_key="${GRN}enabled${RST}"
+    elif [[ "$api_key_raw" == "no" ]]; then
+        api_key="${YLW}disabled${RST}"
+    else
+        api_key="${BLD}—${RST}"
+    fi
+
+    # ── Log line count ────────────────────────────────────────────
+    # Log paths are set by the PM2 ecosystem config (error_file / out_file)
+    local out_log err_log total_lines
+    out_log="/var/log/ops/${NINE_ROUTER_PM2_NAME}.out.log"
+    err_log="/var/log/ops/${NINE_ROUTER_PM2_NAME}.err.log"
+    total_lines=0
+    if [[ -f "$out_log" ]]; then
+        total_lines=$(( total_lines + $(wc -l < "$out_log" 2>/dev/null || echo 0) ))
+    fi
+    if [[ -f "$err_log" ]]; then
+        total_lines=$(( total_lines + $(wc -l < "$err_log" 2>/dev/null || echo 0) ))
+    fi
+
+    # ── Render ────────────────────────────────────────────────────
+    echo -e "  ${BLD}📦 Installation  :${RST} ${installed_label}"
+    echo -e "  ${BLD}🌐 Local address  :${RST} 127.0.0.1:${NINE_ROUTER_PORT}"
+    echo -e "  ${BLD}🔗 Domain         :${RST} ${domain_label}"
+    echo -e "  ${BLD}🚦 PM2 Status     :${RST} ${pm2_status_label}"
+    echo -e "  ${BLD}🔄 Restarts       :${RST} ${restarts}"
+    echo -e "  ${BLD}🔑 API Key        :${RST} ${api_key}"
+    echo -e "  ${BLD}📋 Log lines      :${RST} ${total_lines}"
+    echo ""
+}
+
 menu_nine_router() {
     while true; do
         print_section "9router Management"
+        _nine_router_show_status
         echo "  1) Install 9router"
         echo "  2) Update 9router"
         echo "  3) Link 9router to a domain"

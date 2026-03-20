@@ -182,7 +182,35 @@ Guidelines:
 
 Entry: `5) 9router Management`
 
-Submenu:
+**Status dashboard (hiển thị tự động khi vào menu):**
+
+Ngay khi vào menu `5) 9router Management`, OPS hiển thị một status block tóm tắt trạng thái hiện tại của 9router:
+
+```
+━━━ 9router Management ━━━
+
+  📦 Installation  : ✓ Installed  (/opt/9router)
+  🌐 Local address  : 127.0.0.1:20128
+  🔗 Domain         : proxy.example.com  (SSL ✓)
+  🚦 PM2 Status     : ✓ online
+  🔄 Restarts       : 3
+  🔑 API Key        : disabled
+  📋 Log lines      : 1452
+```
+
+| Trường | Nguồn dữ liệu | Fallback khi chưa cài |
+|---|---|---|
+| Installation | `[[ -d /opt/9router/.git ]]` | `✗ Not installed` (đỏ) |
+| Local address | Hằng `NINE_ROUTER_PORT=20128` | Luôn hiện |
+| Domain | `ops_conf_get nine-router.conf NINE_ROUTER_DOMAIN` | `— (not configured)` |
+| PM2 Status | `pm2 jlist` JSON parse (field `status`) | `— (not registered)` |
+| Restarts | `pm2 jlist` JSON parse (field `restart_time`) | `—` |
+| API Key | `ops_conf_get nine-router.conf NINE_ROUTER_REQUIRE_API_KEY` | `—` |
+| Log lines | `wc -l` cộng `nine-router.out.log` + `nine-router.err.log` | `0` |
+
+Màu sắc: xanh = tốt / hoạt động, vàng = cần chú ý / disabled, đỏ = lỗi / chưa cài. Nếu 9router chưa cài, mọi trường PM2-related hiện `—` thay vì crash.
+
+**Submenu:**
 
 1. **Install 9router**
 2. **Update 9router** (git pull + npm build + pm2 restart)
