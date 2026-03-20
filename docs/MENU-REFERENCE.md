@@ -81,16 +81,19 @@ Entry: `2) Node.js Services`
 
 Submenu:
 
-1. **List Node.js services**
-2. **Create new Node.js service**
-3. **Start / Stop / Restart a service**
-4. **View service logs**
+1. **List Node.js apps (PM2)** — show PM2 process list + registered apps in `/etc/ops/apps/`
+2. **Add Node.js app** — register app, create `ecosystem.config.js`, start via PM2
+3. **Remove Node.js app** — delete PM2 process + registry entry, backup conf
+4. **Restart app** — `pm2 restart <pm2_name>`
+5. **Show app logs** — `pm2 logs <pm2_name> --lines N --nostream`
 0. **Back to main menu**
 
 Notes:
 
 - Implementation uses **PM2** for all Node.js services. `systemd` remains for OS-level services only.
-- "Service" here means a long-running Node.js application (including but not limited to 9router).
+- "App" here means a long-running Node.js application (including but not limited to 9router).
+- **Installing Node.js LTS and PM2 is done via the Production Setup Wizard** (`1) Production Setup Wizard → 5) Install Node.js LTS & PM2`), not from this menu.
+- Apps are registered in `/etc/ops/apps/<appname>.conf`; runtime user is derived from `ops.conf`.
 
 ---
 

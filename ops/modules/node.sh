@@ -17,24 +17,20 @@
 menu_node() {
     while true; do
         print_section "Node.js Services"
-        echo "  1) Install Node.js LTS"
-        echo "  2) Install / update PM2"
-        echo "  3) List Node.js apps (PM2)"
-        echo "  4) Add Node.js app"
-        echo "  5) Remove Node.js app"
-        echo "  6) Restart app"
-        echo "  7) Show app logs"
+        echo "  1) List Node.js apps (PM2)"
+        echo "  2) Add Node.js app"
+        echo "  3) Remove Node.js app"
+        echo "  4) Restart app"
+        echo "  5) Show app logs"
         echo "  0) Back"
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) node_install         ;;
-            2) node_install_pm2     ;;
-            3) node_list_apps       ;;
-            4) node_add_app         ;;
-            5) node_remove_app      ;;
-            6) node_restart_app     ;;
-            7) node_show_logs       ;;
+            1) node_list_apps       ;;
+            2) node_add_app         ;;
+            3) node_remove_app      ;;
+            4) node_restart_app     ;;
+            5) node_show_logs       ;;
             0) return               ;;
             *) print_warn "Invalid option" ;;
         esac
