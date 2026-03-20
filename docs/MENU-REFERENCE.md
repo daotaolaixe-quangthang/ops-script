@@ -2,6 +2,43 @@
 
 This document defines all user-facing menus and submenus. Menu labels must remain in English as specified here so that documentation and automation stay in sync.
 
+---
+
+### 0. SSH Login Dashboard & Menu Entry
+
+After a successful SSH login as the admin user, OPS automatically shows a **login dashboard** (`ops-dashboard`) that displays system info, resources, and service status.
+
+At the bottom of the dashboard, the following prompt appears:
+
+```
+  Press 1 to open OPS menu, or Enter to continue to the shell:
+```
+
+**How to access the OPS menu:**
+
+| Method | Command / Action |
+|---|---|
+| From the login dashboard | Press `1` then Enter |
+| From any shell session | Run `ops` |
+
+Both methods launch the same main OPS menu.
+
+**Technical note on the login hook (`~/.bash_profile`):**
+The hook uses `SSH_CONNECTION` (always set by `sshd` for interactive SSH sessions) as the login guard, **not** `SSH_TTY` (which some SSH clients may leave unset). This ensures the dashboard reliably appears on every SSH login.
+
+```bash
+# OPS login hook — ~/.bash_profile
+if [[ $- == *i* ]] && [[ -n "${SSH_CONNECTION:-}" ]]; then
+    if command -v ops-dashboard &>/dev/null; then
+        ops-dashboard
+    fi
+fi
+```
+
+> If the dashboard doesn't appear after SSH login, verify your `~/.bash_profile` uses `SSH_CONNECTION` (not `SSH_TTY`). Re-run `ops-setup.sh` to regenerate the hook.
+
+---
+
 ### 1. Main menu (`ops`)
 
 Suggested layout:
