@@ -108,24 +108,50 @@ setup_login_hook() {
 
     local profile="${admin_home}/.bash_profile"
     local hook_marker="# OPS login hook — do not remove"
+    # Versioned marker: bump version when hook content changes so re-install
+    # rewrites stale hooks from older OPS versions automatically.
+    local hook_version="OPS_HOOK_V2"
+    local hook_version_marker="# ${hook_version}"
     local hook_code
     # The guard ensures ops-dashboard only runs for interactive SSH sessions.
     # [[ $- == *i* ]] — shell is interactive
-    # [[ -n $SSH_TTY ]] — actual SSH login shell context (set by sshd for interactive logins;
-    #                     NOT set for scp/rsync/sftp — this is the canonical guard per spec)
+    # [[ -n $SSH_CONNECTION ]] — actual SSH login shell context
     read -r -d '' hook_code << 'HOOK' || true
 # OPS login hook — do not remove
+# OPS_HOOK_V2
 if [[ $- == *i* ]] && [[ -n "${SSH_CONNECTION:-}" ]]; then
+    # OPS SSH auto-finalize: close transition port (port 22) on first login via new port
+    _ops_trans=$(grep '^OPS_SSH_TRANSITION_PORT=' /etc/ops/ops.conf 2>/dev/null | cut -d= -f2- | tr -d '"')
+    _ops_locked=$(grep '^OPS_SSH_PORT=' /etc/ops/ops.conf 2>/dev/null | cut -d= -f2- | tr -d '"')
+    _ops_srv_port=$(awk '{print $4}' <<< "${SSH_CONNECTION}" 2>/dev/null || true)
+    if [[ -n "${_ops_trans:-}" && -n "${_ops_locked:-}" \
+          && "${_ops_trans}" != "${_ops_locked}" \
+          && "${_ops_srv_port}" == "${_ops_locked}" ]]; then
+        echo ""
+        echo "  [OPS] First SSH login on new port ${_ops_locked} detected."
+        echo "  [OPS] Closing transition port ${_ops_trans}..."
+        sudo /opt/ops/bin/ops-ssh-finalize.sh 2>&1
+    fi
+    unset _ops_trans _ops_locked _ops_srv_port
     if command -v ops-dashboard &>/dev/null; then
         ops-dashboard
     fi
 fi
 HOOK
 
-    # Idempotent: skip if marker already present
-    if grep -q "$hook_marker" "$profile" 2>/dev/null; then
-        log_info "Login hook already present in ${profile} — skipping."
+    # Idempotent with version-awareness:
+    # - If current version marker present → already up-to-date, skip.
+    # - If old hook (marker present but wrong version) → remove and rewrite.
+    # - If no hook → install fresh.
+    if grep -q "$hook_version_marker" "$profile" 2>/dev/null; then
+        log_info "Login hook ${hook_version} already present in ${profile} — skipping."
     else
+        # Remove stale OPS hook (any version) before writing new one
+        if grep -q "$hook_marker" "$profile" 2>/dev/null; then
+            log_info "Stale OPS login hook found in ${profile} — replacing with ${hook_version}."
+            sed -i '/# OPS login hook — do not remove/,$d' "$profile"
+        fi
+
         # Ensure .bash_profile exists and sources .bashrc for interactive use
         if [[ ! -f "$profile" ]]; then
             cat > "$profile" <<'BASHPROFILE'
@@ -153,7 +179,7 @@ BASHPROFILE
         fi
 
         chown "${ADMIN_USER}:${ADMIN_USER}" "$profile"
-        print_ok "Login hook installed in ${profile}"
+        print_ok "Login hook ${hook_version} installed in ${profile}"
         ops_conf_set "setup.conf" "SETUP_LOGIN_HOOK" "installed"
     fi
 }
@@ -180,8 +206,10 @@ setup_base_config() {
     ops_conf_set "ops.conf" "OPS_LOG_DIR" "$OPS_LOG_DIR"
     ops_conf_set "ops.conf" "OPS_LOG_FILE" "$OPS_LOG_FILE"
     ops_conf_set "ops.conf" "OPS_ADMIN_USER" "$ADMIN_USER"
-    # OPS_SSH_PORT: empty until security module finalises SSH port transition
-    ops_conf_set "ops.conf" "OPS_SSH_PORT" "${OPS_SSH_PORT:-}"
+    # OPS_SSH_PORT / OPS_SSH_TRANSITION_PORT: set by ops-install.sh via env.
+    # OPS_SSH_TRANSITION_PORT is cleared by ops-ssh-finalize.sh after auto-finalize.
+    ops_conf_set "ops.conf" "OPS_SSH_PORT"            "${OPS_SSH_PORT:-}"
+    ops_conf_set "ops.conf" "OPS_SSH_TRANSITION_PORT" "${OPS_SSH_TRANSITION_PORT:-}"
     ops_conf_set "ops.conf" "OPS_INSTALL_DATE" "$install_date"
 
     ops_conf_set "setup.conf" "SETUP_BASE_CONFIG" "written"
@@ -189,6 +217,42 @@ setup_base_config() {
 
     chmod 644 "$conf"
     print_ok "Config written: ${conf}"
+}
+
+# ── 5. Sudoers rule for ops-ssh-finalize.sh ──────────────────
+# Grants $ADMIN_USER password-less sudo ONLY for ops-ssh-finalize.sh.
+# This is intentionally narrow-scoped: the script itself validates state.
+
+setup_ssh_finalize_sudoers() {
+    local sudoers_file="/etc/sudoers.d/99-ops-ssh-finalize"
+    local finalize_bin="/opt/ops/bin/ops-ssh-finalize.sh"
+    local desired_rule
+    desired_rule="${ADMIN_USER} ALL=(root) NOPASSWD: ${finalize_bin}"
+
+    # Idempotent: only write/update if content differs
+    local current_rule
+    current_rule=$(cat "$sudoers_file" 2>/dev/null | grep -v '^#' | grep -v '^$' | head -n1 || true)
+    if [[ "$current_rule" == "$desired_rule" ]]; then
+        log_info "sudoers rule already correct for ${ADMIN_USER} — skipping."
+        return 0
+    fi
+
+    {
+        echo "# Managed by OPS — do not edit manually."
+        echo "# Allows the OPS admin user to run ops-ssh-finalize.sh as root with no password."
+        echo "# This is used by the login hook to auto-close the SSH transition port."
+        echo "$desired_rule"
+    } > "$sudoers_file"
+    chmod 440 "$sudoers_file"
+
+    # Validate with visudo
+    if ! visudo -cf "$sudoers_file" > /dev/null 2>&1; then
+        log_error "Sudoers file failed validation — removing: ${sudoers_file}"
+        rm -f "$sudoers_file"
+        return 1
+    fi
+
+    print_ok "sudoers rule installed: ${ADMIN_USER} may run ops-ssh-finalize.sh without password."
 }
 
 # ── Main ──────────────────────────────────────────────────────
@@ -200,6 +264,7 @@ main() {
     setup_log_dir
     setup_symlinks
     setup_base_config
+    setup_ssh_finalize_sudoers
     setup_login_hook
 
     echo ""

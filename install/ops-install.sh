@@ -464,7 +464,11 @@ run_setup() {
     fi
 
     info "Running ops-setup.sh as root (will use ADMIN_USER=${ADMIN_USER})..."
+    # Pass SSH port state so ops-setup.sh can persist it in ops.conf
+    # OPS_SSH_TRANSITION_PORT is set to "22" only when port 22 was open at install time
     ADMIN_USER="$ADMIN_USER" \
+    OPS_SSH_PORT="${NEW_SSH_PORT:-}" \
+    OPS_SSH_TRANSITION_PORT="${SSH_PORT_22_OPEN:+22}" \
     bash "$setup_script"
 }
 
