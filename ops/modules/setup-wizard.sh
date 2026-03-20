@@ -216,7 +216,7 @@ wizard_step_node() {
         node_install
         node_install_pm2
     else
-        local node_mod="${OPS_ROOT:-/opt/ops}/ops/modules/node.sh"
+        local node_mod="${OPS_ROOT:-/opt/ops}/modules/node.sh"
         if [[ -f "$node_mod" ]]; then
             # shellcheck source=/dev/null
             source "$node_mod"
@@ -237,13 +237,17 @@ wizard_step_php() {
     _wizard_step_header "PHP" "Step 4 — PHP (multi-version via ondrej/php)"
     [[ "$WIZARD_SKIP" -eq 1 ]] && return 0
 
-    local php_mod="${OPS_ROOT:-/opt/ops}/ops/modules/php.sh"
+    local php_mod="${OPS_ROOT:-/opt/ops}/modules/php.sh"
     if [[ -f "$php_mod" ]]; then
         # shellcheck source=/dev/null
         source "$php_mod"
         # install_php_version is the correct function (not php_install)
         if declare -f install_php_version >/dev/null 2>&1; then
             install_php_version "8.2"
+            # Set php 8.2 as default CLI so 'command -v php' works
+            if declare -f set_php_cli_default > /dev/null 2>&1; then
+                set_php_cli_default "8.2" || true
+            fi
         fi
     else
         log_info "Wizard: inline PHP install (ppa:ondrej/php)"
@@ -267,7 +271,7 @@ wizard_step_database() {
     _wizard_step_header "DATABASE" "Step 5 — Database (MariaDB)"
     [[ "$WIZARD_SKIP" -eq 1 ]] && return 0
 
-    local db_mod="${OPS_ROOT:-/opt/ops}/ops/modules/database.sh"
+    local db_mod="${OPS_ROOT:-/opt/ops}/modules/database.sh"
     if [[ -f "$db_mod" ]]; then
         # shellcheck source=/dev/null
         source "$db_mod"
