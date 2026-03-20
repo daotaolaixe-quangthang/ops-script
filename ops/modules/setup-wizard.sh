@@ -137,22 +137,13 @@ wizard_step_security() {
         security_strip_cloud_init_overrides
     fi
 
-    # 3. fail2ban: rewrite config with current live SSH ports + nginx jails
-    if declare -f security_write_fail2ban_config >/dev/null 2>&1; then
-        if command -v fail2ban-client >/dev/null 2>&1; then
-            log_info "Wizard: reconciling fail2ban config..."
-            security_write_fail2ban_config
-            systemctl reload fail2ban >/dev/null 2>&1 || systemctl restart fail2ban >/dev/null 2>&1 || true
-            print_ok "fail2ban config reconciled (SSH ports + nginx jails)."
-        fi
-    fi
-
-    # 4. UFW: remove stale SSH port rules left from previous installs
-    if declare -f security_reconcile_ufw_rules >/dev/null 2>&1; then
-        log_info "Wizard: reconciling UFW rules (removing stale SSH ports)..."
-        security_reconcile_ufw_rules
-        print_ok "UFW rules reconciled."
-    fi
+    # NOTE: UFW reconciliation and fail2ban config are already handled inside
+    # security_wizard_baseline -> security_apply_sshd_hardening ->
+    # security_ensure_ssh_transition_ports (when port changes), or directly
+    # in security_wizard_baseline when port is unchanged.
+    # Do NOT call security_reconcile_ufw_rules a second time here -- it can
+    # cause SSH lockout if UFW state changes between the two calls.
+    # fail2ban is also reconciled inside security_wizard_baseline already.
 
     _wizard_mark_done "SECURITY"
     print_ok "Security baseline done."

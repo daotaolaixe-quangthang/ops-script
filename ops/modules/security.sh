@@ -203,6 +203,15 @@ security_reconcile_sshd_main_config() {
     security_set_sshd_option "AllowStreamLocalForwarding" "no" "$SECURITY_SSHD_CONFIG"
     security_set_sshd_option "PermitTunnel" "no" "$SECURITY_SSHD_CONFIG"
 
+    # Bonus fix: comment out standalone Port directives in the main sshd_config
+    # so they don't conflict with the Port managed by 99-ops-hardening.conf.
+    # The Include directive (above) means port ownership moves to the include file.
+    if grep -Eq '^[[:space:]]*Port[[:space:]]+[0-9]+' "$SECURITY_SSHD_CONFIG" 2>/dev/null; then
+        sed -i -E 's|^([[:space:]]*Port[[:space:]]+[0-9]+)|#\1  # managed via sshd_config.d/99-ops-hardening.conf|' \
+            "$SECURITY_SSHD_CONFIG"
+        log_info "Commented out Port directives in ${SECURITY_SSHD_CONFIG} -- managed via include."
+    fi
+
     if [[ -d "$SECURITY_SSHD_INCLUDE_DIR" ]]; then
         find "$SECURITY_SSHD_INCLUDE_DIR" -maxdepth 1 -type f ! -name '99-ops-hardening.conf' -print0 2>/dev/null | while IFS= read -r -d '' include_file; do
             if grep -Eq '^[[:space:]]*(PasswordAuthentication|PermitRootLogin|Port|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|AllowStreamLocalForwarding|PermitTunnel)[[:space:]]+' "$include_file"; then
@@ -264,14 +273,42 @@ security_reconcile_ufw_rules() {
         [[ -n "$port" ]] && desired_ports+=("$port")
     done < <(security_list_desired_ssh_ports)
 
-    ufw default deny incoming
-    ufw default allow outgoing
+    # Bug #1 fix: abort if no SSH ports resolved -- prevents lockout via 'default deny'
+    if [[ ${#desired_ports[@]} -eq 0 ]]; then
+        print_error "UFW reconcile: no SSH ports resolved -- aborting to prevent lockout."
+        log_info "security_reconcile_ufw_rules: aborted (no desired SSH ports)"
+        return 1
+    fi
 
+    ufw default deny incoming >/dev/null 2>&1 || true
+    ufw default allow outgoing >/dev/null 2>&1 || true
+
+    # Bug #2 fix: track SSH rule add success; only enable UFW if at least one succeeded
+    local ssh_rules_added=0
     for port in "${desired_ports[@]}"; do
-        ufw allow "${port}/tcp" comment "ops: SSH managed" >/dev/null 2>&1 || true
+        if ufw allow "${port}/tcp" comment "ops: SSH managed" >/dev/null 2>&1; then
+            ((ssh_rules_added++))
+        else
+            print_warn "UFW: failed to add SSH rule for port ${port}/tcp"
+            log_info "security_reconcile_ufw_rules: ufw allow ${port}/tcp failed"
+        fi
     done
     ufw allow 80/tcp comment "ops: HTTP" >/dev/null 2>&1 || true
     ufw allow 443/tcp comment "ops: HTTPS" >/dev/null 2>&1 || true
+
+    # Bug #2 fix: if no SSH rules added, skip enabling UFW to avoid lockout
+    if [[ "$ssh_rules_added" -eq 0 ]]; then
+        print_error "UFW reconcile: no SSH rules added -- skipping enable to prevent lockout."
+        log_info "security_reconcile_ufw_rules: skipped ufw enable (no SSH rules added)"
+        return 1
+    fi
+
+    # Bug #1 fix: read live SSH listen ports from kernel (ss) to avoid removing
+    # ports sshd is actively using but not yet tracked in ops.conf
+    local active_ssh_ports=()
+    while IFS= read -r port; do
+        [[ -n "$port" ]] && active_ssh_ports+=("$port")
+    done < <(ss -tlnp 2>/dev/null | awk '/sshd/ {print $4}' | grep -oP ':\K[0-9]+$' | sort -u)
 
     status_output="$(ufw status 2>/dev/null || true)"
     while IFS= read -r port; do
@@ -289,6 +326,16 @@ security_reconcile_ufw_rules() {
                 break
             fi
         done
+        # Bug #1 fix: preserve ports sshd is actively listening on
+        if [[ "$keep" -eq 0 ]]; then
+            for active in "${active_ssh_ports[@]}"; do
+                if [[ "$active" == "$port" ]]; then
+                    keep=1
+                    log_info "UFW: preserving active SSH port ${port} (not in ops.conf yet)"
+                    break
+                fi
+            done
+        fi
         if [[ "$keep" -eq 0 ]]; then
             ufw delete allow "${port}/tcp" >/dev/null 2>&1 || true
         fi
