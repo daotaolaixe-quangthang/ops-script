@@ -115,7 +115,7 @@ setup_login_hook() {
     #                     NOT set for scp/rsync/sftp — this is the canonical guard per spec)
     read -r -d '' hook_code << 'HOOK' || true
 # OPS login hook — do not remove
-if [[ $- == *i* ]] && [[ -n "${SSH_TTY:-}" ]]; then
+if [[ $- == *i* ]] && [[ -n "${SSH_CONNECTION:-}" ]]; then
     if command -v ops-dashboard &>/dev/null; then
         ops-dashboard
     fi
