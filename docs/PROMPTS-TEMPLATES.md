@@ -219,7 +219,7 @@ Read first (mandatory):
 - docs/MENU-REFERENCE.md section 5 (SSL Management)
 - docs/SECURITY-RULES.md sections 2, 3
 - docs/PERF-TUNING.md section 2 (Nginx)
-- docs/NINE-ROUTER-SPEC.md section 2.5 (Nginx vhost with rate limiting)
+- docs/NINE-ROUTER-SPEC.md section 2.5 (Nginx vhost — no rate limiting, Cloudflare handles it)
 - docs/CODE-SKELETON-GUIDE.md
 
 Task P1-05: Implement modules/nginx.sh
@@ -284,9 +284,8 @@ Functions to implement (follow NINE-ROUTER-SPEC exactly):
 
 2. link_nine_router_domain <domain>:
    - Render nine-router.vhost.conf.tpl (proxy to 127.0.0.1:20128, buffering off,
-     rate limiting 30r/min with burst=10, proxy_connect_timeout 10s,
-     proxy_read_timeout 120s, proxy_send_timeout 60s)
-   - Add limit_req_zone to nginx.conf http block if not present
+     proxy_connect_timeout 10s, proxy_read_timeout 120s, proxy_send_timeout 60s)
+   - NO rate limiting at nginx level (domain runs through Cloudflare which handles it)
    - nginx -t && enable && reload
    - If domain already has SSL cert: set AUTH_COOKIE_SECURE=true in /opt/9router/.env
      then pm2 restart nine-router

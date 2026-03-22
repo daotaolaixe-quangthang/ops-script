@@ -82,48 +82,10 @@ _nginx_ensure_default_tls_cert() {
     log_info "Generated default deny self-signed cert for Nginx."
 }
 
-_nginx_ensure_nine_router_rate_zone() {
-    local conf="/etc/nginx/nginx.conf"
-    local marker='limit_req_zone $binary_remote_addr zone=nine_router:10m rate=30r/m;'
-    # Also remove legacy nine_router_api zone if present to keep nginx.conf clean
-    local legacy_marker='limit_req_zone $binary_remote_addr zone=nine_router_api:10m rate=30r/m;'
-
-    if grep -Fq "$marker" "$conf" 2>/dev/null; then
-        # Correct zone already present — remove legacy if it snuck in
-        if grep -Fq "$legacy_marker" "$conf" 2>/dev/null; then
-            backup_file "$conf" >/dev/null || true
-            sed -i "s|${legacy_marker}||g" "$conf"
-            log_info "Removed legacy nine_router_api limit_req_zone from nginx.conf."
-        fi
-        return 0
-    fi
-    backup_file "$conf" >/dev/null || true
-
-    # Migrate legacy zone name if present instead of adding a second zone
-    if grep -Fq "$legacy_marker" "$conf" 2>/dev/null; then
-        sed -i "s|${legacy_marker}|${marker}|g" "$conf"
-        log_info "Migrated nine_router_api → nine_router limit_req_zone in nginx.conf."
-        return 0
-    fi
-
-    if awk -v marker="$marker" '
-        BEGIN { inserted=0 }
-        /^\s*http\s*\{/ && inserted==0 {
-            print
-            print "    " marker
-            inserted=1
-            next
-        }
-        { print }
-        END { if (inserted==0) exit 2 }
-    ' "$conf" > "${conf}.tmp"; then
-        mv "${conf}.tmp" "$conf"
-        log_info "Added nine_router limit_req_zone to nginx.conf."
-    else
-        rm -f "${conf}.tmp"
-        log_warn "Could not inject nine_router limit_req_zone automatically."
-    fi
-}
+# _nginx_ensure_nine_router_rate_zone removed:
+# 9router domain runs behind Cloudflare which handles rate limiting at the edge.
+# nginx-level limit_req caused false-positive 429 on fast page navigation.
+# The function was removed as it's no longer needed and caused issues.
 
 _nginx_ensure_http_directive() {
     local conf="$1"
@@ -175,7 +137,6 @@ _nginx_apply_global_tuning() {
     _nginx_ensure_http_directive "$conf" "add_header X-Content-Type-Options" '"nosniff" always'
     _nginx_ensure_http_directive "$conf" "add_header Referrer-Policy" '"strict-origin-when-cross-origin" always'
 
-    _nginx_ensure_nine_router_rate_zone
     log_info "Applied nginx tuning: worker_processes=${worker_processes}, worker_connections=${worker_connections}, TLS/security baseline enforced."
 }
 
@@ -481,7 +442,7 @@ _install_certbot_snap() {
 # Public function — applies global security tuning to nginx.conf.
 # Idempotent: safe to run on a live server without disrupting sites.
 # Applies: server_tokens off, ssl_protocols TLSv1.2+, HSTS, X-Frame-Options,
-#          X-Content-Type-Options, Referrer-Policy, rate-limit zone.
+#          X-Content-Type-Options, Referrer-Policy.
 nginx_apply_security_baseline() {
     print_section "Apply Nginx Security Baseline"
     require_root || return 1

@@ -86,41 +86,8 @@ _nine_router_assert_ufw_closed() {
     return 0
 }
 
-_nine_router_ensure_limit_req_zone() {
-    local nginx_conf="/etc/nginx/nginx.conf"
-    local zone_line='limit_req_zone $binary_remote_addr zone=nine_router:10m rate=30r/m;'
-
-    if [[ ! -f "$nginx_conf" ]]; then
-        log_error "Missing nginx config: ${nginx_conf}"
-        return 1
-    fi
-
-    if grep -Fq "$zone_line" "$nginx_conf"; then
-        return 0
-    fi
-
-    backup_file "$nginx_conf" >/dev/null || true
-
-    local tmp
-    tmp=$(mktemp)
-    awk -v zone_line="$zone_line" '
-        {
-            print $0
-            if (!inserted && $0 ~ /^[[:space:]]*http[[:space:]]*\{[[:space:]]*$/) {
-                print "    " zone_line
-                inserted = 1
-            }
-        }
-        END {
-            if (!inserted) {
-                exit 7
-            }
-        }
-    ' "$nginx_conf" > "$tmp"
-
-    mv "$tmp" "$nginx_conf"
-    log_info "Added limit_req_zone for nine-router to nginx http block"
-}
+# _nine_router_ensure_limit_req_zone removed:
+# Domain runs behind Cloudflare which handles rate limiting at the edge.
 
 _nine_router_ssl_cert_ready() {
     local domain="$1"
@@ -181,10 +148,6 @@ server {
 
     access_log /var/log/nginx/nine-router.access.log;
     error_log  /var/log/nginx/nine-router.error.log;
-
-    # Rate limiting: max 30 req/min per IP (burst 10)
-    limit_req zone=nine_router burst=10 nodelay;
-    limit_req_status 429;
 
     ssl_certificate /etc/letsencrypt/live/${domain}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
@@ -373,7 +336,7 @@ link_nine_router_domain() {
         return 1
     fi
 
-    _nine_router_ensure_limit_req_zone
+    # Rate limiting removed: domain runs behind Cloudflare
     create_default_deny
 
     local ssl_enabled="no"

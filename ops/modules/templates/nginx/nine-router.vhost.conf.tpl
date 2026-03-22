@@ -1,5 +1,6 @@
 # /etc/nginx/sites-available/nine-router.{{DOMAIN}}
 # Managed by OPS - do not edit manually.
+# Rate limiting is handled by Cloudflare at the edge.
 
 server {
     listen 80;
@@ -7,10 +8,6 @@ server {
 
     access_log /var/log/nginx/nine-router.access.log;
     error_log  /var/log/nginx/nine-router.error.log;
-
-    # Rate limiting: max 30 req/min per IP (burst 10)
-    limit_req zone=nine_router burst=10 nodelay;
-    limit_req_status 429;
 
 {{SSL_HTTP_BLOCK}}
     location / {

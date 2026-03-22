@@ -177,8 +177,8 @@ When user selects "Link 9router to a domain", OPS creates an Nginx vhost:
 
 ```nginx
 # /etc/nginx/sites-available/nine-router.<domain>
-# Rate limiting zone (define in nginx.conf http block if not already present)
-# limit_req_zone $binary_remote_addr zone=nine_router:10m rate=30r/m;
+# Managed by OPS - do not edit manually.
+# Rate limiting is handled by Cloudflare at the edge — no limit_req directives needed here.
 
 server {
     listen 80;
@@ -187,9 +187,20 @@ server {
     access_log /var/log/nginx/nine-router.access.log;
     error_log  /var/log/nginx/nine-router.error.log;
 
-    # Rate limiting: max 30 req/min per IP (burst 10)
-    limit_req zone=nine_router burst=10 nodelay;
-    limit_req_status 429;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name {{DOMAIN}};
+
+    access_log /var/log/nginx/nine-router.access.log;
+    error_log  /var/log/nginx/nine-router.error.log;
+
+    ssl_certificate /etc/letsencrypt/live/{{DOMAIN}}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{{DOMAIN}}/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
     # Dashboard and API — proxy to 9router
     location / {
@@ -210,13 +221,11 @@ server {
 }
 ```
 
-Nginx `http` block trong `nginx.conf` phai co:
-```nginx
-limit_req_zone $binary_remote_addr zone=nine_router:10m rate=30r/m;
-```
-OPS se tu dong them vao neu chua ton tai khi "Link 9router to a domain".
-
 > **Important**: `proxy_buffering off` is required for SSE streaming (AI responses streamed in real-time).
+
+> **Rate limiting**: Nginx-level `limit_req` has been removed. Domain runs behind **Cloudflare** which
+> handles rate limiting at the edge. Adding a second layer at nginx caused false-positive 429 errors
+> on fast page navigation / F5 refresh.
 
 
 #### 2.6 Update flow
