@@ -488,6 +488,33 @@ node_remove_app() {
 
     local conf_path
     conf_path="$(_node_apps_dir)/${app_name}.conf"
+
+    # P2-4 fix: clean up Nginx vhost linked to this app before removing conf.
+    # Load APP_DOMAIN from the app conf (already sourced by _node_load_app_conf above).
+    local app_domain="${APP_DOMAIN:-}"
+    if [[ -n "$app_domain" ]] && command -v nginx > /dev/null 2>&1; then
+        local vhost_available="/etc/nginx/sites-available/${app_domain}"
+        local vhost_enabled="/etc/nginx/sites-enabled/${app_domain}"
+        local domain_state="/etc/ops/domains/${app_domain}.conf"
+        if [[ -f "$vhost_available" || -L "$vhost_enabled" ]]; then
+            echo ""
+            print_warn "Domain '${app_domain}' has an Nginx vhost linked to this app."
+            if prompt_confirm "Remove Nginx vhost for '${app_domain}' as well?"; then
+                rm -f "$vhost_enabled"
+                rm -f "$vhost_available"
+                rm -f "$domain_state"
+                if nginx -t > /dev/null 2>&1; then
+                    service_reload nginx > /dev/null 2>&1 || true
+                    print_ok "Nginx vhost for '${app_domain}' removed and nginx reloaded."
+                else
+                    print_warn "nginx -t failed after vhost removal — check /etc/nginx/nginx.conf manually."
+                fi
+            else
+                print_warn "Nginx vhost kept. Domain '${app_domain}' will serve 502 until vhost is removed manually."
+            fi
+        fi
+    fi
+
     backup_file "$conf_path"
     rm -f "$conf_path"
     print_ok "App '${app_name}' removed from registry."

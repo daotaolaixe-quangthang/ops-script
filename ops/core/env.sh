@@ -124,10 +124,13 @@ ops_conf_get() {
     local conf_file="$OPS_CONFIG_DIR/$1"
     local key="$2"
     if [[ -f "$conf_file" ]]; then
+        # P2-3 fix: strip only surrounding shell-quoting quotes (first+last char),
+        # not ALL double-quotes. tr -d '"' was silently corrupting values with
+        # embedded quotes (e.g. passwords with '"' would lose the char on re-read).
         grep "^${key}=" "$conf_file" 2>/dev/null \
             | head -n1 \
             | cut -d= -f2- \
-            | tr -d '"' \
+            | sed 's/^"//; s/"$//' \
             || true
     fi
 }

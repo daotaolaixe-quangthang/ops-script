@@ -799,6 +799,35 @@ menu_ssl() {
     done
 }
 
+# _nginx_write_logrotate
+# P2-2 fix: per-domain Nginx access/error logs grow unbounded without rotation.
+# Each domain vhost writes to /var/log/nginx/<domain>.access.log and .error.log.
+# Ubuntu's default logrotate only covers /var/log/nginx/*.log on distro packages;
+# nginx.org mainline may not include it, so we write our own.
+# Idempotent: safe to call on every install_nginx run.
+_nginx_write_logrotate() {
+    local logrotate_file="/etc/logrotate.d/nginx-ops"
+    cat > "$logrotate_file" << 'LOGROTATE_EOF'
+/var/log/nginx/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    sharedscripts
+    postrotate
+        # nginx -s reopen is safe: gracefully reopens log files without restart
+        if [ -f /run/nginx.pid ] && kill -0 $(cat /run/nginx.pid) 2>/dev/null; then
+            nginx -s reopen
+        fi
+    endscript
+}
+LOGROTATE_EOF
+    chmod 644 "$logrotate_file"
+    log_info "P2-2: nginx logrotate config written to ${logrotate_file} (daily, 14 days, compressed)."
+}
+
 # install_nginx: add official mainline repo, install + tune nginx.conf per OPS_TIER, ensure default deny
 install_nginx() {
     print_section "Install Nginx"
@@ -810,6 +839,7 @@ install_nginx() {
     service_start nginx
 
     _nginx_apply_global_tuning
+    _nginx_write_logrotate            # P2-2: ensure per-domain log rotation
     create_default_deny
     _nginx_disable_packaged_default_site
     _nginx_test_and_reload

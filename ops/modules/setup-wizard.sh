@@ -592,6 +592,7 @@ except Exception:
     echo ""
 fi
 
+    # ── PHP-FPM active versions ──────────────────────────────
     for php_ver in 7.4 8.1 8.2 8.3; do
         if systemctl list-unit-files 2>/dev/null | grep -q "^php${php_ver}-fpm\\.service"; then
             if service_active "php${php_ver}-fpm" 2>/dev/null; then
