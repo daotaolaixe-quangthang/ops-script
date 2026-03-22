@@ -114,6 +114,10 @@ From the main menu, user selects **“Production Setup Wizard”** (or similar).
    - Install PM2 globally.
    - Configure PM2 startup **for the runtime user** (not root): runs `pm2 startup systemd -u <runtime_user>` automatically.
    - PM2 processes must always run under the non-root runtime user (e.g. `opsuser`).
+   - Install `pm2-logrotate` immediately after PM2: `pm2 install pm2-logrotate`.
+     - Configure: `max_size=20M`, `retain=7`, `compress=true`, daily rotate.
+   - Kill root PM2 ghost daemon if empty: `PM2_HOME=/root/.pm2 pm2 kill`.
+   - All ecosystem configs must include `merge_logs: true`, `kill_timeout ≥ 5000`, and `node_args: "--max-old-space-size=<N>"` at ≈90% of `max_memory_restart`.
 
 5. **PHP‑FPM (multi‑version)**
    - Ask which PHP versions to install: 7.4, 8.1, 8.2, 8.3.

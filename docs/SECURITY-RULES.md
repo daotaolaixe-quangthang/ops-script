@@ -124,6 +124,13 @@ This document defines non-negotiable security rules for OPS. Any change that vio
 - For PM2-managed Node services:
   - Run processes under a non-root runtime user.
   - **PM2 startup (`pm2 startup systemd`) MUST be configured for the runtime user, not `root`.** Running `pm2 startup` as root causes all PM2-managed processes to run as root, which is a critical security violation.
+  - **`pm2-logrotate` MUST be installed** immediately after PM2 (`pm2 install pm2-logrotate`). Without it, logs in `/var/log/ops/` grow unbounded and can fill the disk, causing service crashes.
+    - Recommended settings: `max_size=20M`, `retain=7`, `compress=true`, `rotateInterval=0 0 * * *`
+  - All ecosystem configs MUST include `merge_logs: true` to prevent PM2 appending `-<id>` suffixes to log filenames on instance count changes.
+  - `kill_timeout` must be set in ecosystem configs to allow graceful shutdown (minimum 5000ms; Next.js apps require ≥8000ms to drain SSR requests).
+  - Set `node_args: "--max-old-space-size=<N>"` to ≈90% of `max_memory_restart` so V8 GC runs aggressively before PM2 triggers a hard restart.
+  - Root PM2 daemon (`/root/.pm2`) must not coexist with the runtime user's daemon. Kill it after setup: `PM2_HOME=/root/.pm2 pm2 kill`.
+  - All `pm2 list` / status displays inside OPS must run via `_node_run_as_runtime_user` — bare `pm2 list` as root shows root's empty daemon.
   - Reconcile app directory ownership to that runtime user where OPS manages the deployment path.
   - Verify process health, restart behaviour, and localhost binding after changes.
 

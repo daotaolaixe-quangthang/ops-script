@@ -223,9 +223,31 @@ node_install_pm2() {
     fi
 
     _node_run_as_runtime_user pm2 ping >/dev/null 2>&1 || true
+
+    # Install pm2-logrotate: prevents /var/log/ops/*.log growing unbounded.
+    # Logs rotate daily, max 20MB/file, 7 days retention, gzip compressed.
+    log_info "Installing pm2-logrotate module for runtime user: $runtime_user"
+    _node_run_as_runtime_user pm2 install pm2-logrotate >/dev/null 2>&1 || \
+        log_warn "pm2-logrotate install failed — run manually: pm2 install pm2-logrotate"
+    _node_run_as_runtime_user pm2 set pm2-logrotate:max_size 20M   2>/dev/null || true
+    _node_run_as_runtime_user pm2 set pm2-logrotate:retain 7        2>/dev/null || true
+    _node_run_as_runtime_user pm2 set pm2-logrotate:compress true   2>/dev/null || true
+    _node_run_as_runtime_user pm2 set pm2-logrotate:dateFormat YYYY-MM-DD 2>/dev/null || true
+    _node_run_as_runtime_user pm2 set pm2-logrotate:rotateInterval '0 0 * * *' 2>/dev/null || true
+    print_ok "pm2-logrotate configured: 20MB/file, 7 days, daily rotate, compressed."
+
     _node_run_as_runtime_user pm2 save || true
     ops_conf_set "ops.conf" "OPS_RUNTIME_USER" "$runtime_user"
     print_ok "PM2 startup configured for runtime user: $runtime_user"
+
+    # Kill stale root PM2 daemon if it has no managed processes.
+    # Root daemon is a security and operational smell — all apps must run under runtime user.
+    if PS_OUT=$(PM2_HOME=/root/.pm2 pm2 list 2>/dev/null) && \
+       ! echo "$PS_OUT" | grep -Eq 'online|stopped|errored'; then
+        PM2_HOME=/root/.pm2 pm2 kill >/dev/null 2>&1 || true
+        log_info "Killed empty root PM2 daemon — apps are managed by ${runtime_user}'s PM2."
+    fi
+
     log_info "node_install_pm2: done user=$runtime_user"
 }
 
@@ -236,7 +258,9 @@ node_list_apps() {
     echo ""
     echo "  ── PM2 process list ──────────────────────────────"
     if command -v pm2 >/dev/null 2>&1; then
-        pm2 list 2>/dev/null || print_warn "PM2 not running or no processes."
+        # Must run as runtime user — root's PM2 daemon is separate and empty.
+        # Bare 'pm2 list' as root shows no apps even when opsuser's PM2 is running.
+        _node_run_as_runtime_user pm2 list 2>/dev/null || print_warn "PM2 not running or no processes."
     else
         print_warn "PM2 not installed."
     fi

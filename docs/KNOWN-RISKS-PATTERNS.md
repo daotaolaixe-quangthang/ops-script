@@ -180,3 +180,27 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
   - Replace `file_get_contents('https://...')` with a cURL implementation.
   - If a short-term workaround is needed, add `php_admin_value allow_url_fopen On` in that FPM pool's `.conf` file (not globally in `php.ini`).
   - Do NOT re-enable `allow_url_fopen` globally — it opens SSRF risk.
+
+## 19) pm2 list shows empty when run as root
+
+- **Pattern**: OPS menu calls bare `pm2 list` as root → connects to root's PM2 daemon, which has no apps (apps run under opsuser's PM2).
+- **Risk**: Appears as if no apps are running (false negative); operator may restart or reinstall running apps unnecessarily.
+- **Safe action**: Always invoke PM2 via `_node_run_as_runtime_user pm2 list` inside OPS scripts. When debugging manually: `su opsuser -c "HOME=/home/opsuser PM2_HOME=/home/opsuser/.pm2 pm2 ls"`.
+
+## 20) PM2 logs grow unbounded without pm2-logrotate
+
+- **Pattern**: `pm2-logrotate` not installed; `/var/log/ops/*.log` grows indefinitely without a size cap.
+- **Risk**: Disk fills up; log write failures can cause PM2 to crash processes or refuse to write error output.
+- **Safe action**: Install `pm2-logrotate` immediately after PM2: `pm2 install pm2-logrotate`. OPS `node_install_pm2` does this automatically.
+
+## 21) PM2 log filenames get -0 suffix when merge_logs missing
+
+- **Pattern**: Ecosystem config missing `merge_logs: true` → PM2 appends `-<instance_id>` to log filenames (e.g. `nine-router.err-0.log` instead of `nine-router.err.log`).
+- **Risk**: Log rotation rules, monitoring scripts, and logrotate configs that reference the filename without suffix stop working.
+- **Safe action**: Always set `merge_logs: true` in all ecosystem configs. OPS templates include this by default.
+
+## 22) Node.js heap OOM before PM2 memory restart triggers
+
+- **Pattern**: `max_memory_restart` set in ecosystem (e.g. `512M`) but no `--max-old-space-size` in `node_args` → Node.js V8 uses system default heap limit (can be >1.5GB) → Node crashes with OOM before PM2 can gracefully restart it.
+- **Risk**: Hard crash instead of graceful restart; in-flight requests are lost without graceful shutdown.
+- **Safe action**: Set `node_args: "--max-old-space-size=<N>"` to ≈90% of `max_memory_restart` (e.g. `460` for 512M restart). This makes V8 GC aggressive at the threshold and allows PM2 to trigger a clean restart.
