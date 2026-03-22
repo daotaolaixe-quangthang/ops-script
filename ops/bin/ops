@@ -95,21 +95,24 @@ main_menu() {
 # ── P4-D: Session lock ───────────────────────────────────────
 # Prevents two concurrent 'ops' sessions from corrupting shared state
 # (config files, service restarts, PM2 saves, UFW rules, etc.).
-# The lock is released automatically when the process exits.
+# The lock is released automatically when the process exits (trap).
 #
-# Use /tmp/ops.lock (not /var/lock → /run/lock) so that both
-# 'ops' (opsuser) and 'sudo ops' (root) can open the same file
-# regardless of who created it first.  chmod 666 ensures even a
-# file created by opsuser is writable when re-opened by root,
-# and vice-versa.  flock still prevents concurrent sessions.
+# Uses a PID-file instead of exec-fd/flock so that both 'ops'
+# (opsuser) and 'sudo ops' (root) always create a fresh file as
+# themselves — eliminating any ownership / AppArmor fd-redirect
+# permission conflict between the two users.
 OPS_LOCK_FILE="/tmp/ops.lock"
-touch "$OPS_LOCK_FILE"
-chmod 666 "$OPS_LOCK_FILE" 2>/dev/null || true
-exec 9>"$OPS_LOCK_FILE"
-if ! flock -n 9; then
-    echo "[ERROR] Another ops session is already running." >&2
-    echo "        Exit that session first, then run 'ops' again." >&2
-    exit 1
+if [[ -f "$OPS_LOCK_FILE" ]]; then
+    _ops_old_pid=$(cat "$OPS_LOCK_FILE" 2>/dev/null || true)
+    if [[ "$_ops_old_pid" =~ ^[0-9]+$ ]] && kill -0 "$_ops_old_pid" 2>/dev/null; then
+        echo "[ERROR] Another ops session is already running (PID $_ops_old_pid)." >&2
+        echo "        Exit that session first, then run 'ops' again." >&2
+        exit 1
+    fi
+    # Stale lock — previous session ended without cleanup; remove it.
+    rm -f "$OPS_LOCK_FILE" 2>/dev/null || true
 fi
+echo "$$" > "$OPS_LOCK_FILE"
+trap 'rm -f "$OPS_LOCK_FILE" 2>/dev/null || true' EXIT INT TERM HUP
 
 main_menu
