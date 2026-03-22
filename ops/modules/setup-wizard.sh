@@ -635,15 +635,22 @@ fi
 
     echo ""
     echo "  ── Service Status ────────────────────────────────"
-    local services=(nginx mariadb)
     local svc
-    for svc in "${services[@]}"; do
+    for svc in nginx; do
         if service_active "$svc" 2>/dev/null; then
             print_ok "${svc}: active"
         else
             print_warn "${svc}: inactive / not installed"
         fi
     done
+    # P4-5 fix: check both mariadb and mysql — Ubuntu 24.04 may ship MySQL, not MariaDB
+    if service_active mariadb 2>/dev/null; then
+        print_ok "mariadb: active"
+    elif service_active mysql 2>/dev/null; then
+        print_ok "mysql: active"
+    else
+        print_warn "mariadb / mysql: inactive / not installed"
+    fi
 
     if command -v node >/dev/null 2>&1; then
         print_ok "node: $(node --version)"

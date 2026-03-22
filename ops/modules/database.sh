@@ -102,12 +102,12 @@ _db_write_secret_file() {
     local path="$1"
     local content="$2"
     # F-22: Credentials must be root-owned (mode 0600, owner root:root).
-    # The old code used ADMIN_USER as owner — a compromised non-root admin account
-    # could then read plaintext database passwords directly.
-    # Operators can view credentials via: ops menu → Database → Show credentials.
     local owner="root"
 
     ensure_parent_dir "$path"
+    # P4-1b fix: db-credentials dir must be 700 (not world-traversable).
+    # Even though files inside are 600, a world-exec dir allows filename enumeration.
+    chmod 700 "$(dirname "$path")" 2>/dev/null || true
     write_file "$path" <<EOF_SECRET
 ${content}
 EOF_SECRET

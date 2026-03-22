@@ -161,34 +161,57 @@ _node_pick_app() {
 
 # ── Actions ───────────────────────────────────────────────────
 
-# P1-06 task 1: Install Node.js LTS via nodesource apt (chốt)
+# P1-06 task 1: Install Node.js LTS via nodesource apt (manual GPG repo setup)
 node_install() {
     print_section "Install Node.js LTS"
     require_root || return 1
 
-    if command -v node >/dev/null 2>&1; then
+    if command -v node > /dev/null 2>&1; then
         print_ok "Node.js already installed: $(node --version)"
         if ! prompt_confirm "Re-install / upgrade?"; then
             return 0
         fi
     fi
 
-    log_info "Fetching nodesource setup script (LTS)…"
-    # P4-A: download setup script to a temp file before executing.
-    # Prevents MITM hijacking stdin and avoids the 'curl | bash' anti-pattern.
-    local _setup_script
-    _setup_script=$(mktemp /tmp/nodesource-setup-XXXXXX.sh)
-    if ! curl -fsSL --max-time 60 https://deb.nodesource.com/setup_lts.x -o "$_setup_script"; then
-        rm -f "$_setup_script"
-        print_error "Failed to download nodesource setup script. Check connectivity."
+    # P4-2 fix: Do NOT download-and-execute a shell script (nodesource setup_lts.x).
+    # That pattern has no integrity verification — a CDN compromise / DNS hijack
+    # runs arbitrary code as root. Instead, set up the apt repo manually:
+    # 1. Download and dearmor the GPG key
+    # 2. Write apt sources.list.d entry
+    # 3. apt-get install nodejs
+    # This is equivalent to what the setup script does but auditable and repeatable.
+    log_info "Setting up NodeSource LTS apt repository (manual GPG)..."
+
+    local keyring="/usr/share/keyrings/nodesource.gpg"
+    local sources_file="/etc/apt/sources.list.d/nodesource.list"
+    local codename
+    codename=$(lsb_release -cs 2>/dev/null \
+        || . /etc/os-release 2>/dev/null && echo "${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}" \
+        || echo "jammy")
+
+    if ! command -v curl > /dev/null 2>&1; then apt_install curl; fi
+    if ! command -v gpg  > /dev/null 2>&1; then apt_install gnupg; fi
+
+    if ! curl -fsSL --max-time 60 \
+            "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key" \
+            | gpg --dearmor --yes -o "$keyring" 2>/dev/null; then
+        print_error "Failed to download NodeSource GPG key. Check connectivity."
         return 1
     fi
-    chmod +x "$_setup_script"
-    bash "$_setup_script"
-    rm -f "$_setup_script"
+    chmod 644 "$keyring"
+
+    # LTS channel: NODE_MAJOR=20 covers current LTS (Iron / 20.x)
+    local node_major="${NODESOURCE_NODE_MAJOR:-20}"
+    cat > "$sources_file" <<EOF
+# NodeSource ${node_major}.x LTS — managed by OPS
+deb [signed-by=${keyring}] https://deb.nodesource.com/node_${node_major}.x nodistro main
+EOF
+    chmod 644 "$sources_file"
+
+    apt_update
     apt_install nodejs
 
-    if command -v node >/dev/null 2>&1; then
+    if command -v node > /dev/null 2>&1; then
         print_ok "Node.js installed: $(node --version)"
         print_ok "npm:              $(npm --version)"
         log_info "node_install: success $(node --version)"
@@ -233,7 +256,23 @@ node_install_pm2() {
     startup_cmd=$(printf '%s\n' "$startup_raw" | grep -E '^(sudo )?env PATH=' | head -n1 || true)
     if [[ -n "$startup_cmd" ]]; then
         log_info "PM2 startup command (validated): $startup_cmd"
-        bash -c "$startup_cmd"
+        # P4-3 fix: do NOT use 'bash -c "$startup_cmd"' — the entire string is
+        # executed as shell code, allowing metacharacters after the validated prefix.
+        # Instead, parse the command into discrete fields and exec directly.
+        # Expected format: [sudo] env PATH=<path>:<orig_path> <pm2-startup-cmd...>
+        local _sudo_prefix=""
+        local _cmd_tail="$startup_cmd"
+        if [[ "$_cmd_tail" == sudo\ * ]]; then
+            _sudo_prefix="sudo"
+            _cmd_tail="${_cmd_tail#sudo }"
+        fi
+        # Split on spaces into array (safe: PATH values won't contain spaces)
+        read -ra _startup_args <<< "$_cmd_tail"
+        if [[ -n "$_sudo_prefix" ]]; then
+            sudo "${_startup_args[@]}"
+        else
+            "${_startup_args[@]}"
+        fi
         log_info "PM2 startup configured via systemd."
     else
         log_warn "Could not extract PM2 startup command — may already be configured."

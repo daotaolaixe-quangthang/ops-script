@@ -215,8 +215,11 @@ setup_base_config() {
     ops_conf_set "setup.conf" "SETUP_BASE_CONFIG" "written"
     ops_conf_set "setup.conf" "SETUP_LAST_RUN_AT" "$(date '+%F %T')"
 
-    chmod 644 "$conf"
-    print_ok "Config written: ${conf}"
+    # P4-1 fix: ops.conf contains SSH port, admin user, wizard state — must NOT be
+    # world-readable (644). Set to 640 so root+admin_group can read, others cannot.
+    chmod 640 "$conf"
+    chown "root:${ADMIN_USER}" "$conf" 2>/dev/null || chmod 600 "$conf"
+    print_ok "Config written: ${conf} (mode 640, owner root:${ADMIN_USER})"
 }
 
 # ── 5. Sudoers rule for ops-ssh-finalize.sh ──────────────────
