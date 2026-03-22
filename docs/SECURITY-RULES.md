@@ -19,6 +19,12 @@ This document defines non-negotiable security rules for OPS. Any change that vio
 
 - Root login must be disabled once the admin user is set up.
 - Password authentication must be disabled after the controlled transition window is complete.
+- **SSH lockout prevention (non-negotiable):** OPS must NOT disable `PasswordAuthentication` unless
+  the admin user has at least one valid public key in `~/.ssh/authorized_keys`. The check is
+  performed by `_security_has_authorized_keys()` before offering the disable prompt in both:
+  - `security_wizard_baseline()` (Setup Wizard step 1>1)
+  - `security_harden_ssh()` (Security menu > 1)
+  If no key is present, `PasswordAuthentication` remains `yes` regardless of user input.
 - SSH hardening baseline must disable at least:
   - `PermitRootLogin`
   - `PasswordAuthentication` (outside transition)

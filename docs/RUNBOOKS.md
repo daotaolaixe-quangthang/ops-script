@@ -23,6 +23,55 @@ Muc tieu: cung cap runbook ngan theo format `pre-check -> change -> verify -> ro
   - khoi phuc `sshd_config`: `cp /etc/ssh/sshd_config.bak /etc/ssh/sshd_config`
   - restart `sshd`: `systemctl restart sshd`
 
+## 1b. SSH Key Setup and PasswordAuthentication Recovery
+
+**Triggers:**
+- First-time setup: admin user created but SSH key not added during install.
+- SSH lockout: `PasswordAuthentication no` was set before any key existed in `authorized_keys`.
+- Operator wants to safely disable `PasswordAuthentication`.
+
+### Pre-check
+```bash
+# Check if key file exists for admin user (run as root)
+cat /home/<ADMIN_USER>/.ssh/authorized_keys 2>/dev/null || echo "NO KEY FILE"
+# Check current PasswordAuthentication setting
+grep -r PasswordAuthentication /etc/ssh/sshd_config.d/
+```
+
+### Normal path -- via OPS menu (when SSH still works)
+```
+ops -> Security menu -> 8) Manage SSH Keys
+  -> 1) Add new SSH public key   (paste key from local: cat ~/.ssh/id_ed25519.pub)
+  -> Verify SSH key login in a NEW terminal before next step
+  -> 4) Disable PasswordAuthentication (OPS checks key exists first)
+```
+
+### Emergency recovery -- via VPS KVM/VNC console (as root)
+```bash
+# Step 1: Re-enable PasswordAuthentication so password login works again
+sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' \
+    /etc/ssh/sshd_config.d/99-ops-hardening.conf
+systemctl reload ssh
+
+# Step 2: Add your SSH public key (paste content of id_rsa.pub or id_ed25519.pub)
+ADMIN_USER="opsuser"
+mkdir -p /home/${ADMIN_USER}/.ssh && chmod 700 /home/${ADMIN_USER}/.ssh
+echo "ssh-ed25519 AAAA...your-key..." >> /home/${ADMIN_USER}/.ssh/authorized_keys
+chmod 600 /home/${ADMIN_USER}/.ssh/authorized_keys
+chown -R ${ADMIN_USER}:${ADMIN_USER} /home/${ADMIN_USER}/.ssh
+
+# Step 3: Open NEW terminal, verify SSH key login works
+# Step 4: Disable PasswordAuthentication via OPS menu (option 8 -> 4)
+#         OPS will verify key presence before accepting the change.
+```
+
+### Rollback
+- Key accidentally removed: repeat Step 2 above from the VPS console.
+- Hardening file corrupted: restore from backup OPS created automatically:
+  `ls /etc/ssh/sshd_config.d/99-ops-hardening.conf.bak.*`
+  `cp <backup> /etc/ssh/sshd_config.d/99-ops-hardening.conf && systemctl reload ssh`
+
+
 ## 2. Nginx domain add/edit/remove
 
 - **Pre-check**:

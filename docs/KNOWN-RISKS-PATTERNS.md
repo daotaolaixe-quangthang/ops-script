@@ -13,12 +13,27 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
 
 ## 2) SSH transition lockout
 
+- **Pattern**: doi port SSH va dong port 22 qua som
+- **Risk**: mat truy cap VPS
+- **Safe action**: mo ca 2 port trong transition, verify login moi truoc khi dong 22
+
+## 2b) PasswordAuthentication disabled without SSH key -- FIXED
+
 - **Pattern**:
-  - doi port SSH va dong port 22 qua som
-- **Rui ro**:
-  - mat truy cap VPS
-- **Safe action**:
-  - mo ca 2 port trong transition, verify login moi truoc khi dong 22
+  - Setup Wizard (1>1) or Security menu (Harden SSH) disables `PasswordAuthentication` before any
+    SSH public key has been added to `~/.ssh/authorized_keys`.
+- **Risk**: Complete SSH lockout -- operator cannot log in with password OR key.
+- **Root cause (historical)**: Script did not check for key presence before offering the prompt.
+- **Fix applied**: `_security_has_authorized_keys()` guard in `security_wizard_baseline()` and
+  `security_harden_ssh()`. If no key exists, disable prompt is suppressed and auth stays `yes`.
+- **Recovery (if already locked out)**:
+  ```bash
+  # Via VPS console (KVM/VNC):
+  sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' \
+      /etc/ssh/sshd_config.d/99-ops-hardening.conf
+  systemctl reload ssh
+  # Then add SSH key via: ops -> Security -> Manage SSH Keys (option 8)
+  ```
 
 ## 3) Nginx la public entrypoint duy nhat
 
