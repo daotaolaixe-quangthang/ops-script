@@ -73,15 +73,19 @@ main_menu() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) menu_setup_wizard   ;;
-            2) menu_node           ;;
-            3) menu_nginx          ;;
-            4) menu_ssl            ;;
-            5) menu_nine_router    ;;
-            6) menu_php            ;;
-            7) menu_database       ;;
-            8) menu_codex_cli      ;;
-            9) menu_monitoring     ;;
+            # F-02: Each arm guarded with || true so that any non-zero return from a
+            # sub-function (e.g. stopped service, pm2 not found, sshd -T on container)
+            # does NOT propagate through set -euo pipefail and silently kill the TUI.
+            # Internal errors are still logged/printed by the functions themselves.
+            1) menu_setup_wizard   || true ;;
+            2) menu_node           || true ;;
+            3) menu_nginx          || true ;;
+            4) menu_ssl            || true ;;
+            5) menu_nine_router    || true ;;
+            6) menu_php            || true ;;
+            7) menu_database       || true ;;
+            8) menu_codex_cli      || true ;;
+            9) menu_monitoring     || true ;;
             0) exit 0              ;;
             *) print_warn "Invalid option — choose 0..9" ;;
         esac

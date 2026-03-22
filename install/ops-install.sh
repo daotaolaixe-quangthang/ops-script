@@ -565,6 +565,14 @@ detect_server_ip() {
 # ── Main ──────────────────────────────────────────────────────
 
 main() {
+    # F-06: Exclusive install lock — prevents two concurrent installer invocations
+    # (e.g. cloud-init retry on timeout) from writing to ops.conf, sshd_config,
+    # and UFW rules simultaneously. Waits up to 5 s then aborts cleanly.
+    exec 9>/var/lock/ops-install.lock
+    if ! flock -w 5 9; then
+        die "Another OPS installation is already in progress. Please wait for it to finish, then retry."
+    fi
+
     clear
     echo ""
     echo -e "${CYN}${BLD}╔══════════════════════════════════════╗${RST}"

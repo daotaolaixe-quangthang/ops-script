@@ -44,6 +44,17 @@ detect_ssh_service() {
 
 # ── main ─────────────────────────────────────────────────────
 main() {
+    # F-03: Exclusive session lock — prevent race condition when two SSH sessions
+    # open simultaneously on the new port and both trigger this finalize script.
+    # flock -n is non-blocking: if the lock is already held by another invocation,
+    # this instance exits 0 immediately (the first instance will finish correctly).
+    # Lock is released automatically when the process exits.
+    exec 8>/var/lock/ops-ssh-finalize.lock
+    if ! flock -n 8; then
+        _log "Another finalize instance is already running — exiting safely (no-op)."
+        exit 0
+    fi
+
     if [[ "$(id -u)" -ne 0 ]]; then
         _err "Must run as root (via sudo). Aborting."
         exit 1

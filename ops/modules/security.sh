@@ -818,9 +818,13 @@ security_change_ssh_port() {
     security_validate_ssh_port "$new_port" || return 1
 
     current_password_auth=$(ops_conf_get "ops.conf" "OPS_SSH_PASSWORD_AUTH" 2>/dev/null || true)
+    # F-05: Safe default is "yes" — never silently disable password auth if the key
+    # was not explicitly recorded in ops.conf. A lockout risk exists if we default to
+    # "no" and the operator has no SSH key installed.
     if [[ "$current_password_auth" != "yes" && "$current_password_auth" != "no" ]]; then
-        current_password_auth="no"
+        current_password_auth="yes"
     fi
+    print_warn "PasswordAuthentication is currently: ${current_password_auth} (will be preserved on port change)"
 
     security_apply_sshd_hardening "$new_port" "$current_password_auth" || return 1
 
