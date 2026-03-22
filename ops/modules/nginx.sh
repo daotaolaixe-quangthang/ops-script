@@ -403,6 +403,10 @@ server {
     listen [::]:443 ssl http2;
     server_name ${domain};
 
+    # P2-C-03: HSTS — only valid on HTTPS (RFC 6797 §7.2).
+    # 2-year max-age with preload; tighten includeSubDomains only if all subdomains are also HTTPS.
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+
     access_log /var/log/nginx/${domain}.access.log main_ext;
     error_log  /var/log/nginx/${domain}.error.log;
 
@@ -466,6 +470,9 @@ server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
     server_name ${domain};
+
+    # P2-C-03: HSTS — only valid on HTTPS (RFC 6797 §7.2).
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
 
     root ${web_root};
     index index.php index.html;
@@ -533,6 +540,9 @@ server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
     server_name ${domain};
+
+    # P2-C-03: HSTS — only valid on HTTPS (RFC 6797 §7.2).
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
 
     root  ${web_root};
     index index.html index.htm;
