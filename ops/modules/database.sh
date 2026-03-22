@@ -101,7 +101,11 @@ _db_set_bind_localhost() {
 _db_write_secret_file() {
     local path="$1"
     local content="$2"
-    local owner="${ADMIN_USER:-root}"
+    # F-22: Credentials must be root-owned (mode 0600, owner root:root).
+    # The old code used ADMIN_USER as owner — a compromised non-root admin account
+    # could then read plaintext database passwords directly.
+    # Operators can view credentials via: ops menu → Database → Show credentials.
+    local owner="root"
 
     ensure_parent_dir "$path"
     write_file "$path" <<EOF_SECRET

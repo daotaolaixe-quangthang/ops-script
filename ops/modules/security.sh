@@ -82,8 +82,16 @@ security_validate_ssh_port() {
         return 1
     fi
 
-    if (( port < 1 || port > 65535 )); then
-        print_error "SSH port must be between 1 and 65535."
+    # F-19: Ports 1-1024 are privileged (system) ports — services binding them require
+    # root. Running sshd on a privileged port creates a security risk and will fail
+    # on hardened systems. 1025-65535 is the safe operator range.
+    if (( port <= 1024 )); then
+        print_error "SSH port must be greater than 1024 (privileged ports 1-1024 are reserved for system services)."
+        return 1
+    fi
+
+    if (( port > 65535 )); then
+        print_error "SSH port must be between 1025 and 65535."
         return 1
     fi
 

@@ -35,6 +35,7 @@ menu_monitoring() {
         echo "  14) Notifications & scheduled checks"
         echo "  15) Backup helpers"
         echo "  16) Update OPS from git"
+        echo "  17) Refresh capacity profile (re-detect RAM/CPU tier)"
         echo "  0) Back"
         echo ""
         read -r -p "Select: " choice
@@ -55,10 +56,43 @@ menu_monitoring() {
             14) menu_checks               || true ;;
             15) menu_backup               || true ;;
             16) ops_self_update           || true; press_enter ;;
+            # F-20: Refresh capacity profile — re-reads RAM/CPU and rewrites capacity.conf.
+            # Needed when a VPS is resized (RAM upgrade) so the OPS tier (S/M/L) stays accurate.
+            17) monitoring_refresh_capacity || true; press_enter ;;
             0)  return                           ;;
             *)  print_warn "Invalid option"      ;;
         esac
     done
+}
+
+# monitoring_refresh_capacity — re-detect resources and rewrite capacity.conf
+# F-20: Without this, OPS_TIER stays stale after a VPS RAM upgrade until reinstall.
+monitoring_refresh_capacity() {
+    print_section "Refresh Capacity Profile"
+    require_root || return 1
+
+    print_warn "Re-detecting VPS resources and rewriting capacity profile..."
+    detect_tier   # re-reads /proc/meminfo, nproc → sets RAM_MB, CPU_CORES, OPS_TIER
+
+    local conf="${OPS_CONFIG_DIR}/capacity.conf"
+    mkdir -p "$OPS_CONFIG_DIR"
+    cat > "$conf" <<EOF
+# OPS Capacity Profile
+# Refreshed by ops menu on $(date '+%F %T')
+# Re-run this option after VPS resize to keep the tier accurate.
+
+RAM_MB="${RAM_MB}"
+CPU_CORES="${CPU_CORES}"
+DISK_GB="${DISK_GB:-}"
+OPS_TIER="${OPS_TIER}"
+EOF
+    chmod 644 "$conf"
+
+    print_ok "Capacity profile updated:"
+    printf "  RAM:  %s MB\n"   "$RAM_MB"
+    printf "  CPUs: %s core(s)\n" "$CPU_CORES"
+    printf "  Tier: %s\n"      "$OPS_TIER"
+    log_info "monitoring_refresh_capacity: RAM=${RAM_MB}MB CPU=${CPU_CORES} Tier=${OPS_TIER}"
 }
 
 # ── Task 1: System overview ───────────────────────────────────

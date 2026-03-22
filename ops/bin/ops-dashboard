@@ -156,14 +156,21 @@ show_services() {
 
     # Detect configured services
     local services=()
-    systemctl is-active --quiet nginx       2>/dev/null && services+=("nginx")       || services+=("nginx")
-    systemctl is-active --quiet mariadb     2>/dev/null && services+=("mariadb")     || services+=("mariadb")
-    systemctl is-active --quiet mysql       2>/dev/null && services+=("mysql")       || services+=("mysql")
-    systemctl is-active --quiet ufw         2>/dev/null && services+=("ufw")         || services+=("ufw")
-    systemctl is-active --quiet fail2ban    2>/dev/null && services+=("fail2ban")    || services+=("fail2ban")
-    systemctl is-active --quiet ssh         2>/dev/null && services+=("ssh")         || services+=("ssh")
+    systemctl is-active --quiet nginx       2>/dev/null && services+=("nginx")    || services+=("nginx")
+    systemctl is-active --quiet ufw         2>/dev/null && services+=("ufw")      || services+=("ufw")
+    systemctl is-active --quiet fail2ban    2>/dev/null && services+=("fail2ban") || services+=("fail2ban")
+    systemctl is-active --quiet ssh         2>/dev/null && services+=("ssh")      || services+=("ssh")
 
-    # PHP-FPM (any version)
+    # F-18: Database badge — mutually exclusive: show mariadb OR mysql, not both.
+    # The old code added both unconditionally, causing double-badges on MariaDB servers
+    # and red "not installed" badges on servers with neither DB.
+    if systemctl list-unit-files 2>/dev/null | grep -q '^mariadb\.service'; then
+        systemctl is-active --quiet mariadb 2>/dev/null && services+=("mariadb") || services+=("mariadb")
+    elif systemctl list-unit-files 2>/dev/null | grep -q '^mysql\.service'; then
+        systemctl is-active --quiet mysql   2>/dev/null && services+=("mysql")   || services+=("mysql")
+    fi
+
+
     local php_versions=("7.4" "8.1" "8.2" "8.3")
     for v in "${php_versions[@]}"; do
         local svc="php${v}-fpm"
