@@ -131,7 +131,10 @@ wizard_step_security() {
         print_ok "Kernel sysctl hardening applied."
     fi
 
-    # 2. Strip cloud-init SSH overrides (idempotent)
+    # 2. Strip cloud-init SSH overrides.
+    # For port-change path: already called inside security_apply_sshd_hardening
+    # (before sshd -t) so one service_restart covers strip + new config atomically.
+    # For port-unchanged path: call here; effective on next sshd reload/restart.
     if declare -f security_strip_cloud_init_overrides >/dev/null 2>&1; then
         log_info "Wizard: stripping cloud-init SSH config overrides..."
         security_strip_cloud_init_overrides
@@ -149,16 +152,13 @@ wizard_step_security() {
     print_ok "Security baseline done."
 }
 
-# Inline fallback if security module not loaded
+# Inline fallback -- only reached when security_wizard_baseline is not defined.
+# The outer check in wizard_step_security already confirmed it is absent,
+# so the re-check here was dead code. Simplified to fail fast with clear error.
 _wizard_inline_security() {
-    log_info "Wizard: inline security baseline"
-
-    if declare -f security_wizard_baseline >/dev/null 2>&1; then
-        security_wizard_baseline
-        return $?
-    fi
-
-    print_error "Security module baseline is unavailable; cannot safely manage SSH transition inline."
+    print_error "Security module (security.sh) not loaded -- cannot manage SSH transition safely."
+    print_warn "Ensure ${OPS_ROOT:-/opt/ops}/modules/security.sh exists and is readable."
+    log_info "Wizard: _wizard_inline_security: security module not loaded"
     return 1
 }
 

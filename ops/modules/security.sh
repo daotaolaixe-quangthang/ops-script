@@ -32,8 +32,21 @@ security_detect_ssh_service() {
 
 security_get_current_ssh_port() {
     local port
+    # Primary: read from running sshd effective config
     port=$(sshd -T 2>/dev/null | awk '/^port / {print $2; exit}' || true)
 
+    # Fallback 1: ops.conf (most reliable after OPS has run)
+    if [[ -z "$port" ]]; then
+        port=$(ops_conf_get "ops.conf" "OPS_SSH_PORT" 2>/dev/null || true)
+    fi
+
+    # Fallback 2: OPS-managed include file (port may have moved out of main config)
+    if [[ -z "$port" && -f "$SECURITY_SSHD_OPS_INCLUDE" ]]; then
+        port=$(awk 'tolower($1)=="port" {print $2; exit}' \
+            "$SECURITY_SSHD_OPS_INCLUDE" 2>/dev/null || true)
+    fi
+
+    # Fallback 3: main sshd_config (legacy / pre-OPS systems)
     if [[ -z "$port" ]]; then
         port=$(awk '
             BEGIN { p="" }
@@ -42,12 +55,9 @@ security_get_current_ssh_port() {
         ' "$SECURITY_SSHD_CONFIG" 2>/dev/null || true)
     fi
 
-    if [[ -z "$port" ]]; then
-        echo "22"
-    else
-        echo "$port"
-    fi
+    echo "${port:-22}"
 }
+
 
 security_get_server_ip() {
     local ip
@@ -188,39 +198,48 @@ EOF_SSH_OPS
     chmod 644 "$SECURITY_SSHD_OPS_INCLUDE"
 }
 
+security_ensure_include_first() {
+    local file="$1"
+    local include_val="${SECURITY_SSHD_INCLUDE_DIR}/*.conf"
+
+    # Remove all existing Include lines wherever they appear in the file
+    sed -i '/^[[:space:]]*Include[[:space:]]/d' "$file"
+    # Prepend Include as the very first line so it wins first-match semantics
+    sed -i "1i Include ${include_val}" "$file"
+    log_info "sshd_config: Include ensured as first directive in ${file}."
+}
+
 security_reconcile_sshd_main_config() {
-    backup_file "$SECURITY_SSHD_CONFIG" >/dev/null 2>&1 || true
+    backup_file "$SECURITY_SSHD_CONFIG" > /dev/null 2>&1 || true
 
-    security_set_sshd_option "Include" "${SECURITY_SSHD_INCLUDE_DIR}/*.conf" "$SECURITY_SSHD_CONFIG"
+    # Bug B fix: ensure Include is FIRST so 99-ops-hardening.conf wins first-match.
+    # OpenSSH uses first-match-wins; this guarantees include file values take precedence
+    # regardless of whether Include was pre-existing (Ubuntu) or appended (other distros).
+    security_ensure_include_first "$SECURITY_SSHD_CONFIG"
+
+    # Bug C fix: only set PermitRootLogin as an absolute safety net in main config.
+    # All other directives (PasswordAuthentication, Port, X11Forwarding, etc.) are
+    # managed exclusively by 99-ops-hardening.conf via the Include directive above.
+    # Duplicating them here risks first-match collision if Include ends up after them.
     security_set_sshd_option "PermitRootLogin" "no" "$SECURITY_SSHD_CONFIG"
-    security_set_sshd_option "PasswordAuthentication" "no" "$SECURITY_SSHD_CONFIG"
-    security_set_sshd_option "KbdInteractiveAuthentication" "no" "$SECURITY_SSHD_CONFIG"
-    security_set_sshd_option "ChallengeResponseAuthentication" "no" "$SECURITY_SSHD_CONFIG"
-    security_set_sshd_option "PubkeyAuthentication" "yes" "$SECURITY_SSHD_CONFIG"
-    security_set_sshd_option "X11Forwarding" "no" "$SECURITY_SSHD_CONFIG"
-    security_set_sshd_option "AllowTcpForwarding" "no" "$SECURITY_SSHD_CONFIG"
-    security_set_sshd_option "AllowAgentForwarding" "no" "$SECURITY_SSHD_CONFIG"
-    security_set_sshd_option "AllowStreamLocalForwarding" "no" "$SECURITY_SSHD_CONFIG"
-    security_set_sshd_option "PermitTunnel" "no" "$SECURITY_SSHD_CONFIG"
 
-    # Bonus fix: comment out standalone Port directives in the main sshd_config
-    # so they don't conflict with the Port managed by 99-ops-hardening.conf.
-    # The Include directive (above) means port ownership moves to the include file.
+    # Comment out standalone Port directives in main config (managed via include).
     if grep -Eq '^[[:space:]]*Port[[:space:]]+[0-9]+' "$SECURITY_SSHD_CONFIG" 2>/dev/null; then
-        sed -i -E 's|^([[:space:]]*Port[[:space:]]+[0-9]+)|#\1  # managed via sshd_config.d/99-ops-hardening.conf|' \
-            "$SECURITY_SSHD_CONFIG"
+        sed -i -E 's|^([[:space:]]*Port[[:space:]]+[0-9]+)|#  # managed via sshd_config.d/99-ops-hardening.conf|'             "$SECURITY_SSHD_CONFIG"
         log_info "Commented out Port directives in ${SECURITY_SSHD_CONFIG} -- managed via include."
     fi
 
+    # Strip conflicting directives from OTHER include files (not our managed file).
     if [[ -d "$SECURITY_SSHD_INCLUDE_DIR" ]]; then
         find "$SECURITY_SSHD_INCLUDE_DIR" -maxdepth 1 -type f ! -name '99-ops-hardening.conf' -print0 2>/dev/null | while IFS= read -r -d '' include_file; do
             if grep -Eq '^[[:space:]]*(PasswordAuthentication|PermitRootLogin|Port|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|AllowStreamLocalForwarding|PermitTunnel)[[:space:]]+' "$include_file"; then
-                backup_file "$include_file" >/dev/null 2>&1 || true
+                backup_file "$include_file" > /dev/null 2>&1 || true
                 sed -i -E '/^[[:space:]]*(PasswordAuthentication|PermitRootLogin|Port|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|AllowStreamLocalForwarding|PermitTunnel)[[:space:]]+/d' "$include_file"
             fi
         done
     fi
 }
+
 
 # security_strip_cloud_init_overrides
 # Public helper — strips conflicting SSH directives injected by cloud-init
@@ -263,9 +282,9 @@ security_list_desired_ssh_ports() {
 
 security_reconcile_ufw_rules() {
     local desired_ports=()
-    local port status_output existing_ssh_ports=()
+    local port status_output existing_ports=()
 
-    if ! command -v ufw >/dev/null 2>&1; then
+    if ! command -v ufw > /dev/null 2>&1; then
         apt_install ufw
     fi
 
@@ -273,60 +292,74 @@ security_reconcile_ufw_rules() {
         [[ -n "$port" ]] && desired_ports+=("$port")
     done < <(security_list_desired_ssh_ports)
 
-    # Bug #1 fix: abort if no SSH ports resolved -- prevents lockout via 'default deny'
+    # Abort if no SSH ports resolved — prevents lockout via 'default deny'
     if [[ ${#desired_ports[@]} -eq 0 ]]; then
         print_error "UFW reconcile: no SSH ports resolved -- aborting to prevent lockout."
         log_info "security_reconcile_ufw_rules: aborted (no desired SSH ports)"
         return 1
     fi
 
-    ufw default deny incoming >/dev/null 2>&1 || true
-    ufw default allow outgoing >/dev/null 2>&1 || true
+    ufw default deny incoming > /dev/null 2>&1 || true
+    ufw default allow outgoing > /dev/null 2>&1 || true
 
-    # Bug #2 fix: track SSH rule add success; only enable UFW if at least one succeeded
+    # Track SSH rule add success; only enable UFW if at least one succeeded
     local ssh_rules_added=0
     for port in "${desired_ports[@]}"; do
-        if ufw allow "${port}/tcp" comment "ops: SSH managed" >/dev/null 2>&1; then
+        if ufw allow "${port}/tcp" comment "ops: SSH managed" > /dev/null 2>&1; then
             ((ssh_rules_added++))
         else
             print_warn "UFW: failed to add SSH rule for port ${port}/tcp"
             log_info "security_reconcile_ufw_rules: ufw allow ${port}/tcp failed"
         fi
     done
-    ufw allow 80/tcp comment "ops: HTTP" >/dev/null 2>&1 || true
-    ufw allow 443/tcp comment "ops: HTTPS" >/dev/null 2>&1 || true
+    ufw allow 80/tcp  comment "ops: HTTP"  > /dev/null 2>&1 || true
+    ufw allow 443/tcp comment "ops: HTTPS" > /dev/null 2>&1 || true
 
-    # Bug #2 fix: if no SSH rules added, skip enabling UFW to avoid lockout
+    # Skip enable if no SSH rules added — prevents lockout on fresh UFW enable
     if [[ "$ssh_rules_added" -eq 0 ]]; then
         print_error "UFW reconcile: no SSH rules added -- skipping enable to prevent lockout."
         log_info "security_reconcile_ufw_rules: skipped ufw enable (no SSH rules added)"
         return 1
     fi
 
-    # Bug #1 fix: read live SSH listen ports from kernel (ss) to avoid removing
-    # ports sshd is actively using but not yet tracked in ops.conf
+    # Read live SSH listen ports from kernel to protect ports sshd actively uses
     local active_ssh_ports=()
     while IFS= read -r port; do
         [[ -n "$port" ]] && active_ssh_ports+=("$port")
     done < <(ss -tlnp 2>/dev/null | awk '/sshd/ {print $4}' | grep -oP ':\K[0-9]+$' | sort -u)
 
+    # Bug A fix: load user-declared extra ports to preserve (OPS_UFW_SKIP_PORTS in ops.conf)
+    local skip_ports_csv skip_ports=()
+    skip_ports_csv="$(ops_conf_get "ops.conf" "OPS_UFW_SKIP_PORTS" 2>/dev/null || true)"
+    if [[ -n "$skip_ports_csv" ]]; then
+        IFS=',' read -ra skip_ports <<< "$skip_ports_csv"
+    fi
+
+    # Bug G fix: normalize UFW status to bare port numbers.
+    # Handles both "22/tcp  ALLOW" and "22 (v6)  ALLOW" formats; deduplicates with sort -u.
     status_output="$(ufw status 2>/dev/null || true)"
     while IFS= read -r port; do
-        [[ -n "$port" ]] && existing_ssh_ports+=("$port")
-    done < <(printf '%s\n' "$status_output" | awk '/\/tcp/ && /ALLOW/ {print $1}' | cut -d/ -f1 | grep -E '^[0-9]+$' | sort -u)
+        [[ -n "$port" ]] && existing_ports+=("$port")
+    done < <(printf '%s\n' "$status_output" \
+        | awk '/ALLOW/ {print $1}' \
+        | sed -E 's|/tcp$||; s|/udp$||; s|[[:space:]]*\(v6\)[[:space:]]*||; s|[[:space:]]||g' \
+        | grep -E '^[0-9]+$' \
+        | sort -u)
 
-    for port in "${existing_ssh_ports[@]}"; do
-        local keep=0
+    for port in "${existing_ports[@]}"; do
+        # Always keep: standard web ports and OPS reserved deny port
         if [[ "$port" == "80" || "$port" == "443" || "$port" == "20128" ]]; then
             continue
         fi
+
+        local keep=0
+
+        # Keep if in desired SSH ports (managed by ops.conf)
         for desired in "${desired_ports[@]}"; do
-            if [[ "$desired" == "$port" ]]; then
-                keep=1
-                break
-            fi
+            [[ "$desired" == "$port" ]] && keep=1 && break
         done
-        # Bug #1 fix: preserve ports sshd is actively listening on
+
+        # Keep if sshd is actively listening on this port (transition / not yet in ops.conf)
         if [[ "$keep" -eq 0 ]]; then
             for active in "${active_ssh_ports[@]}"; do
                 if [[ "$active" == "$port" ]]; then
@@ -336,16 +369,41 @@ security_reconcile_ufw_rules() {
                 fi
             done
         fi
+
+        # Bug A fix (3a): keep if declared in OPS_UFW_SKIP_PORTS by user
         if [[ "$keep" -eq 0 ]]; then
-            ufw delete allow "${port}/tcp" >/dev/null 2>&1 || true
+            for skip in "${skip_ports[@]}"; do
+                skip="${skip// /}"
+                if [[ "$skip" == "$port" ]]; then
+                    keep=1
+                    log_info "UFW: preserving user-declared port ${port} (OPS_UFW_SKIP_PORTS)"
+                    break
+                fi
+            done
+        fi
+
+        # Bug A fix (3b): keep if the UFW rule has NO "ops:" comment.
+        # Rules created externally (cloud provider, manual) are never touched.
+        if [[ "$keep" -eq 0 ]]; then
+            if ! printf '%s\n' "$status_output" \
+                    | grep -qE "^[[:space:]]*${port}[^0-9].*ALLOW.*# ops:"; then
+                keep=1
+                log_info "UFW: preserving non-OPS rule for port ${port} (no 'ops:' comment)"
+            fi
+        fi
+
+        if [[ "$keep" -eq 0 ]]; then
+            ufw delete allow "${port}/tcp" > /dev/null 2>&1 || true
+            log_info "UFW: removed stale OPS-managed rule for port ${port}"
         fi
     done
 
-    ufw delete allow 20128/tcp >/dev/null 2>&1 || true
-    ufw deny 20128/tcp >/dev/null 2>&1 || true
-    ufw --force enable >/dev/null 2>&1 || true
-    ufw reload >/dev/null 2>&1 || true
+    ufw delete allow 20128/tcp > /dev/null 2>&1 || true
+    ufw deny   20128/tcp       > /dev/null 2>&1 || true
+    ufw --force enable         > /dev/null 2>&1 || true
+    ufw reload                 > /dev/null 2>&1 || true
 }
+
 
 security_write_fail2ban_config() {
     local ssh_ports
@@ -462,20 +520,26 @@ security_rollback_sshd_config() {
     ssh_service=$(security_detect_ssh_service)
 
     print_warn "Rollback triggered: opening port 22 first to avoid SSH lockout..."
-    ufw allow 22/tcp comment "ops: rollback emergency SSH" >/dev/null 2>&1 || true
+    ufw allow 22/tcp comment "ops: rollback emergency SSH" > /dev/null 2>&1 || true
 
     if [[ -n "$backup_path" && -f "$backup_path" ]]; then
         cp "$backup_path" "$SECURITY_SSHD_CONFIG"
         print_warn "Restored SSH config from backup: $backup_path"
     fi
 
-    if sshd -t >/dev/null 2>&1; then
+    if sshd -t > /dev/null 2>&1; then
         service_restart "$ssh_service"
         print_warn "Rollback complete: SSH service restarted."
+        # Bug F fix: reconcile UFW back to pre-hardening state and remove the emergency
+        # port-22 rule. ops.conf still reflects the old SSH port since
+        # security_ensure_ssh_transition_ports had not yet run when rollback triggered.
+        log_info "Rollback: reconciling UFW to remove emergency rule..."
+        security_reconcile_ufw_rules || true
     else
         print_error "Rollback restored config still fails sshd -t. Manual recovery required immediately."
     fi
 }
+
 
 security_apply_sshd_hardening() {
     local new_port="$1"
@@ -490,9 +554,12 @@ security_apply_sshd_hardening() {
     backup_path=$(backup_file "$SECURITY_SSHD_CONFIG")
 
     security_reconcile_sshd_main_config
+    # Bug D fix: strip cloud-init SSH overrides BEFORE writing our include file and
+    # running sshd -t, so a single service_restart applies all changes atomically.
+    security_strip_cloud_init_overrides
     security_write_sshd_hardening_include "$new_port" "$password_auth" "$old_port"
 
-    if ! sshd -t >/dev/null 2>&1; then
+    if ! sshd -t > /dev/null 2>&1; then
         print_error "sshd -t failed after update. Starting rollback."
         security_rollback_sshd_config "$backup_path"
         return 1
@@ -510,6 +577,7 @@ security_apply_sshd_hardening() {
     print_warn "Transition safety: keep only managed transition ports until login is verified on port $new_port."
     return 0
 }
+
 
 # ── Public menu entry ─────────────────────────────────────────
 menu_security() {
@@ -689,7 +757,11 @@ security_finalize_ssh_transition() {
         return 0
     fi
 
-    security_write_sshd_hardening_include "$new_port" "$(ops_conf_get "ops.conf" "OPS_SSH_PASSWORD_AUTH" 2>/dev/null || echo no)"
+    # Bug E fix: use parameter expansion to catch empty-string return (exit 0 bypasses || fallback)
+    local _final_pw_auth
+    _final_pw_auth="$(ops_conf_get "ops.conf" "OPS_SSH_PASSWORD_AUTH" 2>/dev/null || true)"
+    _final_pw_auth="${_final_pw_auth:-no}"
+    security_write_sshd_hardening_include "$new_port" "$_final_pw_auth"
     if ! sshd -t >/dev/null 2>&1; then
         print_error "sshd -t failed while finalizing transition."
         return 1
