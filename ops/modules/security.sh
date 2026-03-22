@@ -130,6 +130,19 @@ security_normalize_script_permissions() {
     fi
 }
 
+# _security_has_authorized_keys <username>
+# Fix B: Returns 0 if the user has at least one valid SSH public key.
+# Used to guard against disabling PasswordAuthentication with no key present.
+_security_has_authorized_keys() {
+    local user="$1"
+    local home_dir
+    home_dir=$(getent passwd "$user" 2>/dev/null | cut -d: -f6 || true)
+    [[ -z "$home_dir" ]] && return 1
+    local auth_keys="${home_dir}/.ssh/authorized_keys"
+    [[ -f "$auth_keys" ]] && \
+        grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp|sk-ssh) ' "$auth_keys" 2>/dev/null
+}
+
 security_wizard_baseline() {
     print_section "Security Baseline"
     security_require_root || return 1
@@ -144,9 +157,20 @@ security_wizard_baseline() {
     new_port="$REPLY"
     security_validate_ssh_port "$new_port" || return 1
 
-    if prompt_confirm "Disable PasswordAuthentication after transition completes?"; then
-        password_auth="no"
+    # Fix B: Only offer to disable PasswordAuthentication if SSH key is present.
+    # Without a key, disabling password auth causes complete SSH lockout.
+    local admin_user
+    admin_user="$(security_get_admin_user)"
+    if _security_has_authorized_keys "$admin_user"; then
+        if prompt_confirm "Disable PasswordAuthentication after transition completes?"; then
+            password_auth="no"
+        else
+            password_auth="yes"
+        fi
     else
+        print_warn "No SSH public key found for '${admin_user}'."
+        print_warn "PasswordAuthentication will remain ENABLED to prevent SSH lockout."
+        print_warn "Add a key first: Security menu -> Manage SSH Keys (option 8)"
         password_auth="yes"
     fi
 
@@ -191,8 +215,12 @@ ClientAliveCountMax 2
 Port ${locked_port}
 EOF_SSH_OPS
 
-    if [[ -n "$transition_port" && "$transition_port" != "$locked_port" ]]; then
-        printf 'Port %s\n' "$transition_port" >> "$SECURITY_SSHD_OPS_INCLUDE"
+    # Fix D: trim whitespace from transition_port before comparing to locked_port.
+    # ops.conf may store a value with trailing whitespace, causing false inequality
+    # and duplicate Port entries in the hardening include file.
+    local _clean_transition="${transition_port// /}"
+    if [[ -n "$_clean_transition" && "$_clean_transition" != "$locked_port" ]]; then
+        printf 'Port %s\n' "$_clean_transition" >> "$SECURITY_SSHD_OPS_INCLUDE"
     fi
 
     chmod 644 "$SECURITY_SSHD_OPS_INCLUDE"
@@ -601,19 +629,21 @@ menu_security() {
         echo "  5) Change SSH port"
         echo "  6) Finalize SSH transition (close old SSH port)"
         echo "  7) Apply host baseline (sysctl/swap/firewall/fail2ban)"
+        echo "  8) Manage SSH keys"
         echo "  0) Back"
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) security_harden_ssh      ;;
-            2) security_configure_ufw   ;;
-            3) security_setup_fail2ban  ;;
-            4) security_status          ;;
-            5) security_change_ssh_port ;;
+            1) security_harden_ssh            ;;
+            2) security_configure_ufw         ;;
+            3) security_setup_fail2ban        ;;
+            4) security_status                ;;
+            5) security_change_ssh_port       ;;
             6) security_finalize_ssh_transition ;;
-            7) security_apply_host_baseline ;;
-            0) return                   ;;
-            *) print_warn "Invalid option" ;;
+            7) security_apply_host_baseline   ;;
+            8) security_manage_ssh_keys       ;;
+            0) return                         ;;
+            *) print_warn "Invalid option"    ;;
         esac
     done
 }
@@ -631,9 +661,19 @@ security_harden_ssh() {
     new_port="$REPLY"
     security_validate_ssh_port "$new_port" || return 1
 
-    if prompt_confirm "Disable PasswordAuthentication (recommended if SSH keys are ready)?"; then
-        password_auth="no"
+    # Fix B: Guard -- only offer to disable PasswordAuthentication if SSH key is present.
+    local admin_user
+    admin_user="$(security_get_admin_user)"
+    if _security_has_authorized_keys "$admin_user"; then
+        if prompt_confirm "Disable PasswordAuthentication (recommended if SSH keys are ready)?"; then
+            password_auth="no"
+        else
+            password_auth="yes"
+        fi
     else
+        print_warn "No SSH public key found for '${admin_user}'."
+        print_warn "PasswordAuthentication will remain ENABLED to prevent SSH lockout."
+        print_warn "Add a key first: Security menu -> Manage SSH Keys (option 8)"
         password_auth="yes"
     fi
 
@@ -818,4 +858,141 @@ security_apply_host_baseline() {
 
     print_ok "OPS host security baseline applied."
     security_status
+}
+
+# -- Fix C: SSH Key Management sub-menu ----------------------------
+# Allows viewing, adding and removing SSH public keys for the admin user,
+# and toggling PasswordAuthentication with safety guardrails.
+security_manage_ssh_keys() {
+    print_section "Manage SSH Keys"
+    security_require_root || return 1
+
+    local admin_user admin_home auth_keys
+    admin_user="$(security_get_admin_user)"
+    admin_home=$(getent passwd "$admin_user" 2>/dev/null | cut -d: -f6 || true)
+
+    if [[ -z "$admin_home" || ! -d "$admin_home" ]]; then
+        print_error "Cannot find home directory for '${admin_user}'."
+        return 1
+    fi
+    auth_keys="${admin_home}/.ssh/authorized_keys"
+
+    while true; do
+        echo ""
+        echo "  Admin user : ${admin_user}"
+        echo "  Keys file  : ${auth_keys}"
+        echo ""
+
+        # Display current keys
+        local key_count=0
+        if [[ -f "$auth_keys" ]] && \
+           grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp|sk-ssh) ' "$auth_keys" 2>/dev/null; then
+            echo "  Current authorized keys:"
+            local n=1
+            while IFS= read -r line; do
+                [[ "$line" =~ ^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp|sk-ssh)[[:space:]] ]] || continue
+                local ktype kdata kcomment
+                ktype=$(printf '%s' "$line" | awk '{print $1}')
+                kdata=$(printf '%s' "$line" | awk '{print $2}')
+                kcomment=$(printf '%s' "$line" | awk '{$1=$2=""; gsub(/^[ \t]+/,""); print}')
+                printf "    %d) %-20s ...%s  %s\n" "$n" "$ktype" "${kdata: -20}" "$kcomment"
+                ((n++))
+            done < "$auth_keys"
+            key_count=$((n - 1))
+        else
+            print_warn "No SSH public keys currently authorized."
+        fi
+
+        echo ""
+        echo "  1) Add new SSH public key"
+        echo "  2) Remove a key by number"
+        echo "  3) Enable PasswordAuthentication (emergency restore)"
+        echo "  4) Disable PasswordAuthentication (requires at least 1 key above)"
+        echo "  0) Back"
+        echo ""
+        read -r -p "  Select: " subchoice
+
+        case "$subchoice" in
+            1)
+                echo ""
+                echo "  Paste your SSH public key below (one line, then Enter):"
+                read -r -p "  > " new_key
+                if [[ -z "$new_key" ]]; then
+                    print_warn "Empty input -- cancelled."
+                elif ! printf '%s' "$new_key" | \
+                     grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp|sk-ssh) [A-Za-z0-9+/=]'; then
+                    print_error "Input does not look like a valid SSH public key. Not added."
+                else
+                    mkdir -p "${admin_home}/.ssh"
+                    chmod 700 "${admin_home}/.ssh"
+                    printf '%s\n' "$new_key" >> "$auth_keys"
+                    chmod 600 "$auth_keys"
+                    chown -R "${admin_user}:${admin_user}" "${admin_home}/.ssh"
+                    print_ok "Key added to ${auth_keys}."
+                fi
+                ;;
+            2)
+                if [[ ! -f "$auth_keys" ]] || (( key_count == 0 )); then
+                    print_warn "No authorized_keys file or no valid keys found."
+                    continue
+                fi
+                echo ""
+                read -r -p "  Enter key number to remove (1-${key_count}): " del_num
+                if ! [[ "$del_num" =~ ^[0-9]+$ ]] || \
+                   (( del_num < 1 || del_num > key_count )); then
+                    print_warn "Invalid number. Must be between 1 and ${key_count}."
+                    continue
+                fi
+                if ! prompt_confirm "Remove key #${del_num}?"; then
+                    print_warn "Cancelled."
+                    continue
+                fi
+                local tmp_del counted=0
+                tmp_del=$(mktemp)
+                while IFS= read -r line; do
+                    if printf '%s' "$line" | \
+                       grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp|sk-ssh) '; then
+                        ((counted++))
+                        [[ "$counted" -eq "$del_num" ]] && continue
+                    fi
+                    printf '%s\n' "$line"
+                done < "$auth_keys" > "$tmp_del"
+                mv "$tmp_del" "$auth_keys"
+                chmod 600 "$auth_keys"
+                chown "${admin_user}:${admin_user}" "$auth_keys"
+                print_ok "Key #${del_num} removed."
+                ;;
+            3)
+                print_warn "WARNING: Enabling PasswordAuthentication allows password-based SSH login."
+                if prompt_confirm "Enable PasswordAuthentication?"; then
+                    local pw_port ssh_svc
+                    pw_port="$(security_get_locked_ssh_port)"
+                    ssh_svc="$(security_detect_ssh_service)"
+                    security_write_sshd_hardening_include "$pw_port" "yes"
+                    systemctl reload "$ssh_svc" >/dev/null 2>&1 || true
+                    ops_conf_set "ops.conf" "OPS_SSH_PASSWORD_AUTH" "yes"
+                    print_ok "PasswordAuthentication enabled. SSH reloaded."
+                fi
+                ;;
+            4)
+                if ! _security_has_authorized_keys "$admin_user"; then
+                    print_error "No SSH key found for '${admin_user}'."
+                    print_error "Add a key first (option 1) to avoid lockout."
+                else
+                    print_warn "WARNING: Only SSH key logins will work after this change."
+                    if prompt_confirm "Disable PasswordAuthentication?"; then
+                        local lock_port ssh_svc
+                        lock_port="$(security_get_locked_ssh_port)"
+                        ssh_svc="$(security_detect_ssh_service)"
+                        security_write_sshd_hardening_include "$lock_port" "no"
+                        systemctl reload "$ssh_svc" >/dev/null 2>&1 || true
+                        ops_conf_set "ops.conf" "OPS_SSH_PASSWORD_AUTH" "no"
+                        print_ok "PasswordAuthentication disabled. SSH key-only mode active."
+                    fi
+                fi
+                ;;
+            0) return ;;
+            *) print_warn "Invalid option" ;;
+        esac
+    done
 }

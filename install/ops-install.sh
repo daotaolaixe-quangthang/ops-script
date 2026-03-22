@@ -341,9 +341,74 @@ setup_admin_user() {
     export ADMIN_USER
 }
 
-# ── 6. Install OPS core (tarball) ─────────────────────────────
-# Dùng tarball thay vì git clone — nhất quán với self-update menu 16.
-# Không yêu cầu git trên VPS.
+# -- 5b. SSH public key setup (optional) ---------------------------
+# Prevents SSH lockout if PasswordAuthentication is later disabled.
+# Sets SSH_KEY_CONFIGURED=yes|no for use by the security wizard.
+setup_ssh_key() {
+    echo ""
+    echo -e "${CYN}${BLD}=== SSH Public Key Setup (Recommended) ===${RST}"
+    echo "  Adding your SSH public key NOW prevents being locked out"
+    echo "  if PasswordAuthentication is disabled later via Setup Wizard."
+    echo ""
+    echo "  To get your public key from your local machine, run:"
+    echo -e "    ${CYN}cat ~/.ssh/id_rsa.pub${RST}  or  ${CYN}cat ~/.ssh/id_ed25519.pub${RST}"
+    echo ""
+
+    local admin_home pub_key
+    admin_home=$(getent passwd "$ADMIN_USER" | cut -d: -f6)
+
+    if [[ -z "$admin_home" || ! -d "$admin_home" ]]; then
+        warn "Cannot find home directory for '${ADMIN_USER}' -- skipping SSH key setup."
+        SSH_KEY_CONFIGURED="no"
+        export SSH_KEY_CONFIGURED
+        return 0
+    fi
+
+    # If authorized_keys already has valid content, skip.
+    if [[ -f "${admin_home}/.ssh/authorized_keys" ]] && \
+       grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp|sk-ssh) ' \
+           "${admin_home}/.ssh/authorized_keys" 2>/dev/null; then
+        ok "SSH authorized_keys already populated for '${ADMIN_USER}' -- skipping."
+        SSH_KEY_CONFIGURED="yes"
+        export SSH_KEY_CONFIGURED
+        return 0
+    fi
+
+    read -r -p "  Paste your SSH public key (or press Enter to skip): " pub_key
+
+    if [[ -z "$pub_key" ]]; then
+        warn "No SSH key added."
+        warn "PasswordAuthentication will stay ENABLED until you add a key."
+        warn "Add later via: ops -> Security -> Manage SSH Keys"
+        SSH_KEY_CONFIGURED="no"
+        export SSH_KEY_CONFIGURED
+        return 0
+    fi
+
+    # Sanity check: must look like a real public key
+    if ! echo "$pub_key" | grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp|sk-ssh) [A-Za-z0-9+/=]'; then
+        warn "Input does not look like a valid SSH public key -- skipping."
+        warn "Add later via: ops -> Security -> Manage SSH Keys"
+        SSH_KEY_CONFIGURED="no"
+        export SSH_KEY_CONFIGURED
+        return 0
+    fi
+
+    mkdir -p "${admin_home}/.ssh"
+    chmod 700 "${admin_home}/.ssh"
+    echo "$pub_key" >> "${admin_home}/.ssh/authorized_keys"
+    chmod 600 "${admin_home}/.ssh/authorized_keys"
+    chown -R "${ADMIN_USER}:${ADMIN_USER}" "${admin_home}/.ssh"
+
+    ok "SSH public key added for '${ADMIN_USER}'."
+    ok "You can now safely disable PasswordAuthentication in the Setup Wizard."
+    SSH_KEY_CONFIGURED="yes"
+    export SSH_KEY_CONFIGURED
+}
+
+# -- 6. Install OPS core (tarball) ---------------------------------
+# Dung tarball thay vi git clone -- nhat quan voi self-update menu 16.
+# Khong yeu cau git tren VPS.
 
 install_ops_core() {
     info "Installing OPS core to ${OPS_INSTALL_DIR} (via tarball)..."
@@ -506,6 +571,7 @@ main() {
     configure_ufw
 
     setup_admin_user
+    setup_ssh_key
 
     write_capacity_conf
     install_ops_core
