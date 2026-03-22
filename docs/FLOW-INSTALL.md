@@ -32,8 +32,17 @@ Installer asks for:
    - Open both ports in firewall.
 
 2. **Non‑root admin user** (e.g. `opsadmin` with a suggested default):
-   - Create user, set password (or SSH key), add to `sudo`.
+   - Create user, set password, add to `sudo`.
    - This user is used for daily SSH and to run Node/PM2 services.
+
+2b. **SSH public key setup** (optional but strongly recommended):
+   - Immediately after admin user creation, installer prompts operator to paste their SSH public key.
+   - If provided: creates `~/.ssh/authorized_keys` with correct permissions (`700`/`600`, `chown ADMIN_USER`).
+   - If skipped: warns that `PasswordAuthentication` will remain `yes` until a key is added later.
+   - Sets internal state `SSH_KEY_CONFIGURED=yes|no`, used by the Security Wizard to guard against
+     disabling `PasswordAuthentication` without any key present (prevents SSH lockout).
+   - Idempotent: no-op if `authorized_keys` already contains a valid key.
+
 
 3. **Capacity estimation**:
    - Based on RAM and CPU, compute:

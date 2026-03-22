@@ -71,6 +71,11 @@ Entry: `1) Production Setup Wizard`
   - Database (MariaDB default)
   - Logging & basic monitoring
 
+> **SSH lockout guard (chot):** The Security Baseline step (1>1) checks whether the admin user has at
+> least one SSH public key in `~/.ssh/authorized_keys` before allowing `PasswordAuthentication` to be
+> disabled. If no key is present, the prompt is suppressed and `PasswordAuthentication` stays `yes`.
+> Operators must add a key first via **Security -> Manage SSH Keys** (option 8).
+
 The wizard itself is covered in detail in `FLOW-INSTALL.md`.
 
 ---
