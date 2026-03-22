@@ -532,8 +532,18 @@ security_ensure_swap() {
     desired_size_mb=$(ops_conf_get "ops.conf" "OPS_SWAP_MB" 2>/dev/null || true)
     desired_size_mb="${desired_size_mb:-2048}"
 
+    # P5-A: Check existing swap SIZE before returning early.
+    # If swapfile exists but is smaller than desired, remove and recreate.
     if swapon --show 2>/dev/null | grep -q "${SECURITY_SWAP_FILE}"; then
-        return 0
+        local existing_mb
+        existing_mb=$(swapon --show --bytes 2>/dev/null \
+            | awk -v f="${SECURITY_SWAP_FILE}" '$1==f {printf "%d", $3/1048576; exit}')
+        if [[ -n "$existing_mb" && "$existing_mb" -ge "$desired_size_mb" ]]; then
+            return 0   # correct size already active
+        fi
+        log_info "security_ensure_swap: existing swap ${existing_mb}MB < desired ${desired_size_mb}MB — recreating."
+        swapoff "$SECURITY_SWAP_FILE" 2>/dev/null || true
+        rm -f "$SECURITY_SWAP_FILE"
     fi
 
     if [[ -f "$SECURITY_SWAP_FILE" ]]; then
@@ -754,6 +764,15 @@ security_status() {
     echo "Host Baseline Sysctl File: ${SECURITY_SYSCTL_OPS_CONF}"
     echo "Swap File: ${SECURITY_SWAP_FILE}"
     echo ""
+
+    # P5-E: SSH port drift detection — warn if live sshd port differs from ops.conf
+    local live_port conf_port
+    live_port=$(sshd -T 2>/dev/null | awk '/^port / {print $2; exit}' || true)
+    conf_port=$(ops_conf_get "ops.conf" "OPS_SSH_PORT" || true)
+    if [[ -n "$live_port" && -n "$conf_port" && "$live_port" != "$conf_port" ]]; then
+        print_warn "DRIFT DETECTED: live SSH port ($live_port) != ops.conf ($conf_port)"
+        print_warn "Run 'Security → Harden SSH' or 'Security → Change SSH Port' to reconcile."
+    fi
 
     if sshd -t >/dev/null 2>&1; then
         print_ok "sshd -t: OK"

@@ -648,6 +648,20 @@ _sync_all_managed_vhosts() {
     fi
 }
 
+_install_certbot_cron_fallback() {
+    # P5-B: Write a cron fallback for certbot renewal.
+    # On systemd systems certbot's own timer works, but on minimal/OpenVZ/LXC
+    # environments where timers may not fire, this cron entry guarantees renewal.
+    # Idempotent: only writes if not already present.
+    local cron_file="/etc/cron.d/ops-certbot-renew"
+    if [[ ! -f "$cron_file" ]]; then
+        printf '# Managed by OPS — certbot renewal fallback\n0 */12 * * * root certbot renew --quiet --no-self-upgrade 2>/dev/null\n' \
+            > "$cron_file"
+        chmod 644 "$cron_file"
+        log_info "P5-B: certbot cron renewal fallback written to ${cron_file}"
+    fi
+}
+
 _install_certbot_snap() {
     if ! command -v snap >/dev/null 2>&1; then
         apt_update
@@ -661,9 +675,11 @@ _install_certbot_snap() {
     if ! snap install --classic certbot 2>/dev/null; then
         print_warn "snap install certbot failed — falling back to apt (certbot + python3-certbot-nginx)"
         apt_install certbot python3-certbot-nginx
+        _install_certbot_cron_fallback
         return 0
     fi
     ln -sf /snap/bin/certbot /usr/bin/certbot
+    _install_certbot_cron_fallback
 }
 
 # nginx_apply_security_baseline

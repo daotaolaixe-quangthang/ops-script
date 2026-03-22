@@ -507,6 +507,14 @@ node_restart_app() {
     _node_load_app_conf "$app_name" || return 1
     local pm2_name="${APP_PM2_NAME:-$app_name}"
 
+    # P5-D: verify PM2 process exists before restart to give a clear error message
+    # instead of a confusing generic pm2 error when process was deleted out-of-band.
+    if ! _node_run_as_runtime_user pm2 describe "$pm2_name" &>/dev/null; then
+        print_error "PM2 process '${pm2_name}' not found in the running daemon."
+        print_warn "Use 'Add Node.js app' (option 2) to re-register and start the app."
+        return 1
+    fi
+
     _node_run_as_runtime_user pm2 restart "$pm2_name"
     print_ok "Restarted: ${pm2_name}"
     log_info "node_restart_app: $pm2_name restarted"

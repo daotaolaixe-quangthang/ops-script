@@ -383,6 +383,20 @@ tune_mariadb() {
             ;;
     esac
 
+    # P5-F: MariaDB 10.9+ deprecated innodb_log_file_size in favour of
+    # innodb_redo_log_capacity (bytes). Use the correct directive per version.
+    local _mariadb_major
+    _mariadb_major=$(mysqld --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1 || echo "0.0")
+    local _innodb_log_directive
+    if awk -v v="$_mariadb_major" 'BEGIN{exit !(v+0 >= 10.9)}'; then
+        # Convert NNNMb string to bytes for innodb_redo_log_capacity
+        local _log_bytes
+        _log_bytes=$(( ${innodb_log_file_size//[^0-9]/} * 1024 * 1024 ))
+        _innodb_log_directive="innodb_redo_log_capacity = ${_log_bytes}"
+    else
+        _innodb_log_directive="innodb_log_file_size         = ${innodb_log_file_size}"
+    fi
+
     backup_file "$MARIADB_TUNING_CNF" >/dev/null || true
 
     # Write the base performance tuning block.
@@ -398,7 +412,7 @@ innodb_buffer_pool_size      = ${innodb_buffer_pool_size}
 innodb_buffer_pool_instances = ${innodb_buffer_pool_instances}
 
 # InnoDB redo log — larger = fewer checkpoint flushes under write load
-innodb_log_file_size         = ${innodb_log_file_size}
+${_innodb_log_directive}
 
 # Key buffer: only used by MyISAM; InnoDB-only setups waste 128MB otherwise
 key_buffer_size              = 8M
@@ -523,6 +537,9 @@ db_audit() {
 
     local pass=0 warn=0 fail=0
 
+    # P5-C: trap ensures _audit_check is unset on function return so it
+    # doesn't leak into the global shell scope and shadow other functions.
+    trap 'unset -f _audit_check 2>/dev/null' RETURN
     _audit_check() {
         local label="$1"
         local variable="$2"
