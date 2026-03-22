@@ -345,8 +345,7 @@ tune_mariadb() {
     case "${OPS_TIER:-M}" in
         S)
             # < 1500 MB RAM — 40% of RAM for buffer pool
-            local _pool_mb_s=$(( RAM_MB * 40 / 100 ))
-            innodb_buffer_pool_size="${_pool_mb_s}M"
+            innodb_buffer_pool_size="$(( RAM_MB * 40 / 100 ))M"
             innodb_buffer_pool_instances="1"
             innodb_log_file_size="64M"
             max_connections="80"
@@ -355,8 +354,7 @@ tune_mariadb() {
             ;;
         M)
             # 1500–5000 MB RAM — P3-F fix: was hardcoded 2G; now 50% of actual RAM
-            local _pool_mb_m=$(( RAM_MB * 50 / 100 ))
-            innodb_buffer_pool_size="${_pool_mb_m}M"
+            innodb_buffer_pool_size="$(( RAM_MB * 50 / 100 ))M"
             innodb_buffer_pool_instances="2"
             innodb_log_file_size="256M"
             max_connections="150"
@@ -365,8 +363,7 @@ tune_mariadb() {
             ;;
         L)
             # > 5000 MB RAM — P3-F fix: was hardcoded 5G; now 60% of actual RAM
-            local _pool_mb_l=$(( RAM_MB * 60 / 100 ))
-            innodb_buffer_pool_size="${_pool_mb_l}M"
+            innodb_buffer_pool_size="$(( RAM_MB * 60 / 100 ))M"
             innodb_buffer_pool_instances="4"
             innodb_log_file_size="512M"
             max_connections="300"
@@ -537,10 +534,10 @@ db_audit() {
 
     local pass=0 warn=0 fail=0
 
-    # P5-C: trap ensures _audit_check is unset on function return so it
-    # doesn't leak into the global shell scope and shadow other functions.
-    trap 'unset -f _audit_check 2>/dev/null' RETURN
-    _audit_check() {
+    # P5-C: Inner function named with _db_ prefix to avoid global scope collision.
+    # trap RETURN guarantees cleanup even on early return (e.g., _db_assert_not_rescue_mode).
+    trap 'unset -f _db_audit_check 2>/dev/null' RETURN
+    _db_audit_check() {
         local label="$1"
         local variable="$2"
         local expected="$3"   # regex, case-insensitive
@@ -563,20 +560,20 @@ db_audit() {
         fi
     }
 
-    _audit_check "Network isolation"       "bind_address"          "127\.0\.0\.1"
-    _audit_check "SSL enabled"             "have_ssl"              "YES"
-    _audit_check "local_infile disabled"   "local_infile"          "OFF"
+    _db_audit_check "Network isolation"       "bind_address"          "127\.0\.0\.1"
+    _db_audit_check "SSL enabled"             "have_ssl"              "YES"
+    _db_audit_check "local_infile disabled"   "local_infile"          "OFF"
     # P3-D fix: MariaDB returns the string "NULL" (not empty) for secure_file_priv.
     # The empty-string expected regex always matched nothing — every audit showed PASS incorrectly.
     # The correct expected regex is "NULL|" which matches either the literal word NULL or an empty value.
-    _audit_check "secure_file_priv=NULL"   "secure_file_priv"      "NULL|"        "WARN"
-    _audit_check "skip_name_resolve"       "skip_name_resolve"     "ON"
-    _audit_check "slow_query_log ON"       "slow_query_log"        "ON"            "WARN"
-    _audit_check "wait_timeout<=300"       "wait_timeout"          "[1-9][0-9]?[0-9]?|[12][0-9]{2}|300"
-    _audit_check "innodb_flush_neighbors"  "innodb_flush_neighbors" "0"
-    _audit_check "key_buffer_size<=16MB"   "key_buffer_size"       "[0-9]{1,7}|1[0-5][0-9]{5}|16777216"
+    _db_audit_check "secure_file_priv=NULL"   "secure_file_priv"      "NULL|"        "WARN"
+    _db_audit_check "skip_name_resolve"       "skip_name_resolve"     "ON"
+    _db_audit_check "slow_query_log ON"       "slow_query_log"        "ON"            "WARN"
+    _db_audit_check "wait_timeout<=300"       "wait_timeout"          "[1-9][0-9]?[0-9]?|[12][0-9]{2}|300"
+    _db_audit_check "innodb_flush_neighbors"  "innodb_flush_neighbors" "0"
+    _db_audit_check "key_buffer_size<=16MB"   "key_buffer_size"       "[0-9]{1,7}|1[0-5][0-9]{5}|16777216"
 
-    unset -f _audit_check
+    unset -f _db_audit_check
 
     echo ""
     printf '  Summary: \033[0;32m%d PASS\033[0m  \033[0;33m%d WARN\033[0m  \033[0;31m%d FAIL\033[0m\n' "$pass" "$warn" "$fail"
