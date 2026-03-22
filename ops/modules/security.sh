@@ -124,6 +124,12 @@ security_get_runtime_user() {
     echo "$runtime_user"
 }
 
+security_get_tcp_forwarding() {
+    local val
+    val=$(ops_conf_get "ops.conf" "OPS_SSH_TCP_FORWARDING" 2>/dev/null || true)
+    echo "${val:-no}"
+}
+
 security_normalize_script_permissions() {
     if [[ -d "${OPS_ROOT}/modules" ]]; then
         find "${OPS_ROOT}" -type f -name '*.sh' -exec chmod 755 {} + 2>/dev/null || true
@@ -195,6 +201,9 @@ security_write_sshd_hardening_include() {
     local locked_port="$1"
     local password_auth="$2"
     local transition_port="${3:-}"
+    # Read TCP forwarding preference; default no (security-hardened)
+    local tcp_forwarding
+    tcp_forwarding="$(security_get_tcp_forwarding)"
 
     ensure_dir "$SECURITY_SSHD_INCLUDE_DIR"
     backup_file "$SECURITY_SSHD_OPS_INCLUDE" >/dev/null 2>&1 || true
@@ -206,7 +215,7 @@ KbdInteractiveAuthentication no
 ChallengeResponseAuthentication no
 PubkeyAuthentication yes
 X11Forwarding no
-AllowTcpForwarding no
+AllowTcpForwarding ${tcp_forwarding}
 AllowAgentForwarding no
 AllowStreamLocalForwarding no
 PermitTunnel no
@@ -630,6 +639,7 @@ menu_security() {
         echo "  6) Finalize SSH transition (close old SSH port)"
         echo "  7) Apply host baseline (sysctl/swap/firewall/fail2ban)"
         echo "  8) Manage SSH keys"
+        echo "  9) TCP Forwarding (VSCode Remote SSH)"
         echo "  0) Back"
         echo ""
         read -r -p "Select: " choice
@@ -642,6 +652,7 @@ menu_security() {
             6) security_finalize_ssh_transition ;;
             7) security_apply_host_baseline   ;;
             8) security_manage_ssh_keys       ;;
+            9) security_manage_tcp_forwarding ;;
             0) return                         ;;
             *) print_warn "Invalid option"    ;;
         esac
@@ -717,18 +728,22 @@ security_setup_fail2ban() {
 
 security_status() {
     print_section "Security Status"
-    local ssh_port root_login password_auth transition_port runtime_user
+    local ssh_port root_login password_auth transition_port runtime_user tcp_fwd_live tcp_fwd_conf
 
     ssh_port=$(security_get_current_ssh_port)
     root_login=$(sshd -T 2>/dev/null | awk '/^permitrootlogin /{print $2; exit}' || true)
     password_auth=$(sshd -T 2>/dev/null | awk '/^passwordauthentication /{print $2; exit}' || true)
     transition_port=$(security_get_transition_port)
     runtime_user=$(security_get_runtime_user)
+    tcp_fwd_live=$(sshd -T 2>/dev/null | awk '/^allowtcpforwarding /{print $2; exit}' || true)
+    tcp_fwd_conf=$(security_get_tcp_forwarding)
 
     echo "Locked SSH Port: ${ssh_port}"
     echo "Transition SSH Port: ${transition_port:-<none>}"
     echo "PermitRootLogin: ${root_login:-<unknown>}"
     echo "PasswordAuthentication: ${password_auth:-<unknown>}"
+    echo "AllowTcpForwarding (live):   ${tcp_fwd_live:-<unknown>}"
+    echo "AllowTcpForwarding (config): ${tcp_fwd_conf}"
     echo "Runtime User: ${runtime_user}"
     echo "Host Baseline Sysctl File: ${SECURITY_SYSCTL_OPS_CONF}"
     echo "Swap File: ${SECURITY_SWAP_FILE}"
@@ -995,4 +1010,88 @@ security_manage_ssh_keys() {
             *) print_warn "Invalid option" ;;
         esac
     done
+}
+
+# ── TCP Forwarding management (VSCode Remote SSH) ─────────────────────────────
+# Toggles AllowTcpForwarding in the OPS-managed sshd include file.
+# Required for VSCode SSH Remote (SOCKS dynamic port forwarding -D).
+# The setting is persisted in ops.conf as OPS_SSH_TCP_FORWARDING.
+security_manage_tcp_forwarding() {
+    print_section "TCP Forwarding (VSCode Remote SSH)"
+    security_require_root || return 1
+
+    local current ssh_svc locked_port password_auth transition_port
+    current="$(security_get_tcp_forwarding)"
+    ssh_svc="$(security_detect_ssh_service)"
+    locked_port="$(security_get_locked_ssh_port)"
+    password_auth="$(ops_conf_get "ops.conf" "OPS_SSH_PASSWORD_AUTH" 2>/dev/null || true)"
+    password_auth="${password_auth:-yes}"
+    transition_port="$(security_get_transition_port)"
+
+    echo ""
+    echo "  Current setting : AllowTcpForwarding = ${current}"
+    echo ""
+    echo "  TCP Forwarding is required by VSCode SSH Remote (SOCKS -D tunnel)."
+    echo "  Enabling allows SSH port forwarding through this server."
+    echo "  Disabling (default) improves security by preventing tunnel abuse."
+    echo ""
+    echo "  1) Enable TCP Forwarding  (required for VSCode Remote SSH)"
+    echo "  2) Disable TCP Forwarding (security-hardened default)"
+    echo "  3) Show live sshd TCP forwarding status"
+    echo "  0) Back"
+    echo ""
+    read -r -p "  Select: " subchoice
+    case "$subchoice" in
+        1)
+            if [[ "$current" == "yes" ]]; then
+                print_ok "TCP Forwarding is already enabled."
+                return 0
+            fi
+            print_warn "Enabling AllowTcpForwarding reduces SSH hardening (tunnel / port-scan risk)."
+            if prompt_confirm "Enable TCP Forwarding?"; then
+                ops_conf_set "ops.conf" "OPS_SSH_TCP_FORWARDING" "yes"
+                security_write_sshd_hardening_include "$locked_port" "$password_auth" "$transition_port"
+                if sshd -t >/dev/null 2>&1; then
+                    systemctl reload "$ssh_svc" >/dev/null 2>&1 || true
+                    print_ok "TCP Forwarding enabled. SSH reloaded."
+                    print_warn "Reconnect VSCode SSH Remote to use the new setting."
+                else
+                    print_error "sshd -t validation failed. Reverting ops.conf change."
+                    ops_conf_set "ops.conf" "OPS_SSH_TCP_FORWARDING" "no"
+                    security_write_sshd_hardening_include "$locked_port" "$password_auth" "$transition_port"
+                fi
+            else
+                print_warn "Cancelled."
+            fi
+            ;;
+        2)
+            if [[ "$current" == "no" ]]; then
+                print_ok "TCP Forwarding is already disabled."
+                return 0
+            fi
+            print_warn "Disabling TCP Forwarding will break VSCode SSH Remote connections."
+            if prompt_confirm "Disable TCP Forwarding?"; then
+                ops_conf_set "ops.conf" "OPS_SSH_TCP_FORWARDING" "no"
+                security_write_sshd_hardening_include "$locked_port" "$password_auth" "$transition_port"
+                if sshd -t >/dev/null 2>&1; then
+                    systemctl reload "$ssh_svc" >/dev/null 2>&1 || true
+                    print_ok "TCP Forwarding disabled. SSH reloaded."
+                else
+                    print_error "sshd -t validation failed. Reverting ops.conf change."
+                    ops_conf_set "ops.conf" "OPS_SSH_TCP_FORWARDING" "yes"
+                    security_write_sshd_hardening_include "$locked_port" "$password_auth" "$transition_port"
+                fi
+            else
+                print_warn "Cancelled."
+            fi
+            ;;
+        3)
+            local live_val
+            live_val=$(sshd -T 2>/dev/null | awk '/^allowtcpforwarding /{print $2; exit}' || true)
+            echo "  AllowTcpForwarding (sshd live): ${live_val:-<unknown>}"
+            echo "  AllowTcpForwarding (ops.conf):  $(security_get_tcp_forwarding)"
+            ;;
+        0) return ;;
+        *) print_warn "Invalid option" ;;
+    esac
 }

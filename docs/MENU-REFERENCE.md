@@ -347,7 +347,33 @@ This reference must be kept in sync with the actual menu layout in `bin/ops`.
 
 ---
 
-### 11. Planned future menu extensions (Phase 2 / Phase 4)
+### 11. Security Management
+
+The Security Management submenu is accessible from the main menu via **Production Setup Wizard → Security Baseline**, or by running `sudo ops` and navigating to the **Security** module directly (e.g. `sudo ops` → any sub-path that triggers `menu_security`).
+
+Submenu:
+
+1. **Harden SSH config** — apply SSH hardening include (port, password auth, deny root)
+2. **Configure UFW firewall** — reconcile UFW to OPS-managed baseline
+3. **Install & configure fail2ban** — set up fail2ban with SSH and nginx jails
+4. **Show security status** — display SSH port, auth settings, TCP forwarding, ufw/fail2ban state
+5. **Change SSH port** — change port with safe transition (old port kept open until verified)
+6. **Finalize SSH transition (close old SSH port)** — remove old port from sshd config and UFW
+7. **Apply host baseline (sysctl/swap/firewall/fail2ban)** — apply all non-SSH security baselines
+8. **Manage SSH keys** — add/remove authorized_keys, toggle PasswordAuthentication
+9. **TCP Forwarding (VSCode Remote SSH)** — enable or disable `AllowTcpForwarding` in sshd
+0. **Back**
+
+**Option 9 — TCP Forwarding detail:**
+
+`AllowTcpForwarding` is set to `no` by default (security-hardened). Enable it only when VSCode SSH Remote (or other SOCKS-based tools) is required. The setting is persisted in `ops.conf` as `OPS_SSH_TCP_FORWARDING` and survives future SSH port changes or hardening runs.
+
+> [!WARNING]
+> Enabling TCP Forwarding allows port tunneling through the SSH server, which increases attack surface. Only enable when needed; disable again when not in use.
+
+---
+
+### 12. Planned future menu extensions (Phase 2 / Phase 4)
 
 These do **not** change the Phase 1 menu contract. They are planned placements for future feature groups.
 
