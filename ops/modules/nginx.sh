@@ -656,7 +656,13 @@ _install_certbot_snap() {
     fi
     snap install core || true
     snap refresh core || true
-    snap install --classic certbot || true
+    # P4-F: snap may fail on OpenVZ containers or minimal images without a working snapd.
+    # Fall back to apt certbot which is fully functional and doesn't require snap.
+    if ! snap install --classic certbot 2>/dev/null; then
+        print_warn "snap install certbot failed — falling back to apt (certbot + python3-certbot-nginx)"
+        apt_install certbot python3-certbot-nginx
+        return 0
+    fi
     ln -sf /snap/bin/certbot /usr/bin/certbot
 }
 

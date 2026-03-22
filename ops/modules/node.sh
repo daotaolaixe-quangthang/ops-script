@@ -174,7 +174,18 @@ node_install() {
     fi
 
     log_info "Fetching nodesource setup script (LTS)…"
-    curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+    # P4-A: download setup script to a temp file before executing.
+    # Prevents MITM hijacking stdin and avoids the 'curl | bash' anti-pattern.
+    local _setup_script
+    _setup_script=$(mktemp /tmp/nodesource-setup-XXXXXX.sh)
+    if ! curl -fsSL --max-time 60 https://deb.nodesource.com/setup_lts.x -o "$_setup_script"; then
+        rm -f "$_setup_script"
+        print_error "Failed to download nodesource setup script. Check connectivity."
+        return 1
+    fi
+    chmod +x "$_setup_script"
+    bash "$_setup_script"
+    rm -f "$_setup_script"
     apt_install nodejs
 
     if command -v node >/dev/null 2>&1; then
@@ -407,18 +418,30 @@ node_add_app() {
         print_ok "Rendered: $eco_dest"
     else
         # Inline fallback ecosystem.config.js
+        # P4-B: kill_timeout 5000 (>=5s per SECURITY-RULES §8), merge_logs,
+        # node_args --max-old-space-size derived from max_memory_restart ceiling.
+        local _max_mem_mb
+        case "${OPS_TIER:-M}" in
+            S) _max_mem_mb=256 ;;
+            M) _max_mem_mb=460 ;;
+            L) _max_mem_mb=740 ;;
+            *) _max_mem_mb=460 ;;
+        esac
         cat > "$eco_dest" <<EOF
 module.exports = {
   apps: [{
-    name:    '${pm2_name}',
-    script:  '${app_entry}',
-    cwd:     '${app_dir}',
+    name:         '${pm2_name}',
+    script:       '${app_entry}',
+    cwd:          '${app_dir}',
     env: {
       NODE_ENV: '${app_env}',
       PORT:     '${app_port}',
     },
-    listen_timeout: 8000,
-    kill_timeout:   3000,
+    merge_logs:           true,
+    listen_timeout:       8000,
+    kill_timeout:         5000,
+    node_args:            '--max-old-space-size=${_max_mem_mb}',
+    max_memory_restart:   '${max_mem}',
   }]
 };
 EOF

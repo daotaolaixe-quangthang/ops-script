@@ -255,6 +255,33 @@ setup_ssh_finalize_sudoers() {
     print_ok "sudoers rule installed: ${ADMIN_USER} may run ops-ssh-finalize.sh without password."
 }
 
+# ── 6. logrotate for /var/log/ops/ops.log ────────────────────
+# P4-E: Without logrotate the ops.log grows without bound.
+# Weekly rotation, 8 weeks retention, compressed, created 0640 root root.
+setup_logrotate() {
+    local lr_file="/etc/logrotate.d/ops"
+
+    # Idempotent: skip if already written
+    if [[ -f "$lr_file" ]]; then
+        log_info "logrotate config already present: ${lr_file}"
+        return 0
+    fi
+
+    cat > "$lr_file" <<'EOF_LR'
+/var/log/ops/ops.log {
+    weekly
+    rotate 8
+    compress
+    missingok
+    notifempty
+    create 0640 root root
+}
+EOF_LR
+    chmod 644 "$lr_file"
+    print_ok "logrotate config written: ${lr_file}"
+    log_info "setup_logrotate: ${lr_file} created"
+}
+
 # ── Main ──────────────────────────────────────────────────────
 
 main() {
@@ -262,6 +289,7 @@ main() {
 
     resolve_admin_user
     setup_log_dir
+    setup_logrotate
     setup_symlinks
     setup_base_config
     setup_ssh_finalize_sudoers

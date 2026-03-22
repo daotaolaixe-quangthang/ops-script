@@ -135,7 +135,9 @@ php_set_ini_key() {
 
 php_ensure_ondrej_ppa() {
     if [[ ! -f "/etc/apt/sources.list.d/ondrej-ubuntu-php.list" ]]; then
-        apt_install software-properties-common
+        # P4-C: python3-launchpadlib is required by add-apt-repository on Ubuntu 24.04.
+        # It was removed from the default image; without it the PPA addition fails.
+        apt_install software-properties-common python3-launchpadlib
         add-apt-repository ppa:ondrej/php -y
     fi
     apt_update

@@ -76,9 +76,15 @@ ops_conf_set() {
     local conf_file="$OPS_CONFIG_DIR/$1"
     local key="$2"
     local value="$3"
-    local escaped_value
+    local escaped_value sed_safe_value
 
+    # Escape double-quotes for shell storage in the conf file
     escaped_value=$(printf '%s' "$value" | sed 's/"/\\"/g')
+
+    # P4-G: additionally escape chars that are special to the sed | delimiter:
+    #   | (delimiter itself), \ (escape char), & (replacement backreference)
+    # This makes ops_conf_set safe for values like 'val|ue', 'a\b', 'a&b'.
+    sed_safe_value=$(printf '%s' "$escaped_value" | sed 's/[|\\&]/\\&/g')
 
     mkdir -p "$OPS_CONFIG_DIR"
 
@@ -96,7 +102,7 @@ ops_conf_set() {
     local tmp
     tmp=$(mktemp)
     if grep -q "^${key}=" "$conf_file" 2>/dev/null; then
-        sed "s|^${key}=.*|${key}=\"${escaped_value}\"|" "$conf_file" > "$tmp"
+        sed "s|^${key}=.*|${key}=\"${sed_safe_value}\"|" "$conf_file" > "$tmp"
     else
         cat "$conf_file" > "$tmp"
         printf '%s="%s"\n' "$key" "$escaped_value" >> "$tmp"

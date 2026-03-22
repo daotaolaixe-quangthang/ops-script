@@ -88,4 +88,15 @@ main_menu() {
     done
 }
 
+# ── P4-D: Session lock ───────────────────────────────────────
+# Prevents two concurrent 'ops' sessions from corrupting shared state
+# (config files, service restarts, PM2 saves, UFW rules, etc.).
+# The lock is released automatically when the process exits.
+exec 9>/var/lock/ops.lock
+if ! flock -n 9; then
+    echo "[ERROR] Another ops session is already running." >&2
+    echo "        Exit that session first, then run 'ops' again." >&2
+    exit 1
+fi
+
 main_menu
