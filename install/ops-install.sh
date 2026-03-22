@@ -268,18 +268,36 @@ configure_ufw() {
     ufw default deny incoming   >/dev/null
     ufw default allow outgoing  >/dev/null
 
-    # Allow SSH port(s) per current sshd state
+    # ── P2-A fix: track SSH rule success before enabling UFW.
+    # If no SSH allow rule succeeds, enabling UFW with 'deny incoming'
+    # would cause immediate lockout. Abort rather than risk that.
+    local ssh_rules_added=0
+
+    # Allow new SSH port (always present after setup_ssh_port)
     if [[ -n "$NEW_SSH_PORT" ]]; then
-        ufw allow "${NEW_SSH_PORT}/tcp" comment "ops: SSH port" >/dev/null
+        if ufw allow "${NEW_SSH_PORT}/tcp" comment "ops: SSH port" >/dev/null 2>&1; then
+            (( ssh_rules_added++ )) || true
+        else
+            warn "UFW: failed to add rule for new SSH port ${NEW_SSH_PORT}/tcp"
+        fi
     fi
 
-    # Allow port 22 only if sshd still has it open
+    # Allow port 22 only if sshd still has it open (transition mode)
     if [[ "$SSH_PORT_22_OPEN" == "yes" || "$SSH_ALREADY_CONFIGURED" == "no" ]]; then
-        ufw allow 22/tcp comment "ops: SSH legacy port (transition)" >/dev/null
+        if ufw allow 22/tcp comment "ops: SSH legacy port (transition)" >/dev/null 2>&1; then
+            (( ssh_rules_added++ )) || true
+        else
+            warn "UFW: failed to add rule for port 22/tcp"
+        fi
     fi
 
-    ufw allow 80/tcp  comment "ops: HTTP"  >/dev/null
-    ufw allow 443/tcp comment "ops: HTTPS" >/dev/null
+    # Abort if no SSH rules were added — enabling UFW now would lock us out
+    if [[ "$ssh_rules_added" -eq 0 ]]; then
+        die "UFW setup aborted: could not add any SSH allow rule. Enable UFW manually after verifying SSH access."
+    fi
+
+    ufw allow 80/tcp  comment "ops: HTTP"  >/dev/null 2>&1 || warn "UFW: could not add 80/tcp rule"
+    ufw allow 443/tcp comment "ops: HTTPS" >/dev/null 2>&1 || warn "UFW: could not add 443/tcp rule"
 
     if ufw status 2>/dev/null | grep -qi "Status: active"; then
         info "UFW already active — rules updated."

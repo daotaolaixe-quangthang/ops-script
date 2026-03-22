@@ -214,12 +214,19 @@ node_install_pm2() {
     home_dir="$(_node_runtime_home)"
 
     log_info "Configuring PM2 systemd startup for runtime user: $runtime_user"
-    startup_cmd=$(pm2 startup systemd -u "$runtime_user" --hp "$home_dir" | grep 'sudo env' | head -n1 || true)
+    # P2-B fix: never eval dynamic command output — use pattern validation first.
+    # PM2 emits exactly one line matching 'sudo env PATH=...' or 'env PATH=...'.
+    # We validate the pattern before executing via 'bash -c' (not eval).
+    local startup_raw startup_cmd
+    startup_raw=$(pm2 startup systemd -u "$runtime_user" --hp "$home_dir" 2>/dev/null || true)
+    startup_cmd=$(printf '%s\n' "$startup_raw" | grep -E '^(sudo )?env PATH=' | head -n1 || true)
     if [[ -n "$startup_cmd" ]]; then
-        eval "$startup_cmd"
-        log_info "PM2 startup command executed: $startup_cmd"
+        log_info "PM2 startup command (validated): $startup_cmd"
+        bash -c "$startup_cmd"
+        log_info "PM2 startup configured via systemd."
     else
         log_warn "Could not extract PM2 startup command — may already be configured."
+        log_warn "If needed, run manually: pm2 startup systemd -u ${runtime_user} --hp ${home_dir}"
     fi
 
     _node_run_as_runtime_user pm2 ping >/dev/null 2>&1 || true

@@ -16,8 +16,9 @@ ssl_session_timeout 1d;
 ssl_session_cache   shared:MozSSL:10m;
 ssl_session_tickets off;
 
-# HSTS (uncomment after verifying HTTPS works)
-# add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+# HSTS: 2-year strict, includeSubDomains, preload-list eligible.
+# P2-C fix: HSTS only in SSL (443) blocks — never in the global http{} context (RFC 6797 §7.2).
+add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
 
 # OCSP Stapling
 ssl_stapling        on;
