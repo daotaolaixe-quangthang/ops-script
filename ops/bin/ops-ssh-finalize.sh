@@ -110,12 +110,17 @@ main() {
         echo "Port ${locked_port}" >> "$SSHD_OPS_INCLUDE"
         _log "Updated ${SSHD_OPS_INCLUDE}: only Port ${locked_port} remains."
     else
-        # Create a minimal hardening file if it doesn't exist
+        # Create a minimal hardening file if it doesn't exist.
+        # P1-2 fix: read OPS_SSH_PASSWORD_AUTH from ops.conf so we preserve the
+        # operator's deliberate choice. Default 'yes' (safe) only when absent.
+        local _fallback_pw_auth
+        _fallback_pw_auth="$(conf_get "OPS_SSH_PASSWORD_AUTH")"
+        _fallback_pw_auth="${_fallback_pw_auth:-yes}"
         mkdir -p "$(dirname "$SSHD_OPS_INCLUDE")"
         cat > "$SSHD_OPS_INCLUDE" << EOF
 # Managed by OPS — do not edit manually.
 PermitRootLogin no
-PasswordAuthentication yes
+PasswordAuthentication ${_fallback_pw_auth}
 KbdInteractiveAuthentication no
 ChallengeResponseAuthentication no
 PubkeyAuthentication yes
@@ -129,7 +134,7 @@ ClientAliveCountMax 2
 Port ${locked_port}
 EOF
         chmod 644 "$SSHD_OPS_INCLUDE"
-        _log "Created ${SSHD_OPS_INCLUDE} with Port ${locked_port}."
+        _log "Created ${SSHD_OPS_INCLUDE} with Port ${locked_port}, PasswordAuthentication=${_fallback_pw_auth}."
     fi
 
     # ── 3. Validate sshd config ───────────────────────────────

@@ -116,9 +116,14 @@ wizard_step_security() {
     fi
 
     if declare -f security_wizard_baseline >/dev/null 2>&1; then
-        security_wizard_baseline
+        # P1-4 fix: explicit guard — if baseline fails, abort step before mark_done
+        security_wizard_baseline || {
+            print_error "Security baseline failed — step will not be marked as done."
+            log_info "Wizard: wizard_step_security aborted due to security_wizard_baseline failure"
+            return 1
+        }
     else
-        _wizard_inline_security
+        _wizard_inline_security || return 1
     fi
 
     # ── Auto-apply non-interactive security baseline ──────────

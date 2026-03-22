@@ -13,7 +13,7 @@
 #   OPS_VERSION — version string (optional, defaults to "0.1.0")
 # ============================================================
 set -euo pipefail
-IFS=$'\\n\\t'
+IFS=$'\n\t'
 
 OPS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 

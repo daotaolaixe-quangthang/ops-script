@@ -869,9 +869,15 @@ security_finalize_ssh_transition() {
     fi
 
     # Bug E fix: use parameter expansion to catch empty-string return (exit 0 bypasses || fallback)
+    # P1-3 fix: default must be 'yes' (safe), not 'no'. If OPS_SSH_PASSWORD_AUTH is absent
+    # from ops.conf (partial wizard run), defaulting to 'no' would lock out operators
+    # who have no SSH key. 'yes' lets them log in and reconfigure safely.
     local _final_pw_auth
     _final_pw_auth="$(ops_conf_get "ops.conf" "OPS_SSH_PASSWORD_AUTH" 2>/dev/null || true)"
-    _final_pw_auth="${_final_pw_auth:-no}"
+    if [[ -z "$_final_pw_auth" ]]; then
+        _final_pw_auth="yes"
+        print_warn "OPS_SSH_PASSWORD_AUTH not found in ops.conf — defaulting to 'yes' (safe). Set explicitly via Security → Manage SSH Keys."
+    fi
     security_write_sshd_hardening_include "$new_port" "$_final_pw_auth"
     if ! sshd -t >/dev/null 2>&1; then
         print_error "sshd -t failed while finalizing transition."
