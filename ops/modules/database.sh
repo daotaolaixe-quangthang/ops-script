@@ -596,7 +596,9 @@ db_audit() {
     _db_audit_check "secure_file_priv=NULL"   "secure_file_priv"      "NULL|"        "WARN"
     _db_audit_check "skip_name_resolve"       "skip_name_resolve"     "ON"
     _db_audit_check "slow_query_log ON"       "slow_query_log"        "ON"            "WARN"
-    _db_audit_check "wait_timeout<=300"       "wait_timeout"          "[1-9][0-9]?[0-9]?|[12][0-9]{2}|300"
+    # P3-3 fix: old regex [1-9][0-9]?[0-9]? matched values 1-999 -- 600 would
+    # show as PASS incorrectly. New regex anchors exact range 1-300 only.
+    _db_audit_check "wait_timeout<=300"       "wait_timeout"          "[1-9]|[1-9][0-9]|[12][0-9]{2}|300"
     _db_audit_check "innodb_flush_neighbors"  "innodb_flush_neighbors" "0"
     _db_audit_check "key_buffer_size<=16MB"   "key_buffer_size"       "[0-9]{1,7}|1[0-5][0-9]{5}|16777216"
 

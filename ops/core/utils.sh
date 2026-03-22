@@ -100,6 +100,11 @@ safe_symlink() {
 # ── Template renderer ─────────────────────────────────────────
 # Replaces {{VAR}} placeholders in a template file.
 # Usage: render_template /path/to/tpl.tpl VAR1=val1 VAR2=val2
+#
+# P3-1 fix: val is sanitized before Bash parameter expansion.
+# ${content//.../${val}} treats & and \ specially in replacement strings.
+# A val containing & would be replaced by the full matched string; a val
+# containing \ would trigger escape sequences. We escape both beforehand.
 render_template() {
     local tpl="$1"
     shift
@@ -108,6 +113,10 @@ render_template() {
     for kv in "$@"; do
         local key="${kv%%=*}"
         local val="${kv#*=}"
+        # Escape backslash first (must be first to avoid double-escaping),
+        # then & (Bash treats & as "matched string" in substitution patterns).
+        val="${val//\\/\\\\}"
+        val="${val//&/\\&}"
         content="${content//\{\{${key}\}\}/${val}}"
     done
     echo "$content"

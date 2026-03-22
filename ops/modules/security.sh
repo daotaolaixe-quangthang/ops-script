@@ -496,6 +496,18 @@ security_write_fail2ban_config() {
         nginx_limit_jail="$(printf '[nginx-limit-req]\nenabled  = true\nport     = http,https\nlogpath  = %%(nginx_error_log)s\nmaxretry = 10\nfindtime = 1m\n')"
     fi
 
+    # P3-4 fix: backend=systemd requires python3-systemd. On OpenVZ/LXC containers
+    # without a real systemd journal, the import fails → fail2ban logs errors and
+    # silently misses SSH brute-force events.
+    # Detect before writing: if import fails, use backend=auto (safe cross-platform fallback).
+    local _f2b_backend="auto"
+    if python3 -c 'import systemd' > /dev/null 2>&1; then
+        _f2b_backend="systemd"
+        log_info "fail2ban: python3-systemd available — using backend=systemd"
+    else
+        log_warn "fail2ban: python3-systemd unavailable — using backend=auto (safe fallback)"
+    fi
+
     write_file "$SECURITY_FAIL2BAN_JAIL_OPS" <<EOF_JAIL
 # Managed by OPS — do not edit manually.
 [DEFAULT]
@@ -504,7 +516,7 @@ findtime = 10m
 maxretry = 3
 bantime.increment = true
 bantime.maxtime = 2w
-backend = systemd
+backend = ${_f2b_backend}
 
 [sshd]
 enabled  = true

@@ -31,7 +31,25 @@ apt_remove() {
 
 service_enable()  { systemctl enable  "$1" && log_info "Enabled:  $1"; }
 service_start()   { systemctl start   "$1" && log_info "Started:  $1"; }
-service_restart() { systemctl restart "$1" && log_info "Restarted: $1"; }
+# P3-5 fix: service_restart now verifies the service is actually active after
+# restart. systemctl restart exit 0 only means the restart command was accepted,
+# not that the service is running. Poll is-active up to 3 times (6s total).
+service_restart() {
+    local svc="$1"
+    systemctl restart "$svc" && log_info "Restarted: $svc"
+    local _attempt=0
+    while (( _attempt < 3 )); do
+        sleep 2
+        if systemctl is-active --quiet "$svc"; then
+            log_info "Health check OK: $svc is active after restart."
+            return 0
+        fi
+        (( _attempt++ ))
+        log_warn "Health check attempt ${_attempt}/3: $svc not yet active after restart..."
+    done
+    log_error "Health check FAILED: $svc is not active after restart. Check: journalctl -u ${svc} -n 30"
+    return 1
+}
 service_reload()  { systemctl reload  "$1" && log_info "Reloaded: $1"; }
 service_stop()    { systemctl stop    "$1" && log_info "Stopped:  $1"; }
 service_status()  { systemctl status  "$1" --no-pager; }

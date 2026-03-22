@@ -456,9 +456,26 @@ EOF
     _node_run_as_runtime_user pm2 start "$eco_dest"
     _node_run_as_runtime_user pm2 save
 
-    print_ok "App '${app_name}' registered and started on 127.0.0.1:${app_port} using runtime user $(_node_runtime_user)"
+    # P3-2 fix: post-start port verification — pm2 start exit 0 doesn't confirm
+    # the process is running and the port is bound. Poll ss up to 3 times (6s total).
+    local _port_bound=0 _pv_attempt=0
+    while (( _pv_attempt < 3 )); do
+        sleep 2
+        if ss -tlnp 2>/dev/null | grep -qE ":${app_port}[[:space:]]"; then
+            _port_bound=1
+            break
+        fi
+        (( _pv_attempt++ ))
+    done
+
+    if (( _port_bound )); then
+        print_ok "App '${app_name}' registered and started on 127.0.0.1:${app_port} using runtime user $(_node_runtime_user)"
+    else
+        print_warn "App '${app_name}' started via PM2 but port ${app_port} is NOT yet bound after 6s."
+        print_warn "Check PM2 logs: sudo -u $(_node_runtime_user) pm2 logs ${pm2_name} --lines 30"
+    fi
     print_warn "To expose via Nginx, use the Domains & Nginx menu."
-    log_info "node_add_app: registered $app_name port=$app_port dir=$app_dir"
+    log_info "node_add_app: registered $app_name port=$app_port dir=$app_dir port_bound=${_port_bound}"
 }
 
 # P1-06: Remove an app
