@@ -716,6 +716,12 @@ security_setup_fail2ban() {
         apt_install fail2ban
     fi
 
+    # P3-C: backend=systemd requires python3-systemd. Without it fail2ban logs import
+    # errors and silently falls back to polling, missing attack events from journald.
+    # The || true prevents abort on OpenVZ / LXC containers where python3-systemd
+    # may not be installable (they lack systemd journal).
+    apt_install python3-systemd 2>/dev/null || true
+
     backup_file "$SECURITY_FAIL2BAN_JAIL_LOCAL" >/dev/null 2>&1 || true
     security_write_fail2ban_config
 

@@ -344,8 +344,9 @@ tune_mariadb() {
 
     case "${OPS_TIER:-M}" in
         S)
-            # < 1500 MB RAM — conservative settings
-            innodb_buffer_pool_size="512M"
+            # < 1500 MB RAM — 40% of RAM for buffer pool
+            local _pool_mb_s=$(( RAM_MB * 40 / 100 ))
+            innodb_buffer_pool_size="${_pool_mb_s}M"
             innodb_buffer_pool_instances="1"
             innodb_log_file_size="64M"
             max_connections="80"
@@ -353,8 +354,9 @@ tune_mariadb() {
             max_heap_table_size="32M"
             ;;
         M)
-            # 1500–5000 MB RAM
-            innodb_buffer_pool_size="2G"
+            # 1500–5000 MB RAM — P3-F fix: was hardcoded 2G; now 50% of actual RAM
+            local _pool_mb_m=$(( RAM_MB * 50 / 100 ))
+            innodb_buffer_pool_size="${_pool_mb_m}M"
             innodb_buffer_pool_instances="2"
             innodb_log_file_size="256M"
             max_connections="150"
@@ -362,8 +364,9 @@ tune_mariadb() {
             max_heap_table_size="64M"
             ;;
         L)
-            # > 5000 MB RAM
-            innodb_buffer_pool_size="5G"
+            # > 5000 MB RAM — P3-F fix: was hardcoded 5G; now 60% of actual RAM
+            local _pool_mb_l=$(( RAM_MB * 60 / 100 ))
+            innodb_buffer_pool_size="${_pool_mb_l}M"
             innodb_buffer_pool_instances="4"
             innodb_log_file_size="512M"
             max_connections="300"
@@ -546,7 +549,10 @@ db_audit() {
     _audit_check "Network isolation"       "bind_address"          "127\.0\.0\.1"
     _audit_check "SSL enabled"             "have_ssl"              "YES"
     _audit_check "local_infile disabled"   "local_infile"          "OFF"
-    _audit_check "secure_file_priv=NULL"   "secure_file_priv"      ""              "WARN"
+    # P3-D fix: MariaDB returns the string "NULL" (not empty) for secure_file_priv.
+    # The empty-string expected regex always matched nothing — every audit showed PASS incorrectly.
+    # The correct expected regex is "NULL|" which matches either the literal word NULL or an empty value.
+    _audit_check "secure_file_priv=NULL"   "secure_file_priv"      "NULL|"        "WARN"
     _audit_check "skip_name_resolve"       "skip_name_resolve"     "ON"
     _audit_check "slow_query_log ON"       "slow_query_log"        "ON"            "WARN"
     _audit_check "wait_timeout<=300"       "wait_timeout"          "[1-9][0-9]?[0-9]?|[12][0-9]{2}|300"

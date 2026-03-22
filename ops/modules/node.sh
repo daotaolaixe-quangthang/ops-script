@@ -305,8 +305,9 @@ node_add_app() {
     # Gather inputs
     prompt_input "App name (slug, no spaces)"
     local app_name="$REPLY"
-    if [[ -z "$app_name" || "$app_name" =~ [[:space:]] ]]; then
-        print_error "Invalid app name."
+    # P3-A: strict app name validation — only safe slug chars, no shell injection risk
+    if [[ -z "$app_name" || ! "$app_name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        print_error "Invalid app name. Use only letters, numbers, hyphen, or underscore."
         return 1
     fi
 
@@ -338,10 +339,30 @@ node_add_app() {
     while true; do
         prompt_input "Port (localhost only, e.g. 3000)"
         app_port="$REPLY"
-        if [[ "$app_port" =~ ^[0-9]+$ ]]; then
-            break
+        if ! [[ "$app_port" =~ ^[0-9]+$ ]]; then
+            print_error "Port must be numeric. Please try again."
+            continue
         fi
-        print_error "Port must be numeric. Please try again."
+        # P3-A: check against running processes
+        if ss -tlnp 2>/dev/null | grep -q ":${app_port} "; then
+            print_error "Port ${app_port} is already in use by another process. Choose a different port."
+            continue
+        fi
+        # P3-A: check against existing OPS app registry
+        local _collision=0
+        local _conf
+        for _conf in "$(_node_apps_dir)"/*.conf; do
+            [[ -f "$_conf" ]] || continue
+            local _existing_port
+            _existing_port=$(grep '^APP_PORT=' "$_conf" 2>/dev/null | cut -d= -f2- | tr -d '"')
+            if [[ "$_existing_port" == "$app_port" ]]; then
+                print_error "Port ${app_port} is already used by OPS app: $(basename "$_conf" .conf). Choose a different port."
+                _collision=1
+                break
+            fi
+        done
+        [[ "$_collision" -eq 1 ]] && continue
+        break
     done
 
     prompt_input "PM2 process name" "$app_name"

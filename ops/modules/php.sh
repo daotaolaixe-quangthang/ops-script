@@ -198,7 +198,11 @@ listen.mode = 0660
 pm.status_path = /fpm-status
 ping.path = /fpm-ping
 chdir = /
-clear_env = no
+; P3-B: clear_env=yes prevents FPM workers inheriting parent env secrets.
+; If your app needs specific env vars, add explicit lines below this pool config, e.g.:
+;   env[DB_PASSWORD] = secret
+;   env[APP_ENV] = production
+clear_env = yes
 security.limit_extensions = .php .phtml
 EOF_POOL
 
