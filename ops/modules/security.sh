@@ -212,6 +212,7 @@ security_ensure_include_first() {
 security_reconcile_sshd_main_config() {
     backup_file "$SECURITY_SSHD_CONFIG" > /dev/null 2>&1 || true
 
+
     # Bug B fix: ensure Include is FIRST so 99-ops-hardening.conf wins first-match.
     # OpenSSH uses first-match-wins; this guarantees include file values take precedence
     # regardless of whether Include was pre-existing (Ubuntu) or appended (other distros).
@@ -223,9 +224,19 @@ security_reconcile_sshd_main_config() {
     # Duplicating them here risks first-match collision if Include ends up after them.
     security_set_sshd_option "PermitRootLogin" "no" "$SECURITY_SSHD_CONFIG"
 
+    # Security fix: comment out PasswordAuthentication in base config.
+    # The authoritative value is set to 'no' in 99-ops-hardening.conf.
+    # Leaving an active 'yes' here creates config drift risk and audit confusion.
+    if grep -Eq '^[[:space:]]*PasswordAuthentication[[:space:]]+(yes|no)' "$SECURITY_SSHD_CONFIG"; then
+        sed -i -E 's|^([[:space:]]*PasswordAuthentication[[:space:]]+.*)$|#\1  # managed via sshd_config.d/99-ops-hardening.conf|' \
+            "$SECURITY_SSHD_CONFIG"
+        log_info "Commented out PasswordAuthentication in ${SECURITY_SSHD_CONFIG} — managed via include."
+    fi
+
     # Comment out standalone Port directives in main config (managed via include).
     if grep -Eq '^[[:space:]]*Port[[:space:]]+[0-9]+' "$SECURITY_SSHD_CONFIG" 2>/dev/null; then
-        sed -i -E 's|^([[:space:]]*Port[[:space:]]+[0-9]+)|#  # managed via sshd_config.d/99-ops-hardening.conf|'             "$SECURITY_SSHD_CONFIG"
+        sed -i -E 's|^([[:space:]]*Port[[:space:]]+[0-9]+)|#\1  # managed via sshd_config.d/99-ops-hardening.conf|' \
+            "$SECURITY_SSHD_CONFIG"
         log_info "Commented out Port directives in ${SECURITY_SSHD_CONFIG} -- managed via include."
     fi
 
@@ -792,6 +803,12 @@ security_apply_host_baseline() {
     security_apply_sysctl_baseline
     security_ensure_swap
     security_reconcile_ufw_rules
+
+    # Ensure fail2ban is installed before attempting to configure it
+    if ! command -v fail2ban-client >/dev/null 2>&1; then
+        log_info "security_apply_host_baseline: fail2ban not found — installing..."
+        apt_install fail2ban
+    fi
 
     if command -v fail2ban-client >/dev/null 2>&1; then
         security_write_fail2ban_config

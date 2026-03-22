@@ -148,6 +148,14 @@ wizard_step_security() {
     # cause SSH lockout if UFW state changes between the two calls.
     # fail2ban is also reconciled inside security_wizard_baseline already.
 
+    # 3. Swap: always provision swap unconditionally, regardless of SSH port outcome.
+    # On VPS with no swap, OOM killer can kill Nginx/MariaDB arbitrarily on memory spikes.
+    if declare -f security_ensure_swap >/dev/null 2>&1; then
+        log_info "Wizard: provisioning swap file if not present..."
+        security_ensure_swap
+        print_ok "Swap provisioned (2GB default, vm.swappiness=10)."
+    fi
+
     _wizard_mark_done "SECURITY"
     print_ok "Security baseline done."
 }

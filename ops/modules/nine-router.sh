@@ -288,6 +288,21 @@ EOF
 
     _nine_router_write_env "$init_password"
 
+    # Harden file permissions on app directory
+    local _runtime_user
+    _runtime_user="$(_nine_router_runtime_user)"
+    # Restrict .env.example — no need for world-readable (was 644)
+    if [[ -f "${NINE_ROUTER_DIR}/.env.example" ]]; then
+        chmod 640 "${NINE_ROUTER_DIR}/.env.example"
+        log_info "Restricted .env.example to 640"
+    fi
+    # Set runtime user as owner of the app dir so PM2 can write logs/cache
+    chown -R "${_runtime_user}:${_runtime_user}" "${NINE_ROUTER_DIR}" 2>/dev/null || true
+    # Re-enforce .env is strictly 600 owned by runtime user (chown -R above covers it, belt+suspenders)
+    chmod 600 "$NINE_ROUTER_ENV_FILE"
+    chown "${_runtime_user}:${_runtime_user}" "$NINE_ROUTER_ENV_FILE"
+    log_info "9router app dir ownership set to ${_runtime_user}, .env.example restricted to 640"
+
     mkdir -p "$NINE_ROUTER_DATA_DIR"
     chown "$(_nine_router_runtime_user):$(_nine_router_runtime_user)" "$NINE_ROUTER_DATA_DIR"
     chmod 750 "$NINE_ROUTER_DATA_DIR"

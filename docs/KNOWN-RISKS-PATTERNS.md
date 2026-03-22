@@ -153,3 +153,30 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
   - Caller menu PHAI wrap: `verify_stack || true`
   - Contract ro trong `P2-04`: PASS/WARN/FAIL deu exit 0; caller xu ly display, khong xu ly exit code
   - Khi review bat ky verify action nao: kiem tra ro ket qua khi co FAIL co lam menu thoat khong
+
+## 16) PHP disable_functions breaking existing apps
+
+- **Pattern**: OPS sets `disable_functions` in `php.ini`; existing app calls `exec()`, `shell_exec()`, or `system()`.
+- **Risk**: App breaks silently (PHP logs error, browser sees 500 since `display_errors=Off`).
+- **Safe action**:
+  - After PHP tuning, check app-specific PHP error logs (`/var/log/php*.log`, `/var/log/nginx/*.error.log`).
+  - If an app legitimately needs one of the blocked functions, add a **per-pool** `php_admin_value disable_functions ""` override inside that pool's `.conf` file only.
+  - Do NOT globally re-enable `disable_functions` to fix one app.
+
+## 17) PM2 startup configured as root
+
+- **Pattern**: `pm2 startup` was run as root, so the service unit runs as root and all PM2-managed processes inherit root context.
+- **Risk**: Any RCE in a Node.js app grants full root access to the VPS.
+- **Safe action**:
+  - Run `pm2 startup systemd -u <runtime_user> --hp <home>` as root to generate the unit for the correct user.
+  - OPS `node_install_pm2` does this automatically using `_node_runtime_user()`.
+  - Verify: `systemctl list-unit-files | grep pm2` should show `pm2-<runtime_user>.service`, NOT `pm2-root.service`.
+
+## 18) allow_url_fopen = Off breaking app integrations
+
+- **Pattern**: OPS sets `allow_url_fopen = Off`; PHP app uses `file_get_contents('https://...')` for external API calls (e.g. payment gateway, SMS provider).
+- **Risk**: External API calls silently return `false` or empty string; app behaves unexpectedly.
+- **Safe action**:
+  - Replace `file_get_contents('https://...')` with a cURL implementation.
+  - If a short-term workaround is needed, add `php_admin_value allow_url_fopen On` in that FPM pool's `.conf` file (not globally in `php.ini`).
+  - Do NOT re-enable `allow_url_fopen` globally — it opens SSRF risk.

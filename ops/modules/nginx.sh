@@ -124,7 +124,7 @@ _nginx_apply_global_tuning() {
     worker_connections="${tuning##*;}"
 
     [[ -f "$conf" ]] || return 0
-    backup_file "$conf" >/dev/null || true
+    backup_file "$conf" > /dev/null || true
 
     sed -i -E "s/^\s*worker_processes\s+[^;]+;/worker_processes ${worker_processes};/" "$conf"
     sed -i -E "s/^\s*worker_connections\s+[^;]+;/    worker_connections ${worker_connections};/" "$conf"
@@ -132,12 +132,24 @@ _nginx_apply_global_tuning() {
     _nginx_ensure_http_directive "$conf" "server_tokens" "off"
     _nginx_ensure_http_directive "$conf" "ssl_protocols" "TLSv1.2 TLSv1.3"
     _nginx_ensure_http_directive "$conf" "ssl_prefer_server_ciphers" "off"
-    _nginx_ensure_http_directive "$conf" "add_header Strict-Transport-Security" '"max-age=31536000; includeSubDomains" always'
+
+    # HSTS: 2-year max-age with preload (browsers will add domain to global preload list)
+    _nginx_ensure_http_directive "$conf" "add_header Strict-Transport-Security" \
+        '"max-age=63072000; includeSubDomains; preload" always'
     _nginx_ensure_http_directive "$conf" "add_header X-Frame-Options" '"SAMEORIGIN" always'
     _nginx_ensure_http_directive "$conf" "add_header X-Content-Type-Options" '"nosniff" always'
     _nginx_ensure_http_directive "$conf" "add_header Referrer-Policy" '"strict-origin-when-cross-origin" always'
 
-    log_info "Applied nginx tuning: worker_processes=${worker_processes}, worker_connections=${worker_connections}, TLS/security baseline enforced."
+    # Defense-in-depth security headers
+    _nginx_ensure_http_directive "$conf" "add_header X-XSS-Protection" '"1; mode=block" always'
+    _nginx_ensure_http_directive "$conf" "add_header Permissions-Policy" \
+        '"geolocation=(), microphone=(), camera=(), payment=(), usb=()" always'
+    # CSP: restrictive default; individual vhosts may override with more permissive policy.
+    # unsafe-inline / unsafe-eval retained for Next.js/SPA compat — tighten per-site as needed.
+    _nginx_ensure_http_directive "$conf" "add_header Content-Security-Policy" \
+        '"default-src '\''self'\''; script-src '\''self'\'' '\''unsafe-inline'\'' '\''unsafe-eval'\'' https:; style-src '\''self'\'' '\''unsafe-inline'\''; img-src '\''self'\'' data: https:; font-src '\''self'\'' data: https:; connect-src '\''self'\'' https:; frame-ancestors '\''none'\''" always'
+
+    log_info "Applied nginx tuning: worker_processes=${worker_processes}, worker_connections=${worker_connections}, TLS/security baseline enforced (CSP, Permissions-Policy, HSTS preload added)."
 }
 
 _nginx_test_and_reload() {
@@ -221,6 +233,10 @@ server {
         proxy_connect_timeout 60s;
         proxy_send_timeout    60s;
         proxy_read_timeout    60s;
+
+        # Hide upstream technology fingerprints
+        proxy_hide_header X-Powered-By;
+        proxy_hide_header Server;
     }
 
     location ~ /\\. {

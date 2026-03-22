@@ -102,6 +102,16 @@ php_ini_tuning_for_tier() {
     echo "opcache.revalidate_freq=2"
     echo "opcache.validate_timestamps=1"
     echo "opcache.save_comments=1"
+
+    # Security baseline — applied regardless of tier
+    echo "expose_php=Off"
+    echo "display_errors=Off"
+    echo "log_errors=On"
+    echo "allow_url_fopen=Off"
+    echo "allow_url_include=Off"
+    # disable_functions: blocks common RCE vectors.
+    # If your app needs exec/shell_exec, add a per-pool php_admin_value override instead.
+    echo "disable_functions=exec,passthru,shell_exec,system,proc_open,popen,proc_terminate,proc_get_status,pcntl_exec,parse_ini_file,show_source"
 }
 
 php_set_ini_key() {
@@ -269,6 +279,8 @@ tune_php() {
     fi
 
     print_ok "Applied PHP tuning for version ${ver} (Tier: ${OPS_TIER:-S})."
+    print_warn "SECURITY: allow_url_fopen=Off is now enforced. PHP apps using file_get_contents() for remote URLs must use cURL instead."
+    print_warn "SECURITY: disable_functions blocks exec/shell_exec/system. Add php_admin_value overrides per-pool if your app requires them."
 }
 
 php_verify_version() {

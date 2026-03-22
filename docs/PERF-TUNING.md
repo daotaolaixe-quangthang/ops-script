@@ -180,3 +180,35 @@ When changing any tuning logic in code:
 2. Ensure module implementations reference these rules rather than hardâ€‘coding unrelated values.
 
 
+
+---
+
+### 8. Swap sizing per tier
+
+Swap is **mandatory** on all VPS setups managed by OPS (see SECURITY-RULES.md §10). Without swap, the OOM killer terminates services arbitrarily on memory spikes.
+
+| Tier | Typical RAM | Recommended Swapfile |
+|------|-------------|----------------------|
+| S    | ≤1.5GB      | 2GB                  |
+| M    | 1.5–5GB     | 2GB                  |
+| L    | >5GB        | 4GB                  |
+
+- `vm.swappiness = 10` — prefer RAM heavily; use swap only when RAM is near-exhausted.
+- Swapfile location: `/swapfile` (managed by OPS, persisted in `/etc/fstab`).
+
+---
+
+### 9. PHP security ini tuning notes
+
+The following PHP ini values are applied by `php_ini_tuning_for_tier` as a **security baseline** (non-tier-specific, always applied):
+
+| Setting | Value | Reason |
+|---------|-------|--------|
+| `expose_php` | `Off` | Hides PHP version from HTTP headers |
+| `display_errors` | `Off` | No stack traces in browser output |
+| `log_errors` | `On` | Errors go to log file, not browser |
+| `allow_url_fopen` | `Off` | Prevents SSRF via PHP file wrappers |
+| `allow_url_include` | `Off` | Prevents remote code inclusion |
+| `disable_functions` | see SECURITY-RULES.md §6 | Blocks common RCE function calls |
+
+> **Note:** Apps using `file_get_contents('https://...')` for external API calls must be migrated to use cURL after OPS tuning is applied.

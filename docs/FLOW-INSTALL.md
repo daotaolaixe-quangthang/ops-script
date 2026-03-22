@@ -95,7 +95,11 @@ From the main menu, user selects **“Production Setup Wizard”** (or similar).
    - Enable UFW (if disabled).
    - Allow SSH ports (22 + new port during transition).
    - Allow HTTP (80) and HTTPS (443).
-   - Install and configure `fail2ban` for SSH at minimum.
+   - Install and configure `fail2ban` for SSH at minimum (`apt_install fail2ban` then `security_write_fail2ban_config`).
+   - **Provision swap file** (default 2GB) if no swap is present:
+     - `fallocate -l 2G /swapfile`, `mkswap`, `swapon`, persist in `/etc/fstab`.
+     - `vm.swappiness = 10` applied via sysctl.
+   - Apply kernel hardening via `/etc/sysctl.d/99-ops-hardening.conf`.
 
 3. **Nginx installation & tuning**
    - Install Nginx from the distribution repositories.
@@ -108,14 +112,18 @@ From the main menu, user selects **“Production Setup Wizard”** (or similar).
 4. **Node.js LTS and PM2**
    - Install Node.js LTS (exact method documented in module).
    - Install PM2 globally.
-   - Configure PM2 startup for the admin user as the default contract for all Node services.
+   - Configure PM2 startup **for the runtime user** (not root): runs `pm2 startup systemd -u <runtime_user>` automatically.
+   - PM2 processes must always run under the non-root runtime user (e.g. `opsuser`).
 
 5. **PHP‑FPM (multi‑version)**
    - Ask which PHP versions to install: 7.4, 8.1, 8.2, 8.3.
    - For each selected version:
      - Install PHP + FPM + common extensions.
      - Generate FPM pool config from templates with tuning rules.
-     - Configure `php.ini` and opcache.
+     - Configure `php.ini` with opcache tuning **and security baseline**:
+       - `disable_functions` (blocks exec, system, shell_exec, etc.)
+       - `allow_url_fopen = Off` (apps must use cURL for remote URLs)
+       - `expose_php = Off`, `display_errors = Off`, `log_errors = On`.
 
 6. **Database (MariaDB (default))**
    - Ask whether to install a database server now.

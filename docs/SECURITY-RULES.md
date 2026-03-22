@@ -65,7 +65,8 @@ This document defines non-negotiable security rules for OPS. Any change that vio
   - Remove stale SSH allow rules once transition is finalized.
   - Deny other inbound ports by default — **including port 20128 (9router)**.
 - `fail2ban`:
-  - Must be installed and enabled at least for SSH.
+  - **Must be installed** (via `apt_install fail2ban`) **and enabled** by the end of wizard Step 1 (Security Baseline).
+  - `security_apply_host_baseline` and `security_setup_fail2ban` must call `apt_install fail2ban` if not already present before attempting to configure it.
   - Must follow the real SSH port set in OPS state, including temporary multi-port transition windows.
   - Should include a minimal Nginx-facing baseline when the host serves public web traffic.
   - Configuration changes must be conservative; avoid breaking legitimate SSH access.
@@ -87,9 +88,15 @@ This document defines non-negotiable security rules for OPS. Any change that vio
 ### 6. PHP security
 
 - PHP configuration must:
-  - Disable dangerous functions where appropriate.
+  - **Disable dangerous functions** — set `disable_functions` at minimum to:
+    `exec, passthru, shell_exec, system, proc_open, popen, proc_terminate, proc_get_status, pcntl_exec, parse_ini_file, show_source`.
+  - Set `expose_php = Off` (hides PHP version from HTTP headers).
+  - Set `display_errors = Off` and `log_errors = On` (never expose stack traces to browsers).
+  - Set `allow_url_fopen = Off` (prevents SSRF via PHP file wrappers; apps must use cURL for remote HTTP).
+  - Set `allow_url_include = Off`.
   - Set sensible `memory_limit`, `max_execution_time`, `post_max_size`, `upload_max_filesize`.
   - Enable and correctly tune opcache.
+  - If an app pool requires a function in `disable_functions`, add a `php_admin_value` override in that pool's `.conf` file only.
 - PHP-FPM pools:
   - Run under non-root users.
   - Have file/directory permissions restricted to what applications need.
@@ -116,7 +123,7 @@ This document defines non-negotiable security rules for OPS. Any change that vio
   - Changes must be validated (e.g. `nginx -t`) before reloading services.
 - For PM2-managed Node services:
   - Run processes under a non-root runtime user.
-  - Keep PM2 startup bound to that runtime user rather than `root`.
+  - **PM2 startup (`pm2 startup systemd`) MUST be configured for the runtime user, not `root`.** Running `pm2 startup` as root causes all PM2-managed processes to run as root, which is a critical security violation.
   - Reconcile app directory ownership to that runtime user where OPS manages the deployment path.
   - Verify process health, restart behaviour, and localhost binding after changes.
 
@@ -147,11 +154,12 @@ This document defines non-negotiable security rules for OPS. Any change that vio
   - `net.ipv4.conf.default.send_redirects = 0`
   - `net.ipv4.conf.all.log_martians = 1`
   - `net.ipv4.conf.default.log_martians = 1`
-  - low `vm.swappiness`
-- Swap provisioning may be policy-driven, but if enabled by OPS it must:
-  - create a managed swapfile with restrictive permissions
-  - persist in `/etc/fstab`
-  - remain safe to re-run without duplicate entries
+  - low `vm.swappiness` (10)
+- **Swap MUST be provisioned unconditionally during wizard Step 1** (Security Baseline), regardless of SSH port change outcome. Without swap, the OOM killer can terminate Nginx, MariaDB, or Node processes arbitrarily.
+- Swap provisioning must:
+  - create a managed swapfile at `/swapfile` with `0600` permissions
+  - persist in `/etc/fstab` (idempotent — no duplicate entries)
+  - remain safe to re-run when swapfile already exists
 
 ### 11. Database runtime safety
 
@@ -169,5 +177,24 @@ This document defines non-negotiable security rules for OPS. Any change that vio
 - Any new module or feature that touches security-sensitive areas must:
   - Add or update relevant sections here.
   - Be designed opt-in by default when risk is non-trivial.
+
+### 13. Nginx global security headers
+
+The `http {}` block in `/etc/nginx/nginx.conf` MUST enforce all of the following headers (applied via `_nginx_apply_global_tuning`):
+
+| Header | Required Value |
+|--------|----------------|
+| `Strict-Transport-Security` | `max-age=63072000; includeSubDomains; preload` |
+| `X-Frame-Options` | `SAMEORIGIN always` |
+| `X-Content-Type-Options` | `nosniff always` |
+| `Referrer-Policy` | `strict-origin-when-cross-origin always` |
+| `X-XSS-Protection` | `1; mode=block always` |
+| `Permissions-Policy` | `geolocation=(), microphone=(), camera=(), payment=(), usb=()` |
+| `Content-Security-Policy` | restrictive default (see `_nginx_apply_global_tuning`); per-vhost overrides allowed |
+
+- `server_tokens off` must always be set.
+- **HSTS must include `preload`** — minimum `max-age=63072000` (2 years) required for HSTS preload list eligibility.
+- Node.js vhosts (proxy_pass) **must include** `proxy_hide_header X-Powered-By;` and `proxy_hide_header Server;` to prevent technology fingerprinting.
+- CSP `unsafe-inline` and `unsafe-eval` are permitted at the global level for Next.js/SPA compatibility; however, per-vhost overrides should tighten this where possible.
 
 Security rules are intentionally conservative; usability should be improved without relaxing these guarantees unless the spec is explicitly updated.
