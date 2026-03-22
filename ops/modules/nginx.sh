@@ -330,7 +330,7 @@ _nginx_apply_global_tuning() {
     # CSP: restrictive default; individual vhosts may override.
     # unsafe-inline / unsafe-eval retained for Next.js/SPA compat — tighten per-site as needed.
     _nginx_ensure_http_directive "$conf" "add_header Content-Security-Policy" \
-        '"default-src '\''self'\''; script-src '\''self'\'' '\''unsafe-inline'\'' '\''unsafe-eval'\'' https:; style-src '\''self'\'' '\''unsafe-inline'\'' ; img-src '\''self'\'' data: https:; font-src '\''self'\'' data: https:; connect-src '\''self'\'' https:; frame-ancestors '\''none'\''" always'
+        '"default-src '\''self'\''; script-src '\''self'\'' '\''unsafe-inline'\'' '\''unsafe-eval'\'' https:; style-src '\''self'\'' '\''unsafe-inline'\''; img-src '\''self'\'' data: https:; font-src '\''self'\'' data: https:; connect-src '\''self'\'' https:; frame-ancestors '\''none'\''" always'
 
     # ── HTTP block: custom log format with upstream timing ────
     _nginx_ensure_log_format "$conf"
@@ -419,8 +419,16 @@ server {
     listen [::]:443 ssl http2;
     server_name ${domain};
 
-    # P2-C-03: HSTS — only valid on HTTPS (RFC 6797 §7.2).
+    # ── Security headers (vhost-level) ───────────────────────────────────────
+    # NOTE: when add_header appears in a server{} block, Nginx does NOT inherit
+    # headers from the parent http{} block. Re-declare all security headers here.
     add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header Content-Security-Policy   "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data: https:; connect-src 'self' https:; frame-ancestors 'none'" always;
+    add_header X-Frame-Options           "SAMEORIGIN" always;
+    add_header X-Content-Type-Options    "nosniff" always;
+    add_header Referrer-Policy           "strict-origin-when-cross-origin" always;
+    add_header X-XSS-Protection          "1; mode=block" always;
+    add_header Permissions-Policy        "geolocation=(), microphone=(), camera=(), payment=(), usb=()" always;
 
     access_log /var/log/nginx/${domain}.access.log main_ext;
     error_log  /var/log/nginx/${domain}.error.log;
@@ -505,8 +513,16 @@ server {
     listen [::]:443 ssl http2;
     server_name ${domain};
 
-    # P2-C-03: HSTS — only valid on HTTPS (RFC 6797 §7.2).
+    # ── Security headers (vhost-level) ───────────────────────────────────────
+    # NOTE: when add_header appears in a server{} block, Nginx does NOT inherit
+    # headers from the parent http{} block. Re-declare all security headers here.
     add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header Content-Security-Policy   "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data: https:; connect-src 'self' https:; frame-ancestors 'none'" always;
+    add_header X-Frame-Options           "SAMEORIGIN" always;
+    add_header X-Content-Type-Options    "nosniff" always;
+    add_header Referrer-Policy           "strict-origin-when-cross-origin" always;
+    add_header X-XSS-Protection          "1; mode=block" always;
+    add_header Permissions-Policy        "geolocation=(), microphone=(), camera=(), payment=(), usb=()" always;
 
     root ${web_root};
     index index.php index.html;
@@ -584,8 +600,16 @@ server {
     listen [::]:443 ssl http2;
     server_name ${domain};
 
-    # P2-C-03: HSTS — only valid on HTTPS (RFC 6797 §7.2).
+    # ── Security headers (vhost-level) ───────────────────────────────────────
+    # NOTE: when add_header appears in a server{} block, Nginx does NOT inherit
+    # headers from the parent http{} block. Re-declare all security headers here.
     add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header Content-Security-Policy   "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data: https:; connect-src 'self' https:; frame-ancestors 'none'" always;
+    add_header X-Frame-Options           "SAMEORIGIN" always;
+    add_header X-Content-Type-Options    "nosniff" always;
+    add_header Referrer-Policy           "strict-origin-when-cross-origin" always;
+    add_header X-XSS-Protection          "1; mode=block" always;
+    add_header Permissions-Policy        "geolocation=(), microphone=(), camera=(), payment=(), usb=()" always;
 
     root  ${web_root};
     index index.html index.htm;

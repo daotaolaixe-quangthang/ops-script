@@ -154,6 +154,18 @@ server {
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
+    # ── Security headers (vhost-level override) ──────────────────────────────
+    # When add_header appears in server{} block, headers from http{} are NOT
+    # inherited. Re-declare all security headers + relax style-src / font-src
+    # for Google Fonts Material Symbols used by the 9router dashboard.
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https:; frame-ancestors 'none'" always;
+    add_header Permissions-Policy        "geolocation=(), microphone=(), camera=(), payment=(), usb=()" always;
+    add_header X-XSS-Protection          "1; mode=block" always;
+    add_header Referrer-Policy           "strict-origin-when-cross-origin" always;
+    add_header X-Content-Type-Options    "nosniff" always;
+    add_header X-Frame-Options           "SAMEORIGIN" always;
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+
     location / {
         proxy_pass         http://127.0.0.1:${NINE_ROUTER_PORT};
         proxy_http_version 1.1;
