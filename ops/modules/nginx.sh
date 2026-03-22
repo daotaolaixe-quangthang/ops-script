@@ -87,6 +87,49 @@ _nginx_ensure_default_tls_cert() {
 # nginx-level limit_req caused false-positive 429 on fast page navigation.
 # The function was removed as it's no longer needed and caused issues.
 
+# _nginx_add_official_repo
+# Adds nginx.org mainline apt repo so we always install >= 1.24 instead of the
+# stale Ubuntu-distro package (which ships 1.18.0 on Ubuntu 20.04/22.04).
+# Idempotent: no-op when nginx >= 1.24 is already installed.
+_nginx_add_official_repo() {
+    local ver=""
+    if command -v nginx >/dev/null 2>&1; then
+        ver=$(nginx -v 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    fi
+    # Compare major.minor numerically
+    if [[ -n "$ver" ]] && awk -v v="$ver" 'BEGIN{exit !(v+0 >= 1.24)}'; then
+        log_info "Nginx ${ver} already >= 1.24 — skipping official repo setup."
+        return 0
+    fi
+
+    if ! command -v curl >/dev/null 2>&1; then
+        apt_install curl
+    fi
+    if ! command -v gpg >/dev/null 2>&1; then
+        apt_install gnupg
+    fi
+
+    local codename
+    codename=$(lsb_release -cs 2>/dev/null || . /etc/os-release && echo "$UBUNTU_CODENAME")
+    local keyring="/usr/share/keyrings/nginx-archive-keyring.gpg"
+
+    curl -fsSL https://nginx.org/keys/nginx_signing.key \
+        | gpg --dearmor --yes -o "$keyring" 2>/dev/null
+    chmod 644 "$keyring"
+
+    cat > "/etc/apt/sources.list.d/nginx.list" <<EOF
+deb [signed-by=${keyring}] http://nginx.org/packages/mainline/ubuntu ${codename} nginx
+EOF
+    # Pin official repo above distro repo so apt always picks mainline
+    cat > "/etc/apt/preferences.d/99nginx" <<'EOF'
+Package: nginx
+Pin: origin nginx.org
+Pin-Priority: 1001
+EOF
+    apt_update
+    log_info "nginx.org mainline repo added and pinned for ${codename}."
+}
+
 _nginx_ensure_http_directive() {
     local conf="$1"
     local key="$2"
@@ -116,6 +159,136 @@ _nginx_ensure_http_directive() {
     fi
 }
 
+# _nginx_ensure_events_directive <conf> <key> <value>
+# Inserts or updates a directive inside the events {} block.
+_nginx_ensure_events_directive() {
+    local conf="$1" key="$2" value="$3"
+    local rendered="${key} ${value};"
+
+    if grep -Eq "^[[:space:]]*${key}[[:space:]]+" "$conf"; then
+        sed -i -E "s|^[[:space:]]*${key}[[:space:]]+.*;|    ${rendered}|" "$conf"
+        return 0
+    fi
+
+    awk -v rendered="$rendered" '
+        BEGIN { in_events=0; inserted=0 }
+        /^\s*events\s*\{/ { in_events=1; print; next }
+        in_events && /^\s*\}/ && inserted==0 {
+            print "    " rendered
+            inserted=1
+        }
+        { print }
+    ' "$conf" > "${conf}.tmp" && mv "${conf}.tmp" "$conf" || rm -f "${conf}.tmp"
+}
+
+# _nginx_ensure_main_directive <conf> <key> <value>
+# Inserts or updates a directive in the main (top-level) context.
+_nginx_ensure_main_directive() {
+    local conf="$1" key="$2" value="$3"
+    local rendered="${key} ${value};"
+
+    if grep -Eq "^[[:space:]]*${key}[[:space:]]+" "$conf"; then
+        sed -i -E "s|^[[:space:]]*${key}[[:space:]]+.*;|${rendered}|" "$conf"
+        return 0
+    fi
+
+    # Insert after the first non-comment, non-blank line (typically user/pid lines)
+    awk -v rendered="$rendered" '
+        BEGIN { inserted=0 }
+        !inserted && /^[[:space:]]*[a-z]/ && !/^[[:space:]]*(events|http|mail|stream)/ {
+            print; inserted=1
+            print rendered
+            next
+        }
+        { print }
+    ' "$conf" > "${conf}.tmp" && mv "${conf}.tmp" "$conf" || rm -f "${conf}.tmp"
+}
+
+# _nginx_patch_gzip_block <conf>
+# Replaces the skeleton gzip section (all commented out) with a full optimal config.
+# Idempotent: skips if gzip_types is already present and uncommented.
+_nginx_patch_gzip_block() {
+    local conf="$1"
+    # Already properly configured?
+    if grep -Eq "^[[:space:]]*gzip_types[[:space:]]" "$conf"; then
+        return 0
+    fi
+
+    local gzip_block='    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_buffers 16 8k;
+    gzip_http_version 1.1;
+    gzip_min_length 256;
+    gzip_types
+        text/plain text/css text/xml text/javascript
+        application/json application/javascript application/xml+rss
+        application/atom+xml image/svg+xml
+        font/ttf font/opentype application/vnd.ms-fontobject;'
+
+    # Remove old sparse gzip block (single 'gzip on;' + commented lines)
+    python3 - "$conf" <<PYEOF
+import re, sys
+with open(sys.argv[1]) as f:
+    content = f.read()
+# Replace entire ##Gzip Settings## section (including commented lines)
+content = re.sub(
+    r'([ \t]*##[ \t]*\n[ \t]*# Gzip Settings.*?\n[ \t]*##[ \t]*\n)'
+    r'([\s\S]*?gzip on;[\s\S]*?)((?=[ \t]*##|\n[ \t]*\n[ \t]*##))',
+    r'\1${GZIP_BLOCK}\n\3',
+    content,
+    flags=re.MULTILINE
+)
+with open(sys.argv[1], 'w') as f:
+    f.write(content)
+PYEOF
+    # Fallback: if python regex didn't match, just use _nginx_ensure_http_directive for each
+    if ! grep -Eq "^[[:space:]]*gzip_types[[:space:]]" "$conf"; then
+        # Remove bare 'gzip on;' line first to avoid duplicate
+        sed -i '/^[[:space:]]*gzip[[:space:]]*on;/d' "$conf"
+        # Remove commented gzip lines
+        sed -i '/^[[:space:]]*#[[:space:]]*gzip/d' "$conf"
+        _nginx_ensure_http_directive "$conf" "gzip" "on"
+        _nginx_ensure_http_directive "$conf" "gzip_vary" "on"
+        _nginx_ensure_http_directive "$conf" "gzip_proxied" "any"
+        _nginx_ensure_http_directive "$conf" "gzip_comp_level" "6"
+        _nginx_ensure_http_directive "$conf" "gzip_buffers" "16 8k"
+        _nginx_ensure_http_directive "$conf" "gzip_http_version" "1.1"
+        _nginx_ensure_http_directive "$conf" "gzip_min_length" "256"
+        # gzip_types must be on one line for the simple sed approach
+        _nginx_ensure_http_directive "$conf" "gzip_types" \
+            "text/plain text/css text/xml text/javascript application/json application/javascript application/xml+rss application/atom+xml image/svg+xml"
+    fi
+}
+
+# _nginx_ensure_log_format <conf>
+# Injects custom log_format 'main_ext' with upstream timing if not present.
+_nginx_ensure_log_format() {
+    local conf="$1"
+    grep -q 'log_format main_ext' "$conf" && return 0
+
+    local fmt='log_format main_ext '\''$remote_addr - $remote_user [$time_local] '\''
+                    '\''"$request" $status $body_bytes_sent '\''
+                    '\''"$http_referer" "$http_user_agent" '\''
+                    '\''rt=$request_time uct=$upstream_connect_time '\''
+                    '\''uht=$upstream_header_time urt=$upstream_response_time'\'''
+
+    awk -v fmt="$fmt" '
+        BEGIN { inserted=0 }
+        /^[[:space:]]*access_log[[:space:]]/ && !inserted {
+            print "    " fmt ";"
+            inserted=1
+        }
+        { print }
+    ' "$conf" > "${conf}.tmp" && mv "${conf}.tmp" "$conf" || rm -f "${conf}.tmp"
+
+    # Switch access_log to use our new format
+    sed -i -E \
+        "s|^([[:space:]]*access_log[[:space:]]+[^;]+);|\1 main_ext;|" \
+        "$conf"
+}
+
 _nginx_apply_global_tuning() {
     local conf="/etc/nginx/nginx.conf"
     local tuning worker_processes worker_connections
@@ -126,30 +299,66 @@ _nginx_apply_global_tuning() {
     [[ -f "$conf" ]] || return 0
     backup_file "$conf" > /dev/null || true
 
+    # ── Main context ──────────────────────────────────────────
     sed -i -E "s/^\s*worker_processes\s+[^;]+;/worker_processes ${worker_processes};/" "$conf"
-    sed -i -E "s/^\s*worker_connections\s+[^;]+;/    worker_connections ${worker_connections};/" "$conf"
+    # worker_rlimit_nofile must be in main context (not http)
+    _nginx_ensure_main_directive "$conf" "worker_rlimit_nofile" "65535"
 
+    # ── Events block ──────────────────────────────────────────
+    sed -i -E "s/^\s*worker_connections\s+[^;]+;/    worker_connections ${worker_connections};/" "$conf"
+    _nginx_ensure_events_directive "$conf" "multi_accept" "on"
+    _nginx_ensure_events_directive "$conf" "use" "epoll"
+
+    # ── HTTP block: core ──────────────────────────────────────
     _nginx_ensure_http_directive "$conf" "server_tokens" "off"
     _nginx_ensure_http_directive "$conf" "ssl_protocols" "TLSv1.2 TLSv1.3"
     _nginx_ensure_http_directive "$conf" "ssl_prefer_server_ciphers" "off"
 
-    # HSTS: 2-year max-age with preload (browsers will add domain to global preload list)
+    # ── HTTP block: keepalive & client limits (DoS protection) ─
+    _nginx_ensure_http_directive "$conf" "keepalive_timeout" "30s"
+    _nginx_ensure_http_directive "$conf" "keepalive_requests" "1000"
+    _nginx_ensure_http_directive "$conf" "client_max_body_size" "10m"
+    _nginx_ensure_http_directive "$conf" "client_body_timeout" "12s"
+    _nginx_ensure_http_directive "$conf" "client_header_timeout" "12s"
+    _nginx_ensure_http_directive "$conf" "send_timeout" "15s"
+
+    # ── HTTP block: gzip — full config ────────────────────────
+    _nginx_patch_gzip_block "$conf"
+
+    # ── HTTP block: file cache ────────────────────────────────
+    _nginx_ensure_http_directive "$conf" "open_file_cache" "max=10000 inactive=20s"
+    _nginx_ensure_http_directive "$conf" "open_file_cache_valid" "30s"
+    _nginx_ensure_http_directive "$conf" "open_file_cache_min_uses" "2"
+    _nginx_ensure_http_directive "$conf" "open_file_cache_errors" "on"
+
+    # ── HTTP block: rate limiting zones (global definitions) ──
+    # bucket: 10 MB (~160k unique IPs), 100 req/s per IP;
+    # burst handled per-vhost (burst=200 nodelay).
+    # These are zone definitions only — enforcement is in vhost location blocks.
+    _nginx_ensure_http_directive "$conf" "limit_req_zone" \
+        '\$binary_remote_addr zone=ops_req:10m rate=100r/s'
+    _nginx_ensure_http_directive "$conf" "limit_conn_zone" \
+        '\$binary_remote_addr zone=ops_conn:10m'
+
+    # ── HTTP block: security headers ─────────────────────────
+    # HSTS: 2-year max-age with preload
     _nginx_ensure_http_directive "$conf" "add_header Strict-Transport-Security" \
         '"max-age=63072000; includeSubDomains; preload" always'
     _nginx_ensure_http_directive "$conf" "add_header X-Frame-Options" '"SAMEORIGIN" always'
     _nginx_ensure_http_directive "$conf" "add_header X-Content-Type-Options" '"nosniff" always'
     _nginx_ensure_http_directive "$conf" "add_header Referrer-Policy" '"strict-origin-when-cross-origin" always'
-
-    # Defense-in-depth security headers
     _nginx_ensure_http_directive "$conf" "add_header X-XSS-Protection" '"1; mode=block" always'
     _nginx_ensure_http_directive "$conf" "add_header Permissions-Policy" \
         '"geolocation=(), microphone=(), camera=(), payment=(), usb=()" always'
-    # CSP: restrictive default; individual vhosts may override with more permissive policy.
+    # CSP: restrictive default; individual vhosts may override.
     # unsafe-inline / unsafe-eval retained for Next.js/SPA compat — tighten per-site as needed.
     _nginx_ensure_http_directive "$conf" "add_header Content-Security-Policy" \
-        '"default-src '\''self'\''; script-src '\''self'\'' '\''unsafe-inline'\'' '\''unsafe-eval'\'' https:; style-src '\''self'\'' '\''unsafe-inline'\''; img-src '\''self'\'' data: https:; font-src '\''self'\'' data: https:; connect-src '\''self'\'' https:; frame-ancestors '\''none'\''" always'
+        '"default-src '\''self'\''; script-src '\''self'\'' '\''unsafe-inline'\'' '\''unsafe-eval'\'' https:; style-src '\''self'\'' '\''unsafe-inline'\'' ; img-src '\''self'\'' data: https:; font-src '\''self'\'' data: https:; connect-src '\''self'\'' https:; frame-ancestors '\''none'\''" always'
 
-    log_info "Applied nginx tuning: worker_processes=${worker_processes}, worker_connections=${worker_connections}, TLS/security baseline enforced (CSP, Permissions-Policy, HSTS preload added)."
+    # ── HTTP block: custom log format with upstream timing ────
+    _nginx_ensure_log_format "$conf"
+
+    log_info "Applied nginx tuning: worker_processes=${worker_processes}, worker_connections=${worker_connections}, rlimit=65535, multi_accept=on, epoll, keepalive=30s, client limits, gzip full, open_file_cache, rate limit zones, security headers, log_format main_ext."
 }
 
 _nginx_test_and_reload() {
@@ -213,13 +422,17 @@ _render_node_vhost() {
         ssl_http_block="    return 301 https://\$host\$request_uri;"
         ssl_https_block=$(cat <<EOF
 server {
-    listen 443 ssl;
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
     server_name ${domain};
 
-    access_log /var/log/nginx/${domain}.access.log;
+    access_log /var/log/nginx/${domain}.access.log main_ext;
     error_log  /var/log/nginx/${domain}.error.log;
 
     location / {
+        limit_req  zone=ops_req burst=200 nodelay;
+        limit_conn zone=ops_conn 30;
+
         proxy_pass         http://127.0.0.1:${port};
         proxy_http_version 1.1;
         proxy_set_header   Upgrade \$http_upgrade;
@@ -273,7 +486,8 @@ _render_php_vhost() {
         ssl_http_block="    return 301 https://\$host\$request_uri;"
         ssl_https_block=$(cat <<EOF
 server {
-    listen 443 ssl;
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
     server_name ${domain};
 
     root ${web_root};
@@ -286,6 +500,8 @@ server {
     }
 
     location / {
+        limit_req  zone=ops_req burst=200 nodelay;
+        limit_conn zone=ops_conn 30;
         try_files \$uri \$uri/ /index.php?\$query_string;
     }
 
@@ -304,7 +520,7 @@ server {
         add_header Cache-Control "public, no-transform";
     }
 
-    access_log  /var/log/nginx/${domain}.access.log;
+    access_log  /var/log/nginx/${domain}.access.log main_ext;
     error_log   /var/log/nginx/${domain}.error.log;
 
     ssl_certificate /etc/letsencrypt/live/${domain}/fullchain.pem;
@@ -337,13 +553,16 @@ _render_static_vhost() {
         ssl_http_block="    return 301 https://\$host\$request_uri;"
         ssl_https_block=$(cat <<EOF
 server {
-    listen 443 ssl;
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
     server_name ${domain};
 
     root  ${web_root};
     index index.html index.htm;
 
     location / {
+        limit_req  zone=ops_req burst=200 nodelay;
+        limit_conn zone=ops_conn 30;
         try_files \$uri \$uri/ =404;
     }
 
@@ -363,7 +582,7 @@ server {
         deny all;
     }
 
-    access_log  /var/log/nginx/${domain}.access.log;
+    access_log  /var/log/nginx/${domain}.access.log main_ext;
     error_log   /var/log/nginx/${domain}.error.log;
 
     ssl_certificate /etc/letsencrypt/live/${domain}/fullchain.pem;
@@ -528,10 +747,11 @@ menu_ssl() {
     done
 }
 
-# install_nginx: install + tune nginx.conf per OPS_TIER, ensure default deny
+# install_nginx: add official mainline repo, install + tune nginx.conf per OPS_TIER, ensure default deny
 install_nginx() {
     print_section "Install Nginx"
     require_root || return 1
+    _nginx_add_official_repo          # ensures nginx >= 1.24 from nginx.org mainline
     apt_update
     apt_install nginx
     service_enable nginx
@@ -539,6 +759,7 @@ install_nginx() {
 
     _nginx_apply_global_tuning
     create_default_deny
+    _nginx_disable_packaged_default_site
     _nginx_test_and_reload
 }
 
@@ -814,14 +1035,18 @@ menu_nginx_web_controls() {
         echo "  2) Remove Cloudflare real IP snippet"
         echo "  3) Add custom X-Powered-By header"
         echo "  4) Remove custom X-Powered-By snippet"
+        echo "  5) Enable Cloudflare IP restrict (block non-CF traffic)"
+        echo "  6) Remove Cloudflare IP restrict"
         echo "  0) Back"
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) nginx_enable_cloudflare_real_ip || true; press_enter ;;
-            2) nginx_remove_cloudflare_real_ip || true; press_enter ;;
-            3) nginx_add_custom_powered_by     || true; press_enter ;;
-            4) nginx_remove_custom_powered_by  || true; press_enter ;;
+            1) nginx_enable_cloudflare_real_ip   || true; press_enter ;;
+            2) nginx_remove_cloudflare_real_ip   || true; press_enter ;;
+            3) nginx_add_custom_powered_by       || true; press_enter ;;
+            4) nginx_remove_custom_powered_by    || true; press_enter ;;
+            5) nginx_enable_cloudflare_ip_restrict  || true; press_enter ;;
+            6) nginx_remove_cloudflare_ip_restrict  || true; press_enter ;;
             0) return                                  ;;
             *) print_warn "Invalid option"             ;;
         esac
@@ -872,6 +1097,102 @@ nginx_remove_cloudflare_real_ip() {
     print_warn "Also remove any 'include .../cloudflare-real-ip.conf' lines from your site configs."
     print_warn "Run: nginx -t && systemctl reload nginx"
     log_info "nginx_remove_cloudflare_real_ip: done"
+}
+
+# nginx_enable_cloudflare_ip_restrict
+# Writes /etc/nginx/conf.d/cloudflare-ip-restrict.conf with allow rules for all
+# known Cloudflare IP ranges + deny all. Only enable when the server is BEHIND
+# Cloudflare (i.e. all public traffic comes from CF edge nodes).
+# OPT-IN ONLY — not applied automatically during install.
+nginx_enable_cloudflare_ip_restrict() {
+    print_section "Enable Cloudflare IP Restrict"
+    require_root || return 1
+
+    print_warn "WARNING: This blocks ALL traffic not originating from Cloudflare IPs."
+    print_warn "Only enable if this server is fully behind Cloudflare (Orange Cloud ON for all domains)."
+    echo ""
+    if ! prompt_confirm "Continue and write CF IP restrict config?"; then
+        print_warn "Aborted."
+        return 0
+    fi
+
+    local conf_dir="/etc/nginx/conf.d"
+    local restrict_conf="${conf_dir}/cloudflare-ip-restrict.conf"
+    ensure_dir "$conf_dir"
+    backup_file "$restrict_conf" >/dev/null || true
+
+    cat > "$restrict_conf" <<'CFEOF'
+# Cloudflare IP Restrict — generated by OPS
+# Source: https://www.cloudflare.com/ips/
+# Update periodically or re-run 'Enable Cloudflare IP restrict' to refresh.
+# Place this file at /etc/nginx/conf.d/cloudflare-ip-restrict.conf
+# Nginx includes all conf.d/*.conf in the http{} context automatically.
+#
+# NOTE: This uses geo {} block approach — add to the http block, then check
+# $blocked_cf in each server {} block.
+
+geo $blocked_cf {
+    default 1;
+    # Cloudflare IPv4 (last updated: 2025-01)
+    173.245.48.0/20   0;
+    103.21.244.0/22   0;
+    103.22.200.0/22   0;
+    103.31.4.0/22     0;
+    141.101.64.0/18   0;
+    108.162.192.0/18  0;
+    190.93.240.0/20   0;
+    188.114.96.0/20   0;
+    197.234.240.0/22  0;
+    198.41.128.0/17   0;
+    162.158.0.0/15    0;
+    104.16.0.0/13     0;
+    104.24.0.0/14     0;
+    172.64.0.0/13     0;
+    131.0.72.0/22     0;
+    # Cloudflare IPv6
+    2400:cb00::/32    0;
+    2606:4700::/32    0;
+    2803:f800::/32    0;
+    2405:b500::/32    0;
+    2405:8100::/32    0;
+    2a06:98c0::/29    0;
+    2c0f:f248::/32    0;
+    # Allow localhost / loopback always
+    127.0.0.0/8       0;
+    ::1               0;
+}
+CFEOF
+    chmod 644 "$restrict_conf"
+
+    print_ok "CF IP restrict config written: $restrict_conf"
+    echo ""
+    print_warn "Next step: add the following inside each server {} block you want to restrict:"
+    echo '    if ($blocked_cf) { return 444; }'
+    print_warn "Then run: nginx -t && systemctl reload nginx"
+    print_warn "To remove: use 'Remove Cloudflare IP restrict' from this menu."
+    log_info "nginx_enable_cloudflare_ip_restrict: written $restrict_conf"
+}
+
+# nginx_remove_cloudflare_ip_restrict
+# Removes the CF IP restrict conf.d file and reloads nginx.
+nginx_remove_cloudflare_ip_restrict() {
+    print_section "Remove Cloudflare IP Restrict"
+    require_root || return 1
+    local restrict_conf="/etc/nginx/conf.d/cloudflare-ip-restrict.conf"
+    if [[ ! -f "$restrict_conf" ]]; then
+        print_warn "File not found: $restrict_conf (nothing to remove)"
+        return 0
+    fi
+    if ! prompt_confirm "Remove $restrict_conf?"; then
+        print_warn "Aborted."
+        return 0
+    fi
+    backup_file "$restrict_conf" >/dev/null || true
+    rm -f "$restrict_conf"
+    print_ok "Removed: $restrict_conf"
+    print_warn "Also remove any 'if (\$blocked_cf)' lines from server blocks."
+    print_warn "Run: nginx -t && systemctl reload nginx"
+    log_info "nginx_remove_cloudflare_ip_restrict: done"
 }
 
 nginx_add_custom_powered_by() {

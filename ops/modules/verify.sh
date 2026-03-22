@@ -200,17 +200,68 @@ _vs_check_nginx() {
     nginx -t >/dev/null 2>&1 && config_ok=1 || config_ok=0
     systemctl is-active nginx >/dev/null 2>&1 && is_active=1 || is_active=0
 
-    if [[ "$config_ok" -eq 1 && "$is_active" -eq 1 ]]; then
-        _vs_pass "Nginx" "active, config ok"
-        return 0
-    elif [[ "$is_active" -eq 0 && "$config_ok" -eq 1 ]]; then
-        _vs_fail "Nginx" "config ok but service inactive" "systemctl start nginx"
-        return 2
-    elif [[ "$config_ok" -eq 0 ]]; then
+    if [[ "$config_ok" -eq 0 ]]; then
         _vs_fail "Nginx" "config test failed" "run: nginx -t  to see errors"
         return 2
     fi
+    if [[ "$is_active" -eq 0 ]]; then
+        _vs_fail "Nginx" "config ok but service inactive" "systemctl start nginx"
+        return 2
+    fi
+
+    # ── Hardening sub-checks ────────────────────────────────────
+    local nginx_full_conf any_warn=0
+
+    # Cache nginx -T output once for all sub-checks
+    nginx_full_conf=$(nginx -T 2>/dev/null || true)
+
+    # 1. Version — warn if still on Ubuntu distro pkg (< 1.24)
+    local nginx_ver
+    nginx_ver=$(nginx -v 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    if [[ -n "$nginx_ver" ]] && ! awk -v v="$nginx_ver" 'BEGIN{exit !(v+0 >= 1.24)}'; then
+        _vs_warn "Nginx version" "${nginx_ver} (< 1.24)" "run OPS: Domains & Nginx → Install Nginx to upgrade to official mainline"
+        any_warn=1
+    fi
+
+    # 2. HTTP/2 — at least one listen has ssl http2
+    if ! printf '%s\n' "$nginx_full_conf" | grep -qE 'listen[[:space:]]+[0-9]+[[:space:]]+ssl[[:space:]]+http2'; then
+        _vs_warn "Nginx http2" "no http2 listen found" "run OPS: Apply security baseline, then rebuild vhosts"
+        any_warn=1
+    fi
+
+    # 3. Gzip types — must have gzip_types configured (not just gzip on)
+    if ! printf '%s\n' "$nginx_full_conf" | grep -qE '^[[:space:]]*gzip_types[[:space:]]'; then
+        _vs_warn "Nginx gzip" "gzip_types not configured (only gzip on)" "run OPS: Domains & Nginx → Apply security baseline"
+        any_warn=1
+    fi
+
+    # 4. Rate limiting zones
+    if ! printf '%s\n' "$nginx_full_conf" | grep -qE 'limit_req_zone'; then
+        _vs_warn "Nginx rate limit" "limit_req_zone not defined" "run OPS: Domains & Nginx → Apply security baseline"
+        any_warn=1
+    fi
+
+    # 5. client_max_body_size
+    if ! printf '%s\n' "$nginx_full_conf" | grep -qE 'client_max_body_size'; then
+        _vs_warn "Nginx client" "client_max_body_size not set (DoS risk)" "run OPS: Domains & Nginx → Apply security baseline"
+        any_warn=1
+    fi
+
+    # 6. worker_rlimit_nofile
+    if ! printf '%s\n' "$nginx_full_conf" | grep -qE 'worker_rlimit_nofile'; then
+        _vs_warn "Nginx rlimit" "worker_rlimit_nofile not set" "run OPS: Domains & Nginx → Apply security baseline"
+        any_warn=1
+    fi
+
+    if [[ "$any_warn" -eq 1 ]]; then
+        _vs_warn "Nginx" "active but hardening incomplete — see WARNs above" "run OPS: Domains & Nginx → Apply security baseline (option 8)"
+        return 1
+    fi
+
+    _vs_pass "Nginx" "active, config ok, http2, gzip_types, rate-limit zones, client limits, rlimit all present"
+    return 0
 }
+
 
 _vs_check_pm2() {
     if ! command -v pm2 >/dev/null 2>&1; then
@@ -326,13 +377,80 @@ _vs_check_mariadb() {
         _vs_warn "Database" "MariaDB/MySQL not installed" "install via OPS: Database Management"
         return 1
     fi
-    if systemctl is-active "$svc" >/dev/null 2>&1; then
-        _vs_pass "Database (${svc})" "active"
-        return 0
-    else
+
+    if ! systemctl is-active "$svc" >/dev/null 2>&1; then
         _vs_fail "Database (${svc})" "inactive" "systemctl start ${svc}"
         return 2
     fi
+
+    # ── Deep security checks (OPS audit requirements) ───────────
+    # Helper: read a single MariaDB variable value via unix socket.
+    _vs_db_var() {
+        mysql --protocol=socket -u root -sNe "SHOW VARIABLES LIKE '${1}';" 2>/dev/null | awk '{print $2}'
+    }
+
+    local any_fail=0 any_warn=0
+
+    # 1. Bind address — must be 127.0.0.1 (never 0.0.0.0)
+    local bind_addr
+    bind_addr="$(_vs_db_var "bind_address")"
+    if [[ "$bind_addr" != "127.0.0.1" && "$bind_addr" != "localhost" && "$bind_addr" != "::1" ]]; then
+        _vs_fail "DB bind_address" "${bind_addr:-unknown}" "set bind-address=127.0.0.1 in mariadb.conf.d/50-server.cnf"
+        any_fail=1
+    fi
+
+    # 2. local_infile must be OFF (file exfiltration vector)
+    local local_infile
+    local_infile="$(_vs_db_var "local_infile")"
+    if [[ "${local_infile^^}" != "OFF" ]]; then
+        _vs_fail "DB local_infile" "${local_infile:-unknown}" "set local_infile=OFF via OPS: Database → Apply tuning"
+        any_fail=1
+    fi
+
+    # 3. secure_file_priv must NOT be empty string (empty = unrestricted file read/write)
+    local sfp
+    sfp="$(_vs_db_var "secure_file_priv")"
+    if [[ -z "$sfp" ]]; then
+        _vs_warn "DB secure_file_priv" "empty (unrestricted)" "set secure_file_priv=NULL via OPS: Database → Apply tuning"
+        any_warn=1
+    fi
+
+    # 4. SSL must be enabled
+    local have_ssl
+    have_ssl="$(_vs_db_var "have_ssl")"
+    if [[ "${have_ssl^^}" != "YES" ]]; then
+        _vs_fail "DB SSL" "${have_ssl:-DISABLED}" "run OPS: Database → Apply tuning to generate SSL certs"
+        any_fail=1
+    fi
+
+    # 5. Slow query log should be ON
+    local slow_log
+    slow_log="$(_vs_db_var "slow_query_log")"
+    if [[ "${slow_log^^}" != "ON" ]]; then
+        _vs_warn "DB slow_query_log" "${slow_log:-OFF}" "run OPS: Database → Apply tuning"
+        any_warn=1
+    fi
+
+    # 6. skip_name_resolve should be ON (avoid DNS lookup latency)
+    local skip_ns
+    skip_ns="$(_vs_db_var "skip_name_resolve")"
+    if [[ "${skip_ns^^}" != "ON" ]]; then
+        _vs_warn "DB skip_name_resolve" "${skip_ns:-OFF}" "run OPS: Database → Apply tuning"
+        any_warn=1
+    fi
+
+    unset -f _vs_db_var
+
+    if [[ "$any_fail" -eq 1 ]]; then
+        return 2
+    fi
+    if [[ "$any_warn" -eq 1 ]]; then
+        _vs_warn "Database (${svc})" "active, security hardening incomplete" "run OPS: Database → Apply tuning"
+        return 1
+    fi
+
+    _vs_pass "Database (${svc})" "active, bind=127.0.0.1, SSL=YES, local_infile=OFF, slow_log=ON"
+    return 0
 }
 
 _vs_check_ssl() {

@@ -281,6 +281,9 @@ wizard_step_database() {
         # shellcheck source=/dev/null
         source "$db_mod"
         if declare -f db_install >/dev/null 2>&1; then
+            # db_install → install_mariadb() which internally calls:
+            #   tune_mariadb + _db_apply_security_hardening + _db_setup_ssl + _db_setup_logging
+            # So one call covers install + performance tuning + full security hardening.
             db_install
         fi
     else
@@ -296,6 +299,8 @@ wizard_step_database() {
         mysql -e "FLUSH PRIVILEGES;" 2>/dev/null || true
 
         print_ok "MariaDB installed and secured"
+        print_warn "Security hardening (local_infile, SSL, slow_log) not applied in inline mode."
+        print_warn "Install ops-script modules and run: Database → Apply tuning"
     fi
 
     _wizard_mark_done "DATABASE"

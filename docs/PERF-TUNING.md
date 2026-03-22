@@ -1,6 +1,6 @@
-﻿## Performance Tuning Rules
+## Performance Tuning Rules
 
-This document defines how OPS should tune Nginx, PHPâ€‘FPM, MySQL/MariaDB, and Node.js based on VPS resources. AI agents should update this file first when changing tuning logic.
+This document defines how OPS should tune Nginx, PHP-FPM, MySQL/MariaDB, and Node.js based on VPS resources. AI agents should update this file first when changing tuning logic.
 
 Values below are guidelines; actual implementation can interpolate between tiers as needed.
 
@@ -9,15 +9,15 @@ Values below are guidelines; actual implementation can interpolate between tiers
 Define rough tiers based on RAM and CPU cores:
 
 - **Tier S (small)**: < 1500 MB RAM, 1 vCPU
-- **Tier M (medium)**: 1500â€“5000 MB RAM, 2 vCPU
+- **Tier M (medium)**: 1500–5000 MB RAM, 2 vCPU
 - **Tier L (large)**: > 5000 MB RAM, 4+ vCPU
 
-**RAM threshold mapping (chá»‘t â€” dÃ¹ng trong `core/env.sh`):**
+**RAM threshold mapping (chốt — dùng trong `core/env.sh`):**
 
 ```bash
-# RAM_MB < 1500     â†’ Tier S
-# RAM_MB 1500-5000  â†’ Tier M
-# RAM_MB > 5000     â†’ Tier L
+# RAM_MB < 1500     → Tier S
+# RAM_MB 1500-5000  → Tier M
+# RAM_MB > 5000     → Tier L
 if   (( RAM_MB < 1500 ));                   then OPS_TIER="S"
 elif (( RAM_MB >= 1500 && RAM_MB < 5000 )); then OPS_TIER="M"
 else                                             OPS_TIER="L"
@@ -36,7 +36,7 @@ For all tiers:
 
 - `worker_processes`: set to number of CPU cores (or `auto`).
 - `worker_connections`: at least 2048.
-- Enable gzip for text assets; avoid compressing alreadyâ€‘compressed formats.
+- Enable gzip for text assets; avoid compressing already-compressed formats.
 
 Suggested defaults:
 
@@ -57,7 +57,7 @@ OPS must always validate Nginx config with `nginx -t` before reload.
 
 ---
 
-### 3. PHPâ€‘FPM tuning (per version)
+### 3. PHP-FPM tuning (per version)
 
 Each PHP version (7.4, 8.1, 8.2, 8.3) should have pools tuned by tier.
 
@@ -101,39 +101,32 @@ Approximate guidelines (per pool):
 
 ### 4. MariaDB tuning (default engine)
 
-**Security baseline (chot -- ap dung moi tier):**
+**Security baseline (chot — all tiers, applied by `_db_apply_security_hardening`):**
 
-`ini
-# /etc/mysql/mariadb.conf.d/50-server.cnf
-bind-address = 127.0.0.1   # MariaDB chi phuc vu noi bo VPS -- KHONG thay doi
-`
+See SECURITY-RULES.md §7 for the full security hardening table.
+`bind-address = 127.0.0.1` must always be set — MariaDB must never bind to 0.0.0.0.
 
-Key parameters to adjust per tier:
+**Performance settings per tier** (written to `60-ops-tuning.cnf` by `tune_mariadb()`):
 
-- innodb_buffer_pool_size
-- max_connections
-- 	hread_cache_size
-- 	mp_table_size and max_heap_table_size
+| Setting | Tier S (<1500MB) | Tier M (1500-5000MB) | Tier L (>5000MB) |
+|---|---|---|---|
+| `innodb_buffer_pool_size` | 512M | 2G | 5G |
+| `innodb_buffer_pool_instances` | 1 | 2 | 4 |
+| `innodb_log_file_size` | 64M | 256M | 512M |
+| `max_connections` | 80 | 150 | 300 |
+| `tmp_table_size` | 32M | 64M | 128M |
+| `max_heap_table_size` | 32M | 64M | 128M |
 
-Suggested starting points:
+**InnoDB / SSD settings (all tiers, fixed values):**
 
-- **Tier S (<1500MB RAM)**
-  - innodb_buffer_pool_size = 256M
-  - max_connections = 80
-  - 	mp_table_size = 32M
-  - max_heap_table_size = 32M
-- **Tier M (1500-5000MB RAM)**
-  - innodb_buffer_pool_size = 512M-1G
-  - max_connections = 150
-  - 	mp_table_size = 64M
-  - max_heap_table_size = 64M
-- **Tier L (>5000MB RAM)**
-  - innodb_buffer_pool_size = 2G or more depending on DB usage.
-  - max_connections = 300 or higher if needed.
-  - 	mp_table_size = 128M
-  - max_heap_table_size = 128M
+| Setting | Value | Reason |
+|---|---|---|
+| `key_buffer_size` | `8M` | Default 128MB wasted on InnoDB-only setups (MyISAM index cache) |
+| `innodb_flush_neighbors` | `0` | No benefit from neighbour-page flushing on SSD |
+| `innodb_io_capacity` | `1000` | Match typical cloud SSD IOPS (default 200 is HDD-era) |
+| `innodb_io_capacity_max` | `4000` | Burst capacity for large checkpoint flushes |
 
-OPS should not oversubscribe memory; values must be conservative by default.
+OPS must not oversubscribe memory; values must remain conservative by default.
 
 ---
 
@@ -144,13 +137,13 @@ For Node.js services (including 9router):
 - **Process count**:
   - Start with a single process per app unless:
     - CPU cores > 2
-    - and the app is clearly CPUâ€‘bound.
-  - For CPUâ€‘bound apps on Tier M/L, consider up to `min(cores, 4)` processes.
+    - and the app is clearly CPU-bound.
+  - For CPU-bound apps on Tier M/L, consider up to `min(cores, 4)` processes.
 - **Environment**:
   - Set `NODE_ENV=production` by default.
   - Avoid enabling verbose logging unless explicitly requested.
 
-OPS should provide sensible defaults but leave appâ€‘specific tuning (e.g. cluster mode) to the application owner where appropriate.
+OPS should provide sensible defaults but leave app-specific tuning (e.g. cluster mode) to the application owner where appropriate.
 
 ---
 
@@ -159,10 +152,10 @@ OPS should provide sensible defaults but leave appâ€‘specific tuning (e.g. 
 OPS stores a capacity estimate (based on tier) to help set expectations:
 
 - **Tier S**
-  - 1â€“3 lowâ€‘traffic sites.
+  - 1–3 low-traffic sites.
   - Roughly tens of concurrent users per site under typical conditions.
 - **Tier M**
-  - 3â€“8 lowâ€‘toâ€‘mediumâ€‘traffic sites.
+  - 3–8 low-to-medium-traffic sites.
   - Hundreds of concurrent users total with proper caching.
 - **Tier L**
   - 8+ sites.
@@ -177,7 +170,7 @@ These are indicative only and must be presented as **guidance, not guarantees**.
 When changing any tuning logic in code:
 
 1. Update this document first with the new strategy and rationale.
-2. Ensure module implementations reference these rules rather than hardâ€‘coding unrelated values.
+2. Ensure module implementations reference these rules rather than hard-coding unrelated values.
 
 
 

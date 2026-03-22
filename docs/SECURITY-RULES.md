@@ -114,6 +114,30 @@ This document defines non-negotiable security rules for OPS. Any change that vio
   - Should have least privilege (e.g. per-database accounts).
 - DB root password stored in `/etc/ops/.db-root-password` (0600) — never printed to terminal.
 
+**OPS MariaDB hardening baseline (enforced by `install_mariadb` / `db_install`):**
+
+The following settings are written to `/etc/mysql/mariadb.conf.d/60-ops-tuning.cnf` and are **non-negotiable** on every OPS-managed MariaDB installation:
+
+| Setting | Required Value | Reason |
+|---|---|---|
+| `bind-address` | `127.0.0.1` | Never expose DB to network |
+| `local_infile` | `OFF` | Blocks `LOAD DATA LOCAL` file exfiltration |
+| `secure_file_priv` | `NULL` | Disables `SELECT INTO OUTFILE` / `LOAD DATA INFILE` |
+| `skip_name_resolve` | `ON` | Eliminates per-connection DNS lookup latency |
+| `max_connect_errors` | `10` | Block hosts after 10 consecutive bad auth attempts |
+| `wait_timeout` | `300` | Close idle connections after 5 min (was 8h default) |
+| `interactive_timeout` | `600` | Close idle interactive sessions after 10 min |
+
+**OPS MariaDB SSL (enforced by `_db_setup_ssl`):**
+- Self-signed CA + server cert generated at `/etc/mysql/ssl/` (owned `mysql:mysql`, mode 600).
+- `ssl-ca`, `ssl-cert`, `ssl-key` written to `60-ops-tuning.cnf`.
+- SSL certs are valid 10 years; rotate via `db_apply_tuning` (deletes old certs first).
+
+**OPS MariaDB Logging (enforced by `_db_setup_logging`):**
+- `log_error = /var/log/mysql/error.log`
+- `slow_query_log = ON`, `long_query_time = 2s`, `log_slow_verbosity = query_plan,explain`
+- `log_queries_not_using_indexes = ON`
+
 ### 8. File safety and backups
 
 - Before writing or replacing critical config files, OPS must:
@@ -205,3 +229,42 @@ The `http {}` block in `/etc/nginx/nginx.conf` MUST enforce all of the following
 - CSP `unsafe-inline` and `unsafe-eval` are permitted at the global level for Next.js/SPA compatibility; however, per-vhost overrides should tighten this where possible.
 
 Security rules are intentionally conservative; usability should be improved without relaxing these guarantees unless the spec is explicitly updated.
+
+### 14. Database runtime hardening compliance
+
+The following settings are the minimum security posture that `_vs_check_mariadb()` in `verify.sh` enforces on every `verify_stack` run. Any deviation is a **WARN** or **FAIL**:
+
+| Variable | Expected | Severity if wrong |
+|---|---|---|
+| `bind_address` | `127.0.0.1` or `localhost` | FAIL |
+| `local_infile` | `OFF` | FAIL |
+| `have_ssl` | `YES` | FAIL |
+| `secure_file_priv` | non-empty (NULL) | WARN |
+| `slow_query_log` | `ON` | WARN |
+| `skip_name_resolve` | `ON` | WARN |
+
+- FAIL items are production blockers; they prevent `verify_stack` from scoring PASS on the Database component.
+- WARN items are degraded-posture issues; they display with `[WARN]` but do not block scoring.
+- All FAIL items are automatically fixed by running **Database → Apply tuning** from the OPS menu or calling `db_apply_tuning`.
+
+---
+
+### 11. Nginx hardening baseline (extended)
+
+The following rules apply to every Nginx installation managed by OPS (enforced by `_nginx_apply_global_tuning`):
+
+**HTTP/2:** All HTTPS virtual hosts MUST use `listen 443 ssl http2`. HTTP/1.1-only is not acceptable.
+
+**Rate limiting:** The global http block must define `limit_req_zone` and `limit_conn_zone`. Default zones:
+- `ops_req: 100r/s per IP` — burst 200 per vhost location
+- `ops_conn: 10m` — max 30 concurrent connections per IP per vhost
+
+**Client body limits:** `client_max_body_size 10m` must always be set. Protects against large-payload DoS.
+
+**Gzip must be fully configured:** `gzip on` alone is insufficient. `gzip_types` must include at minimum `application/json`, `text/css`, `application/javascript`. A bare `gzip on` without `gzip_types` only compresses `text/html`.
+
+**Cloudflare IP restrict (opt-in):** When a domain is fully behind Cloudflare (Orange Cloud ON), use `nginx_enable_cloudflare_ip_restrict` (Advanced Web Controls menu) to add a `geo $blocked_cf` block serving 444 to non-CF IPs. This is **not auto-applied** because it breaks direct-access setups.
+
+**Nginx version:** Must be >= 1.24. OPS adds nginx.org mainline repo during install. Running Ubuntu distro package (1.18.0) is a policy violation (`_vs_check_nginx` will WARN).
+
+**worker_rlimit_nofile:** Must be set to 65535 in the main context. Without this, `worker_connections 8192` is silently constrained by the OS default ulimit (~1024).

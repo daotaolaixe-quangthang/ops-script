@@ -275,3 +275,79 @@ Muc tieu: cung cap runbook ngan theo format `pre-check -> change -> verify -> ro
   - Secret files: verify `chmod 600` sau moi restore: `.telegram-bot-token`, `.db-root-password`, `.codex-api-key`
 
 
+
+---
+
+## Nginx Upgrade: Ubuntu Package → Official Mainline
+
+**When:** `nginx -v` shows < 1.24 (e.g. 1.18.0 from Ubuntu repo).
+
+**Steps:**
+```bash
+# 1. From OPS menu:
+# Domains & Nginx → Install / update Nginx (option 6)
+# This calls _nginx_add_official_repo() + apt upgrade
+
+# 2. Or manually:
+curl -fsSL https://nginx.org/keys/nginx_signing.key | gpg --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/mainline/ubuntu $(lsb_release -cs) nginx" \
+    > /etc/apt/sources.list.d/nginx.list
+cat > /etc/apt/preferences.d/99nginx <<'PINEOF'
+Package: nginx
+Pin: origin nginx.org
+Pin-Priority: 1001
+PINEOF
+apt update && apt install nginx
+nginx -v && nginx -t && systemctl reload nginx
+```
+
+**Rollback:** Remove `/etc/apt/sources.list.d/nginx.list` and `/etc/apt/preferences.d/99nginx`, then `apt install nginx=1.18*` (not recommended for production).
+
+---
+
+## Apply Nginx Security Baseline
+
+**When:** After fresh install, after nginx upgrade, or when `verify_stack` shows WARN on any nginx hardening check.
+
+**Steps:**
+```bash
+# From OPS menu:
+# Domains & Nginx → Apply security baseline (option 8)
+# This runs nginx_apply_security_baseline() which calls _nginx_apply_global_tuning() + reload
+
+# Verify all checks pass:
+# Main menu → Verify stack → check Nginx section for PASS
+```
+
+**What it applies:**
+- `worker_rlimit_nofile 65535`, `multi_accept on`, `use epoll`
+- `keepalive_timeout 30s`, `client_max_body_size 10m`, client timeouts
+- Full gzip config with `gzip_types`
+- `open_file_cache`, `limit_req_zone`, `limit_conn_zone`
+- All security headers (HSTS+preload, CSP, Permissions-Policy, etc.)
+- Custom `log_format main_ext`
+
+---
+
+## Enable / Disable Cloudflare IP Restriction
+
+**When:** All public domains are behind Cloudflare (Orange Cloud ON). Blocks any direct-IP access bypassing Cloudflare.
+
+**Enable:**
+```bash
+# OPS menu: Domains & Nginx → Advanced web controls → option 5
+# Writes /etc/nginx/conf.d/cloudflare-ip-restrict.conf
+# Then manually add to each server {} block:
+#   if ($blocked_cf) { return 444; }
+# Then: nginx -t && systemctl reload nginx
+```
+
+**Disable:**
+```bash
+# OPS menu: Domains & Nginx → Advanced web controls → option 6
+# Removes /etc/nginx/conf.d/cloudflare-ip-restrict.conf
+# Then remove any "if ($blocked_cf)" lines from server blocks
+# Then: nginx -t && systemctl reload nginx
+```
+
+> **Warning:** Never enable CF IP restrict if any domain has Cloudflare proxying disabled (Grey Cloud). It will block all traffic to that domain.

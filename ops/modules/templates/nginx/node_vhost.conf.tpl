@@ -1,9 +1,16 @@
 server {
     listen 80;
+    listen [::]:80;
     server_name {{DOMAIN}};
+
+    access_log /var/log/nginx/{{DOMAIN}}.access.log main_ext;
+    error_log  /var/log/nginx/{{DOMAIN}}.error.log;
 
 {{SSL_HTTP_BLOCK}}
     location / {
+        limit_req  zone=ops_req burst=200 nodelay;
+        limit_conn zone=ops_conn 30;
+
         proxy_pass         http://127.0.0.1:{{PORT}};
         proxy_http_version 1.1;
         proxy_set_header   Upgrade $http_upgrade;

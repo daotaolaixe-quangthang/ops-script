@@ -1,5 +1,6 @@
 server {
     listen 80;
+    listen [::]:80;
     server_name {{DOMAIN}};
 
     root  {{WEBROOT}};
@@ -8,6 +9,8 @@ server {
 {{SSL_HTTP_BLOCK}}
     # Strict static: no PHP, no proxy
     location / {
+        limit_req  zone=ops_req burst=200 nodelay;
+        limit_conn zone=ops_conn 30;
         try_files $uri $uri/ =404;
     }
 
@@ -29,7 +32,7 @@ server {
         deny all;
     }
 
-    access_log  /var/log/nginx/{{DOMAIN}}.access.log;
+    access_log  /var/log/nginx/{{DOMAIN}}.access.log main_ext;
     error_log   /var/log/nginx/{{DOMAIN}}.error.log;
 }
 

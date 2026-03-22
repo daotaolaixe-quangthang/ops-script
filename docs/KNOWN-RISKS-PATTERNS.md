@@ -204,3 +204,41 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
 - **Pattern**: `max_memory_restart` set in ecosystem (e.g. `512M`) but no `--max-old-space-size` in `node_args` → Node.js V8 uses system default heap limit (can be >1.5GB) → Node crashes with OOM before PM2 can gracefully restart it.
 - **Risk**: Hard crash instead of graceful restart; in-flight requests are lost without graceful shutdown.
 - **Safe action**: Set `node_args: "--max-old-space-size=<N>"` to ≈90% of `max_memory_restart` (e.g. `460` for 512M restart). This makes V8 GC aggressive at the threshold and allows PM2 to trigger a clean restart.
+
+## 17) Nginx from Ubuntu distro repo — old version with CVEs
+
+**Risk:** Ubuntu 20.04/22.04 ships nginx/1.18.0. CVE-2021-23017 (1-byte DNS overwrite) and other post-1.18 CVEs exist. Running distro nginx on a production server is a policy violation.
+
+**Detection:** `nginx -v` shows version < 1.24 **or** `_vs_check_nginx` reports WARN on version.
+
+**Fix:** Run OPS: `Domains & Nginx → Install Nginx`. The `_nginx_add_official_repo()` function adds nginx.org mainline repo + apt pin and upgrades.
+
+---
+
+## 18) `gzip on` without `gzip_types` — nearly useless gzip
+
+**Risk:** The default Nginx gzip config only compresses `text/html`. Without `gzip_types`, JS, CSS, JSON — the bulk of application payload — are sent uncompressed.
+
+**Detection:** `nginx -T | grep gzip_types` returns empty **or** `_vs_check_nginx` WARN on gzip.
+
+**Fix:** Run OPS: `Domains & Nginx → Apply security baseline (option 8)`. `_nginx_patch_gzip_block()` replaces the bare `gzip on` with a full config including `gzip_types`.
+
+---
+
+## 19) No rate limiting in Nginx — origin DoS possible if CF bypass
+
+**Risk:** Without `limit_req_zone` / `limit_conn_zone`, if the VPS IP is discovered and Cloudflare is bypassed, an attacker can send unlimited requests directly to the origin.
+
+**Detection:** `nginx -T | grep limit_req_zone` returns empty **or** `_vs_check_nginx` WARN on rate limit.
+
+**Fix:** Run OPS: `Domains & Nginx → Apply security baseline`. Rate limit zones are defined globally; vhosts enforce `limit_req zone=ops_req burst=200 nodelay`.
+
+---
+
+## 20) `listen 443 ssl` without `http2` — forced HTTP/1.1
+
+**Risk:** HTTP/2 provides multiplexing and header compression. Without `http2` in the listen directive, all HTTPS traffic uses HTTP/1.1 even on modern clients.
+
+**Detection:** `nginx -T | grep "443 ssl" | grep -v http2` returns matches **or** `_vs_check_nginx` WARN on http2.
+
+**Fix:** Rebuild vhost via OPS after running `Apply security baseline`. All inline vhost renders now emit `listen 443 ssl http2;`.

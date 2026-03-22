@@ -203,3 +203,24 @@ After reboot and first stable login on the new port, users typically:
 
 This document should be kept in sync with any installer or wizard behaviour changes.
 
+
+---
+
+### Nginx installation — official mainline repo
+
+During `install_nginx()`, OPS automatically:
+
+1. Calls `_nginx_add_official_repo()` to add the nginx.org mainline apt repo and pin it above the distro repo.
+2. Installs `nginx` (will be >= 1.24 mainline, not Ubuntu's 1.18.0).
+3. Calls `_nginx_apply_global_tuning()` to apply ALL hardening directives:
+   - `worker_rlimit_nofile 65535` (main context)
+   - `multi_accept on` + `use epoll` (events block)
+   - `keepalive_timeout 30s`, `client_max_body_size 10m`, client timeouts
+   - Full gzip config (`gzip_types`, `gzip_comp_level 6`, etc.)
+   - `open_file_cache`, `limit_req_zone`, `limit_conn_zone`
+   - Security headers (HSTS+preload, CSP, Permissions-Policy, X-XSS-Protection)
+   - Custom `log_format main_ext` with upstream response timing
+4. Calls `create_default_deny()` and `_nginx_disable_packaged_default_site()`.
+5. Runs `nginx -t && nginx reload`.
+
+If Nginx >= 1.24 is already installed, `_nginx_add_official_repo()` is a no-op.
