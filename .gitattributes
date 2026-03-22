@@ -1,0 +1,27 @@
+# OPS — Git line ending policy
+# Enforce LF on all shell scripts and text files to prevent CRLF regression.
+# See: ops_audit_report.md → BUG-01
+
+# Default: auto-detect text files
+* text=auto
+
+# Force LF for all scripts
+*.sh text eol=lf
+ops/bin/ops text eol=lf
+ops/bin/ops-* text eol=lf
+install/ops-install.sh text eol=lf
+
+# Force LF for docs and configs
+*.md text eol=lf
+*.conf text eol=lf
+*.tpl text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# Binary files — no conversion
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gz binary
+*.tar binary
