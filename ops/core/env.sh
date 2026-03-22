@@ -78,6 +78,13 @@ ops_conf_set() {
     local value="$3"
     local escaped_value sed_safe_value
 
+    # F-11: Strip newlines and carriage returns — conf values must be single-line.
+    # A value containing \n would cause sed to receive a multi-line substitution
+    # pattern, which either errors (under set -e, corrupting the conf file via
+    # the mktemp+mv swap) or silently writes a broken multi-line entry.
+    value="${value//$'\n'/ }"
+    value="${value//$'\r'/ }"
+
     # Escape double-quotes for shell storage in the conf file
     escaped_value=$(printf '%s' "$value" | sed 's/"/\\"/g')
 

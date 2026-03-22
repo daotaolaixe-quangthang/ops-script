@@ -6,7 +6,7 @@ server {
     root  {{WEBROOT}};
     index index.html index.htm;
 
-{{SSL_HTTP_BLOCK}}
+{{SSL_HTTP_REDIRECT}}
     # Strict static: no PHP, no proxy
     location / {
         limit_req  zone=ops_req burst=200 nodelay;
@@ -35,5 +35,3 @@ server {
     access_log  /var/log/nginx/{{DOMAIN}}.access.log main_ext;
     error_log   /var/log/nginx/{{DOMAIN}}.error.log;
 }
-
-{{SSL_HTTPS_BLOCK}}

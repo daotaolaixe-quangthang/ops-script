@@ -388,23 +388,38 @@ _domain_ssl_cert_ready() {
     [[ -f "/etc/letsencrypt/live/${domain}/fullchain.pem" ]] && [[ -f "/etc/letsencrypt/live/${domain}/privkey.pem" ]]
 }
 
+# _render_node_vhost <domain> <port> <available-path>
+# F-01 fix: The old approach passed SSL_HTTPS_BLOCK (a multi-line string with
+# $host, $remote_addr, \, & etc.) through render_template's Bash parameter expansion,
+# silently corrupting the output. Fix: template now receives only SSL_HTTP_REDIRECT
+# (a single safe line) and the SSL server{} block is appended directly via
+# 'cat >>' AFTER template rendering, completely bypassing render_template.
 _render_node_vhost() {
     local domain="$1"
     local port="$2"
     local available="$3"
-    local ssl_http_block=""
-    local ssl_https_block=""
+    local ssl_redirect=""
 
     if _domain_ssl_cert_ready "$domain"; then
-        ssl_http_block="    return 301 https://\$host\$request_uri;"
-        ssl_https_block=$(cat <<EOF
+        ssl_redirect="    return 301 https://\$host\$request_uri;"
+    fi
+
+    # Step 1: Render HTTP server block from template (safe single-line vars only)
+    _create_site_from_template "${NGINX_TEMPLATE_DIR}/node_vhost.conf.tpl" "$available" \
+        "DOMAIN=${domain}" \
+        "PORT=${port}" \
+        "SSL_HTTP_REDIRECT=${ssl_redirect}"
+
+    # Step 2: Append SSL server block directly — no Bash expansion of Nginx variables
+    if _domain_ssl_cert_ready "$domain"; then
+        cat >> "$available" <<NGINX_SSL_EOF
+
 server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
     server_name ${domain};
 
     # P2-C-03: HSTS — only valid on HTTPS (RFC 6797 §7.2).
-    # 2-year max-age with preload; tighten includeSubDomains only if all subdomains are also HTTPS.
     add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
 
     access_log /var/log/nginx/${domain}.access.log main_ext;
@@ -428,44 +443,63 @@ server {
         proxy_send_timeout    60s;
         proxy_read_timeout    60s;
 
-        # Hide upstream technology fingerprints
         proxy_hide_header X-Powered-By;
         proxy_hide_header Server;
     }
 
-    location ~ /\\. {
+    location ~ /\. {
         deny all;
         access_log off;
         log_not_found off;
     }
 
-    ssl_certificate /etc/letsencrypt/live/${domain}/fullchain.pem;
+    ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 }
-EOF
-)
+NGINX_SSL_EOF
     fi
 
-    _create_site_from_template "${NGINX_TEMPLATE_DIR}/node_vhost.conf.tpl" "$available" \
-        "DOMAIN=${domain}" \
-        "PORT=${port}" \
-        "SSL_HTTP_BLOCK=${ssl_http_block}" \
-        "SSL_HTTPS_BLOCK=${ssl_https_block}"
+    # Step 3: Guard — remove broken file if nginx syntax check fails
+    if ! nginx -t >/dev/null 2>&1; then
+        log_error "_render_node_vhost: nginx -t failed for ${domain} — removing broken vhost file"
+        rm -f "$available"
+        return 1
+    fi
 }
 
+# _render_php_vhost <domain> <web_root> <php_version> <php_socket> <available-path>
+# F-01 fix: same pattern as _render_node_vhost — SSL block appended directly.
+# Note: php_socket is substituted via sed after template rendering (safe, single-line value).
 _render_php_vhost() {
     local domain="$1"
     local web_root="$2"
     local php_version="$3"
     local php_socket="$4"
     local available="$5"
-    local rendered ssl_http_block="" ssl_https_block=""
+    local ssl_redirect=""
 
     if _domain_ssl_cert_ready "$domain"; then
-        ssl_http_block="    return 301 https://\$host\$request_uri;"
-        ssl_https_block=$(cat <<EOF
+        ssl_redirect="    return 301 https://\$host\$request_uri;"
+    fi
+
+    # Step 1: Render HTTP server block (single-line vars only)
+    local rendered
+    rendered="$(render_template "${NGINX_TEMPLATE_DIR}/php_vhost.conf.tpl" \
+        "DOMAIN=${domain}" \
+        "WEBROOT=${web_root}" \
+        "PHP_VERSION=${php_version}" \
+        "SSL_HTTP_REDIRECT=${ssl_redirect}")"
+    # Substitute PHP socket path (safe single-line sed)
+    rendered="$(printf '%s\n' "$rendered" | sed -E \
+        "s|fastcgi_pass[[:space:]]+unix:/run/php/php${php_version}-fpm\.sock;|fastcgi_pass   unix:${php_socket};|")"
+    printf '%s\n' "$rendered" | write_file "$available"
+
+    # Step 2: Append SSL server block directly
+    if _domain_ssl_cert_ready "$domain"; then
+        cat >> "$available" <<NGINX_SSL_EOF
+
 server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
@@ -477,7 +511,7 @@ server {
     root ${web_root};
     index index.php index.html;
 
-    location ~ /\\. {
+    location ~ /\. {
         deny all;
         access_log off;
         log_not_found off;
@@ -489,7 +523,7 @@ server {
         try_files \$uri \$uri/ /index.php?\$query_string;
     }
 
-    location ~ \\.php$ {
+    location ~ \.php$ {
         include        snippets/fastcgi-php.conf;
         fastcgi_pass   unix:${php_socket};
         fastcgi_param  SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
@@ -499,7 +533,7 @@ server {
         fastcgi_read_timeout    120s;
     }
 
-    location ~* \\.(jpg|jpeg|png|gif|ico|css|js|woff2?)$ {
+    location ~* \.(jpg|jpeg|png|gif|ico|css|js|woff2?)$ {
         expires 30d;
         add_header Cache-Control "public, no-transform";
     }
@@ -507,35 +541,44 @@ server {
     access_log  /var/log/nginx/${domain}.access.log main_ext;
     error_log   /var/log/nginx/${domain}.error.log;
 
-    ssl_certificate /etc/letsencrypt/live/${domain}/fullchain.pem;
+    ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 }
-EOF
-)
+NGINX_SSL_EOF
     fi
 
-    rendered="$(render_template "${NGINX_TEMPLATE_DIR}/php_vhost.conf.tpl" \
-        "DOMAIN=${domain}" \
-        "WEBROOT=${web_root}" \
-        "PHP_VERSION=${php_version}" \
-        "SSL_HTTP_BLOCK=${ssl_http_block}" \
-        "SSL_HTTPS_BLOCK=${ssl_https_block}")"
-    rendered="$(printf '%s\n' "$rendered" | sed -E "s|fastcgi_pass[[:space:]]+unix:/run/php/php${php_version}-fpm\\.sock;|fastcgi_pass   unix:${php_socket};|")"
-    printf '%s\n' "$rendered" | write_file "$available"
+    # Step 3: Guard — remove broken file if nginx syntax check fails
+    if ! nginx -t >/dev/null 2>&1; then
+        log_error "_render_php_vhost: nginx -t failed for ${domain} — removing broken vhost file"
+        rm -f "$available"
+        return 1
+    fi
 }
 
+# _render_static_vhost <domain> <web_root> <available-path>
+# F-01 fix: same pattern as _render_node_vhost — SSL block appended directly.
 _render_static_vhost() {
     local domain="$1"
     local web_root="$2"
     local available="$3"
-    local ssl_http_block=""
-    local ssl_https_block=""
+    local ssl_redirect=""
 
     if _domain_ssl_cert_ready "$domain"; then
-        ssl_http_block="    return 301 https://\$host\$request_uri;"
-        ssl_https_block=$(cat <<EOF
+        ssl_redirect="    return 301 https://\$host\$request_uri;"
+    fi
+
+    # Step 1: Render HTTP server block (single-line vars only)
+    _create_site_from_template "${NGINX_TEMPLATE_DIR}/static_vhost.conf.tpl" "$available" \
+        "DOMAIN=${domain}" \
+        "WEBROOT=${web_root}" \
+        "SSL_HTTP_REDIRECT=${ssl_redirect}"
+
+    # Step 2: Append SSL server block directly
+    if _domain_ssl_cert_ready "$domain"; then
+        cat >> "$available" <<NGINX_SSL_EOF
+
 server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
@@ -553,39 +596,39 @@ server {
         try_files \$uri \$uri/ =404;
     }
 
-    location ~* \\.(jpg|jpeg|png|gif|ico|svg|css|js|woff2?|ttf|eot)$ {
+    location ~* \.(jpg|jpeg|png|gif|ico|svg|css|js|woff2?|ttf|eot)$ {
         expires     30d;
         add_header  Cache-Control "public, immutable";
         access_log  off;
     }
 
-    location ~ /\\. {
+    location ~ /\. {
         deny all;
         access_log off;
         log_not_found off;
     }
 
-    location ~ \\.(env|log|sh|conf)$ {
+    location ~ \.(env|log|sh|conf)$ {
         deny all;
     }
 
     access_log  /var/log/nginx/${domain}.access.log main_ext;
     error_log   /var/log/nginx/${domain}.error.log;
 
-    ssl_certificate /etc/letsencrypt/live/${domain}/fullchain.pem;
+    ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 }
-EOF
-)
+NGINX_SSL_EOF
     fi
 
-    _create_site_from_template "${NGINX_TEMPLATE_DIR}/static_vhost.conf.tpl" "$available" \
-        "DOMAIN=${domain}" \
-        "WEBROOT=${web_root}" \
-        "SSL_HTTP_BLOCK=${ssl_http_block}" \
-        "SSL_HTTPS_BLOCK=${ssl_https_block}"
+    # Step 3: Guard — remove broken file if nginx syntax check fails
+    if ! nginx -t >/dev/null 2>&1; then
+        log_error "_render_static_vhost: nginx -t failed for ${domain} — removing broken vhost file"
+        rm -f "$available"
+        return 1
+    fi
 }
 
 _rebuild_domain_vhost() {
@@ -932,19 +975,52 @@ remove_domain() {
     fi
 
     local confirm_ans
-    read -r -p "Remove domain ${domain}? This will delete Nginx config. [y/N]: " confirm_ans
+    read -r -p "Remove domain ${domain}? This will delete Nginx config and FPM pool (if PHP). [y/N]: " confirm_ans
     if [[ "${confirm_ans,,}" != "y" ]]; then
         print_warn "Cancelled."
         return 0
     fi
 
+    # F-04: Read backend type BEFORE deleting state file, so we can clean up
+    # the correct backend resources (PHP-FPM pool / PM2 warning).
+    local state_file="${OPS_DOMAINS_DIR}/${domain}.conf"
+    local backend_type php_version site_slug
+    if [[ -f "$state_file" ]]; then
+        backend_type=$(grep '^DOMAIN_BACKEND_TYPE=' "$state_file" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '"')
+        php_version=$(grep '^DOMAIN_PHP_VERSION='   "$state_file" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '"')
+    fi
+
+    # Remove Nginx config files and OPS domain state
     rm -f "${NGINX_SITES_ENABLED}/${domain}"
     rm -f "${NGINX_SITES_AVAILABLE}/${domain}"
-    rm -f "${OPS_DOMAINS_DIR}/${domain}.conf"
+    rm -f "$state_file"
+
+    # Backend-specific cleanup
+    case "${backend_type:-}" in
+        php)
+            if [[ -n "$php_version" ]]; then
+                site_slug="$(_domain_slug "$domain")"
+                local pool_file="/etc/php/${php_version}/fpm/pool.d/${site_slug}.conf"
+                if [[ -f "$pool_file" ]]; then
+                    backup_file "$pool_file" >/dev/null || true
+                    rm -f "$pool_file"
+                    service_restart "php${php_version}-fpm" 2>/dev/null || true
+                    log_info "remove_domain: removed PHP-FPM pool ${pool_file} and restarted php${php_version}-fpm"
+                fi
+                rm -f "${PHP_SITES_DIR}/${site_slug}.conf" 2>/dev/null || true
+                print_ok "PHP-FPM pool removed for ${domain} (PHP ${php_version})."
+            fi
+            ;;
+        node)
+            print_warn "Nginx domain config removed, but the PM2 process may still be running."
+            print_warn "Use 'Node.js Services → Remove app' (ops menu) to stop the PM2 process."
+            ;;
+    esac
 
     create_default_deny
     _nginx_test_and_reload
-    echo "Web root /var/www/${domain} NOT deleted — remove manually if needed."
+    print_ok "Domain ${domain} removed."
+    echo "  Web root /var/www/${domain} NOT deleted — remove manually if needed."
 }
 
 # issue_ssl <domain>
@@ -962,7 +1038,29 @@ issue_ssl() {
 
     create_default_deny
     _install_certbot_snap
-    certbot --nginx -d "$domain"
+
+    # F-16: certbot prompts for email + ToS acceptance on first ever use on this server.
+    # Without pre-registration, 'certbot --nginx' blocks waiting for TTY input — the TUI
+    # appears to hang with no feedback. We check for an existing account first, and if
+    # none exists, prompt the operator for email and register non-interactively.
+    if ! certbot accounts list 2>/dev/null | grep -q 'Account ID:'; then
+        echo ""
+        print_warn "No Let's Encrypt account found on this server. Registration required for SSL."
+        prompt_input "Email for Let's Encrypt notifications (certificate expiry alerts)"
+        local certbot_email="$REPLY"
+        if [[ -z "$certbot_email" ]]; then
+            print_error "Email is required for Let's Encrypt registration. SSL issuance cancelled."
+            return 1
+        fi
+        if ! certbot register --agree-tos --non-interactive -m "$certbot_email"; then
+            print_error "Certbot account registration failed. Check email and internet connectivity."
+            return 1
+        fi
+        print_ok "Let's Encrypt account registered: ${certbot_email}"
+        log_info "issue_ssl: certbot account registered for ${certbot_email}"
+    fi
+
+    certbot --nginx -d "$domain" --non-interactive --agree-tos
 
     log_info "Post-issue SSL sync for managed vhosts"
     _rebuild_domain_vhost "$domain"

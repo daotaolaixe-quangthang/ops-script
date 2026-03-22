@@ -6,7 +6,7 @@ server {
     access_log /var/log/nginx/{{DOMAIN}}.access.log main_ext;
     error_log  /var/log/nginx/{{DOMAIN}}.error.log;
 
-{{SSL_HTTP_BLOCK}}
+{{SSL_HTTP_REDIRECT}}
     location / {
         limit_req  zone=ops_req burst=200 nodelay;
         limit_conn zone=ops_conn 30;
@@ -25,6 +25,10 @@ server {
         proxy_connect_timeout 60s;
         proxy_send_timeout    60s;
         proxy_read_timeout    60s;
+
+        # Hide upstream technology fingerprints
+        proxy_hide_header X-Powered-By;
+        proxy_hide_header Server;
     }
 
     # Deny hidden files
@@ -34,5 +38,3 @@ server {
         log_not_found off;
     }
 }
-
-{{SSL_HTTPS_BLOCK}}

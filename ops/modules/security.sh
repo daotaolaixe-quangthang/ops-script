@@ -98,8 +98,16 @@ security_set_sshd_option() {
     local value="$2"
     local file="$3"
 
-    if grep -Eq "^[[:space:]]*#?[[:space:]]*${key}[[:space:]]+" "$file"; then
-        sed -i -E "s|^[[:space:]]*#?[[:space:]]*${key}[[:space:]]+.*|${key} ${value}|" "$file"
+    # F-17: Only match ACTIVE (non-commented) lines.
+    # The old regex used #? which also matched commented directives, causing
+    # sed to uncomment them in-place — silently activating intentionally disabled
+    # settings (e.g. #PermitRootLogin prohibit-password → PermitRootLogin no).
+    # If the directive is currently commented-out, we fall through to the else
+    # branch and APPEND a new active line. This is safe because 99-ops-hardening.conf
+    # is included with Include /etc/ssh/sshd_config.d/*.conf at the top of sshd_config,
+    # and OpenSSH uses first-match-wins semantics.
+    if grep -Eq "^[[:space:]]*${key}[[:space:]]+" "$file"; then
+        sed -i -E "s|^[[:space:]]*${key}[[:space:]]+.*|${key} ${value}|" "$file"
     else
         echo "${key} ${value}" >> "$file"
     fi

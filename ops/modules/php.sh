@@ -233,6 +233,36 @@ EOF_SITE
 
     service_restart "php${ver}-fpm"
     print_ok "Configured PHP-FPM pool '${site}' for PHP ${ver}."
+
+    # F-08: Sync domain state file + rebuild Nginx vhost when the PHP version changes.
+    # Without this, the Nginx vhost continues pointing to the OLD php socket path
+    # (e.g. php8.1-fpm-site.sock) after a PHP upgrade -> 502 Bad Gateway.
+    # The domain conf file uses the same slug as the site name.
+    local dom_conf="${OPS_CONFIG_DIR}/domains/${site}.conf"
+    if [[ -f "$dom_conf" ]]; then
+        local old_socket old_version
+        old_socket=$(grep '^DOMAIN_PHP_SOCKET=' "$dom_conf" 2>/dev/null | cut -d= -f2- | tr -d '"')
+        old_version=$(grep '^DOMAIN_PHP_VERSION=' "$dom_conf" 2>/dev/null | cut -d= -f2- | tr -d '"')
+
+        if [[ "$old_socket" != "$socket" || "$old_version" != "$ver" ]]; then
+            log_info "configure_php_pool: syncing domain state for ${site}: socket ${old_socket} -> ${socket}, version ${old_version} -> ${ver}"
+            sed -i "s|^DOMAIN_PHP_SOCKET=.*|DOMAIN_PHP_SOCKET=\"${socket}\"|"   "$dom_conf"
+            sed -i "s|^DOMAIN_PHP_VERSION=.*|DOMAIN_PHP_VERSION=\"${ver}\"|"    "$dom_conf"
+
+            # Rebuild Nginx vhost with updated socket — requires nginx.sh functions to be loaded.
+            if declare -f _rebuild_domain_vhost >/dev/null 2>&1; then
+                if _rebuild_domain_vhost "$site"; then
+                    if declare -f _nginx_test_and_reload >/dev/null 2>&1; then
+                        _nginx_test_and_reload || print_warn "Nginx reload failed after socket update for ${site}."
+                    fi
+                else
+                    print_warn "Vhost rebuild failed for ${site} — check /etc/nginx/sites-available/${site}"
+                fi
+            else
+                print_warn "nginx.sh not loaded — run 'Domains & Nginx → Rebuild vhost' for ${site} manually."
+            fi
+        fi
+    fi
 }
 
 # set_php_cli_default <ver>

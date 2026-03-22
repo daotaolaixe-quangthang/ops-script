@@ -138,20 +138,31 @@ detect_ssh_state() {
     SSH_CURRENT_PORTS=()
     NEW_SSH_PORT=""
 
-    if [[ ! -f "$sshd_conf" ]]; then
-        return 0
+    # F-09: Use sshd -T (merged effective config) as primary detection.
+    # Cloud providers inject SSH ports via sshd_config.d/ includes (e.g. 50-cloud-init.conf),
+    # which grep on sshd_config alone would miss. sshd -T reads the fully merged result.
+    local sshd_t_out
+    sshd_t_out=$(sshd -T 2>/dev/null || true)
+
+    local port_source
+    if [[ -n "$sshd_t_out" ]]; then
+        # Primary path: parse sshd -T output (field: "port <N>")
+        port_source=$(printf '%s\n' "$sshd_t_out" | awk '/^port / {print $2}')
+    elif [[ -f "$sshd_conf" ]]; then
+        # Fallback: grep main sshd_config file (misses sshd_config.d/)
+        port_source=$(grep -E '^[[:space:]]*Port[[:space:]]+[0-9]+' "$sshd_conf" | awk '{print $2}')
     fi
 
     local port
     while IFS= read -r port; do
+        [[ -z "$port" ]] && continue
         SSH_CURRENT_PORTS+=("$port")
         if [[ "$port" == "22" ]]; then
             SSH_PORT_22_OPEN="yes"
         else
-            NEW_SSH_PORT="$port"   # lấy port non-22 đầu tiên
+            NEW_SSH_PORT="$port"   # first non-22 port found
         fi
-    done < <(grep -E '^[[:space:]]*Port[[:space:]]+[0-9]+' "$sshd_conf" \
-             | awk '{print $2}')
+    done <<< "$port_source"
 
     if [[ -n "$NEW_SSH_PORT" ]]; then
         SSH_ALREADY_CONFIGURED="yes"

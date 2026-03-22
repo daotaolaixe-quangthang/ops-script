@@ -6,7 +6,7 @@ server {
     root {{WEBROOT}};
     index index.php index.html;
 
-{{SSL_HTTP_BLOCK}}
+{{SSL_HTTP_REDIRECT}}
     # Deny hidden files
     location ~ /\. {
         deny all;
@@ -40,6 +40,3 @@ server {
     access_log  /var/log/nginx/{{DOMAIN}}.access.log main_ext;
     error_log   /var/log/nginx/{{DOMAIN}}.error.log;
 }
-
-{{SSL_HTTPS_BLOCK}}
-

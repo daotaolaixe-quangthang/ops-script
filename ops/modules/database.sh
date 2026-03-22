@@ -512,8 +512,31 @@ db_install() {
 }
 
 db_secure() {
+    # F-15: Do NOT call install_mariadb here — that runs a full reinstall + unconditional
+    # service_restart, which silently drops all active DB connections on a live server.
+    # Instead: apply only the hardening config and prompt before restarting.
+    print_section "Re-harden MariaDB (no reinstall)"
+    require_root || return 1
     _db_assert_not_rescue_mode || return 1
-    install_mariadb
+
+    if ! service_active mariadb 2>/dev/null; then
+        print_error "MariaDB is not running. Start it first: systemctl start mariadb"
+        return 1
+    fi
+
+    _db_apply_security_hardening
+    _db_setup_ssl
+    _db_setup_logging
+
+    echo ""
+    print_warn "MariaDB must restart to apply the new hardening settings."
+    print_warn "This will briefly drop all active database connections."
+    if prompt_confirm "Restart MariaDB now?"; then
+        service_restart mariadb
+        print_ok "MariaDB restarted with hardened configuration."
+    else
+        print_warn "Restart skipped. Settings will take effect on next MariaDB restart."
+    fi
 }
 
 db_apply_tuning() {
