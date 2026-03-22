@@ -317,8 +317,17 @@ security_strip_cloud_init_overrides() {
     local stripped=0
     local include_file
     while IFS= read -r -d '' include_file; do
+        local _bname
+        _bname="$(basename "$include_file")"
         # Skip our own managed file
-        [[ "$(basename "$include_file")" == "99-ops-hardening.conf" ]] && continue
+        [[ "$_bname" == "99-ops-hardening.conf" ]] && continue
+        # Bug-1 fix: skip accumulated backup files (*.bak.*) — they are NOT config
+        # files despite ending in .conf after chained suffixes, but more importantly
+        # sshd's Include glob (*.conf) will NOT match them since .bak.* is appended
+        # AFTER .conf. However backup_file() was re-backing-up the backups on every
+        # wizard re-run, creating an ever-growing chain of filenames. Skip any file
+        # whose name contains ".bak." to prevent this accumulation.
+        [[ "$_bname" == *".bak."* ]] && continue
         if grep -Eq '^[[:space:]]*(PasswordAuthentication|PermitRootLogin|Port|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|AllowStreamLocalForwarding|PermitTunnel)[[:space:]]+' "$include_file" 2>/dev/null; then
             backup_file "$include_file" >/dev/null 2>&1 || true
             sed -i -E '/^[[:space:]]*(PasswordAuthentication|PermitRootLogin|Port|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|AllowStreamLocalForwarding|PermitTunnel)[[:space:]]+/d' "$include_file"
@@ -563,13 +572,22 @@ security_ensure_swap() {
     # P5-A: Check existing swap SIZE before returning early.
     # If swapfile exists but is smaller than desired, remove and recreate.
     if swapon --show 2>/dev/null | grep -q "${SECURITY_SWAP_FILE}"; then
-        local existing_mb
-        existing_mb=$(swapon --show --bytes 2>/dev/null \
-            | awk -v f="${SECURITY_SWAP_FILE}" '$1==f {printf "%d", $3/1048576; exit}')
-        if [[ -n "$existing_mb" && "$existing_mb" -ge "$desired_size_mb" ]]; then
-            return 0   # correct size already active
+        # Bug-2 fix: compare at byte level with a 1 MB tolerance.
+        # fallocate -l 2048M allocates exactly (N*1024*1024 - 4096) bytes because
+        # ext4/xfs reserve one block for the file header.  Integer MB truncation made
+        # 2047.996 MB → 2047, which always triggered recreation.  byte-level compare
+        # with a -1 MB slack (i.e. accept anything >= (desired-1)*1048576) is resilient
+        # to this filesystem overhead without allowing genuinely undersized swap.
+        local _desired_bytes _existing_bytes _threshold_bytes
+        _desired_bytes=$(( desired_size_mb * 1048576 ))
+        _threshold_bytes=$(( (_desired_bytes) - 1048576 ))   # accept down to -1 MB
+        _existing_bytes=$(swapon --show --bytes 2>/dev/null \
+            | awk -v f="${SECURITY_SWAP_FILE}" '$1==f {print $3; exit}')
+        if [[ -n "$_existing_bytes" && "$_existing_bytes" -ge "$_threshold_bytes" ]]; then
+            return 0   # close enough — no recreate needed
         fi
-        log_info "security_ensure_swap: existing swap ${existing_mb}MB < desired ${desired_size_mb}MB — recreating."
+        local _existing_mb=$(( ${_existing_bytes:-0} / 1048576 ))
+        log_info "security_ensure_swap: existing swap ${_existing_mb}MB (${_existing_bytes:-0}B) < desired ${desired_size_mb}MB — recreating."
         swapoff "$SECURITY_SWAP_FILE" 2>/dev/null || true
         rm -f "$SECURITY_SWAP_FILE"
     fi

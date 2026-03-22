@@ -814,6 +814,16 @@ ops_self_update() {
         print_warn "Restart OPS (exit and re-run) to load the new version."
     fi
 
+    # Bug-4 fix: sync OPS_VERSION in ops.conf to match the actual deployed VERSION file.
+    # Self-update replaces bin/modules/VERSION but never updated ops.conf, causing
+    # OPS_VERSION to remain at the install-time value indefinitely after updates.
+    local _new_ver
+    _new_ver=$(cat "${ops_root}/VERSION" 2>/dev/null | tr -d '[:space:]' || true)
+    if [[ -n "$_new_ver" ]]; then
+        ops_conf_set "ops.conf" "OPS_VERSION" "$_new_ver" 2>/dev/null || true
+        log_info "ops_self_update: synced OPS_VERSION=${_new_ver} to ops.conf"
+    fi
+
     log_info "ops_self_update: applied from ${tarball_url} any_fail=${any_fail}"
 }
 
