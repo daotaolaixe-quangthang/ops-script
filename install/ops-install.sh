@@ -525,7 +525,27 @@ install_ops_core() {
 
     # ── Step 6: Cleanup + ownership
     rm -rf "$tmp_dir"
-    chown -R "${ADMIN_USER}:${ADMIN_USER}" "$OPS_INSTALL_DIR"
+
+    # F-05 fix: executable scripts (bin/, modules/, core/, install/) must be
+    # owned root:root so a compromised or malicious ADMIN_USER cannot modify
+    # files that subsequently execute as root (re-install, sudo paths).
+    # Only non-executable content dirs (docs/, agents/) are admin-user writable.
+    # SECURITY-RULES §1: non-root user must not own files that execute as root.
+    chown root:root "$OPS_INSTALL_DIR"
+    chmod 755 "$OPS_INSTALL_DIR"
+
+    for _exec_dir in bin modules core install; do
+        if [[ -d "${OPS_INSTALL_DIR}/${_exec_dir}" ]]; then
+            chown -R root:root "${OPS_INSTALL_DIR}/${_exec_dir}"
+        fi
+    done
+
+    # Non-executable content: admin user may read/write (docs, agents)
+    for _data_dir in docs agents; do
+        if [[ -d "${OPS_INSTALL_DIR}/${_data_dir}" ]]; then
+            chown -R "${ADMIN_USER}:${ADMIN_USER}" "${OPS_INSTALL_DIR}/${_data_dir}"
+        fi
+    done
 
     ok "OPS core installed at ${OPS_INSTALL_DIR} (from tarball — no git required)."
 }
