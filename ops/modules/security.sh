@@ -294,8 +294,15 @@ security_reconcile_sshd_main_config() {
     fi
 
     # Strip conflicting directives from OTHER include files (not our managed file).
+    # Bug-1 fix: skip .bak.* backup files — same guard as security_strip_cloud_init_overrides.
+    # Without this, backup_file() would be called on the backups themselves, creating
+    # ever-growing chains like 99-ops-hardening.conf.bak.TIMESTAMP.bak.TIMESTAMP2 on
+    # every wizard re-run.
     if [[ -d "$SECURITY_SSHD_INCLUDE_DIR" ]]; then
         find "$SECURITY_SSHD_INCLUDE_DIR" -maxdepth 1 -type f ! -name '99-ops-hardening.conf' -print0 2>/dev/null | while IFS= read -r -d '' include_file; do
+            local _bname_r
+            _bname_r="$(basename "$include_file")"
+            [[ "$_bname_r" == *".bak."* ]] && continue
             if grep -Eq '^[[:space:]]*(PasswordAuthentication|PermitRootLogin|Port|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|AllowStreamLocalForwarding|PermitTunnel)[[:space:]]+' "$include_file"; then
                 backup_file "$include_file" > /dev/null 2>&1 || true
                 sed -i -E '/^[[:space:]]*(PasswordAuthentication|PermitRootLogin|Port|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|AllowStreamLocalForwarding|PermitTunnel)[[:space:]]+/d' "$include_file"
