@@ -51,6 +51,8 @@ source "$OPS_ROOT/modules/checks.sh"
 source "$OPS_ROOT/modules/backup.sh"
 # shellcheck source=modules/codex-cli.sh
 source "$OPS_ROOT/modules/codex-cli.sh"
+# shellcheck source=modules/ai-agent.sh
+source "$OPS_ROOT/modules/ai-agent.sh"
 
 # ── Main menu loop ────────────────────────────────────────────
 main_menu() {
@@ -67,7 +69,7 @@ main_menu() {
         echo "  5) 9router Management"
         echo "  6) PHP / PHP-FPM Management"
         echo "  7) Database Management"
-        echo "  8) Codex CLI Integration"
+        echo "  8) AI Agent Integration"
         echo "  9) System & Monitoring"
         echo "  s) Security Management"
         echo "  0) Exit"
@@ -85,7 +87,7 @@ main_menu() {
             5) menu_nine_router    || true ;;
             6) menu_php            || true ;;
             7) menu_database       || true ;;
-            8) menu_codex_cli      || true ;;
+            8) menu_ai_agent       || true ;;
             9) menu_monitoring     || true ;;
             s|S) menu_security     || true ;;
             0) exit 0              ;;

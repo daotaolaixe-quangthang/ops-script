@@ -144,20 +144,63 @@ configure_codex_chatgpt_oauth() {
     _codex_set_state "CODEX_API_KEY_FILE" ""
 }
 
+configure_codex_custom() {
+    print_section "Codex — Custom Endpoint"
+    echo ""
+
+    # Prompt Base URL
+    local base_url
+    read -r -p "  Enter Base URL [https://api.openai.com/v1]: " base_url
+    base_url="${base_url:-https://api.openai.com/v1}"
+
+    # Prompt API Key
+    local api_key
+    read -r -s -p "  Enter API Key: " api_key
+    echo ""
+    if [[ -z "$api_key" ]]; then
+        log_error "API Key cannot be empty"
+        return 1
+    fi
+
+    # Prompt Model
+    local model
+    read -r -p "  Enter Model name [gpt-4o]: " model
+    model="${model:-gpt-4o}"
+
+    _codex_write_api_key_file "$api_key"
+
+    _codex_write_config_toml "[model]
+provider = \"openai\"
+name     = \"${model}\"
+
+[provider.openai]
+base_url = \"${base_url}\"
+api_key  = \"${api_key}\""
+
+    _codex_set_state "CODEX_MODE"         "custom"
+    _codex_set_state "CODEX_ENDPOINT"     "$base_url"
+    _codex_set_state "CODEX_MODEL"        "$model"
+    _codex_set_state "CODEX_API_KEY_FILE" "$CODEX_API_KEY_FILE"
+
+    log_info "Codex CLI configured with custom endpoint (model: ${model}, url: ${base_url})"
+}
+
 configure_codex_cli() {
     while true; do
         print_section "Configure Codex for this server"
         echo "  1) Use 9router endpoint (recommended)"
         echo "  2) Use OpenAI API key"
         echo "  3) ChatGPT OAuth (manual login)"
+        echo "  4) Custom endpoint (enter Base URL / API Key / Model)"
         echo "  0) Back"
         echo ""
         read -r -p "Select: " choice
 
         case "$choice" in
-            1) configure_codex_with_9router; return ;;
+            1) configure_codex_with_9router;    return ;;
             2) configure_codex_with_openai_api; return ;;
-            3) configure_codex_chatgpt_oauth; return ;;
+            3) configure_codex_chatgpt_oauth;   return ;;
+            4) configure_codex_custom;          return ;;
             0) return ;;
             *) print_warn "Invalid option" ;;
         esac
