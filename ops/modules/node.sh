@@ -450,30 +450,54 @@ node_add_app() {
     # Render ecosystem.config.js from template if available
     local tpl="${OPS_ROOT:-/opt/ops}/modules/templates/pm2/ecosystem.config.js.tpl"
     local eco_dest="${app_dir}/ecosystem.config.js"
-    if [[ -f "$tpl" ]]; then
-        local app_path="${app_dir%/}/${app_entry}"
-        render_template "$tpl" \
-            "APP_NAME=${pm2_name}" \
-            "APP_PATH=${app_path}" \
-            "APP_PORT=${app_port}" \
-            "INSTANCES=1" \
-            "EXEC_MODE=fork" \
-            "NODE_ENV=${app_env}" \
-            "MAX_MEMORY_RESTART=${max_mem}" \
-            > "$eco_dest"
-        print_ok "Rendered: $eco_dest"
-    else
-        # Inline fallback ecosystem.config.js
-        # P4-B: kill_timeout 5000 (>=5s per SECURITY-RULES §8), merge_logs,
-        # node_args --max-old-space-size derived from max_memory_restart ceiling.
-        local _max_mem_mb
-        case "${OPS_TIER:-M}" in
-            S) _max_mem_mb=256 ;;
-            M) _max_mem_mb=460 ;;
-            L) _max_mem_mb=740 ;;
-            *) _max_mem_mb=460 ;;
-        esac
-        cat > "$eco_dest" <<EOF
+
+    # P-02: idempotency guard — ecosystem.config.js already exists.
+    # Previously always overwritten silently; now prompt to preserve manual customisations
+    # (cluster mode, cron_restart, custom env vars, etc).
+    local _write_eco=1
+    if [[ -f "$eco_dest" ]]; then
+        if [[ "${FORCE_OVERWRITE:-0}" != "1" ]]; then
+            print_warn "ecosystem.config.js already exists: $eco_dest"
+            print_warn "Overwriting will replace any manual PM2 customisations (cluster mode, env, cron_restart, etc)."
+            local _eco_ow_ans
+            read -r -p "Overwrite existing ecosystem.config.js? [y/N]: " _eco_ow_ans
+            if [[ "${_eco_ow_ans,,}" != "y" ]]; then
+                print_warn "Kept existing ecosystem.config.js — PM2 will use it as-is."
+                log_info "P-02: ecosystem.config.js kept unchanged for app '${app_name}'."
+                _write_eco=0
+            fi
+        fi
+        if [[ "$_write_eco" -eq 1 ]]; then
+            backup_file "$eco_dest" >/dev/null || true
+            log_info "P-02: Overwriting ecosystem.config.js for '${app_name}' (FORCE_OVERWRITE=${FORCE_OVERWRITE:-0})."
+        fi
+    fi
+
+    if [[ "$_write_eco" -eq 1 ]]; then
+        if [[ -f "$tpl" ]]; then
+            local app_path="${app_dir%/}/${app_entry}"
+            render_template "$tpl" \
+                "APP_NAME=${pm2_name}" \
+                "APP_PATH=${app_path}" \
+                "APP_PORT=${app_port}" \
+                "INSTANCES=1" \
+                "EXEC_MODE=fork" \
+                "NODE_ENV=${app_env}" \
+                "MAX_MEMORY_RESTART=${max_mem}" \
+                > "$eco_dest"
+            print_ok "Rendered: $eco_dest"
+        else
+            # Inline fallback ecosystem.config.js
+            # P4-B: kill_timeout 5000 (>=5s per SECURITY-RULES §8), merge_logs,
+            # node_args --max-old-space-size derived from max_memory_restart ceiling.
+            local _max_mem_mb
+            case "${OPS_TIER:-M}" in
+                S) _max_mem_mb=256 ;;
+                M) _max_mem_mb=460 ;;
+                L) _max_mem_mb=740 ;;
+                *) _max_mem_mb=460 ;;
+            esac
+            cat > "$eco_dest" <<EOF
 module.exports = {
   apps: [{
     name:         '${pm2_name}',
@@ -491,8 +515,9 @@ module.exports = {
   }]
 };
 EOF
-        print_ok "Created minimal ecosystem.config.js (template not found)"
-    fi
+            print_ok "Created minimal ecosystem.config.js (template not found)"
+        fi
+    fi # _write_eco
 
     _node_reconcile_app_ownership "$app_dir"
 

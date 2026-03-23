@@ -669,6 +669,67 @@ NGINX_SSL_EOF
     fi
 }
 
+# _load_domain_state <state_file>
+# P-05 fix: replaces unsafe `grep | cut | tr -d '"'` pipeline.
+# Parses only lines matching KEY="safe-value" (no embedded quotes).
+# Outputs shell assignments for the six known domain keys and nothing else.
+# Caller uses: eval "$(_load_domain_state "$file")" in a local scope.
+_load_domain_state() {
+    local state_file="$1"
+    local line key val
+    while IFS= read -r line; do
+        # Accept only: KEY="value" where value contains no double-quotes.
+        # The regex anchors prevent injecting additional shell statements.
+        if [[ "$line" =~ ^(DOMAIN|DOMAIN_BACKEND_TYPE|DOMAIN_BACKEND_TARGET|DOMAIN_PHP_VERSION|DOMAIN_PHP_SOCKET|DOMAIN_WEB_ROOT)=\"([^\"]*)\"$ ]]; then
+            key="${BASH_REMATCH[1]}"
+            val="${BASH_REMATCH[2]}"
+            # printf produces plain KEY=value lines — no shell metacharacters can leak.
+            printf '%s=%s\n' "$key" "$(printf '%q' "$val")"
+        fi
+    done < "$state_file"
+}
+
+# _validate_domain_state <domain> <type> <php_version> <php_socket> <web_root>
+# P-05 fix: rejects values that could corrupt Nginx config or the sed pipeline.
+_validate_domain_state() {
+    local domain="$1" type="$2" php_version="$3" php_socket="$4" web_root="$5"
+
+    # No path traversal or slashes in domain
+    if [[ "$domain" == *'/'* || "$domain" == *'..'* ]] || ! _domain_is_valid "$domain"; then
+        log_error "P-05: corrupted state — invalid domain '${domain}'"
+        return 1
+    fi
+
+    # type must be a known backend
+    case "$type" in
+        node|php|static) ;;
+        *)
+            log_error "P-05: corrupted state — unknown backend type '${type}' for ${domain}"
+            return 1
+            ;;
+    esac
+
+    # PHP-specific fields
+    if [[ "$type" == "php" ]]; then
+        if [[ ! "$php_version" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            log_error "P-05: corrupted state — invalid php_version '${php_version}' for ${domain}"
+            return 1
+        fi
+        if [[ ! "$php_socket" =~ ^/run/php/[a-zA-Z0-9_./-]+\.sock$ ]]; then
+            log_error "P-05: corrupted state — invalid php_socket '${php_socket}' for ${domain}"
+            return 1
+        fi
+    fi
+
+    # web_root must be an absolute path without traversal
+    if [[ -n "$web_root" && ( "$web_root" != /* || "$web_root" == *'..'* ) ]]; then
+        log_error "P-05: corrupted state — invalid web_root '${web_root}' for ${domain}"
+        return 1
+    fi
+
+    return 0
+}
+
 _rebuild_domain_vhost() {
     local domain="$1"
     local state_file="${OPS_DOMAINS_DIR}/${domain}.conf"
@@ -679,11 +740,19 @@ _rebuild_domain_vhost() {
         return 0
     fi
 
-    type=$(grep '^DOMAIN_BACKEND_TYPE=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
-    backend_target=$(grep '^DOMAIN_BACKEND_TARGET=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
-    php_version=$(grep '^DOMAIN_PHP_VERSION=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
-    php_socket=$(grep '^DOMAIN_PHP_SOCKET=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
-    web_root=$(grep '^DOMAIN_WEB_ROOT=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
+    # P-05 fix: parse state file through regex-whitelist; validate before use.
+    local DOMAIN DOMAIN_BACKEND_TYPE DOMAIN_BACKEND_TARGET DOMAIN_PHP_VERSION DOMAIN_PHP_SOCKET DOMAIN_WEB_ROOT
+    eval "$(_load_domain_state "$state_file")"
+    type="${DOMAIN_BACKEND_TYPE:-}"
+    backend_target="${DOMAIN_BACKEND_TARGET:-}"
+    php_version="${DOMAIN_PHP_VERSION:-}"
+    php_socket="${DOMAIN_PHP_SOCKET:-}"
+    web_root="${DOMAIN_WEB_ROOT:-}"
+
+    if ! _validate_domain_state "$domain" "$type" "$php_version" "$php_socket" "$web_root"; then
+        log_error "_rebuild_domain_vhost: aborting rebuild for ${domain} due to invalid state."
+        return 1
+    fi
 
     available="${NGINX_SITES_AVAILABLE}/${domain}"
     enabled="${NGINX_SITES_ENABLED}/${domain}"
@@ -716,9 +785,13 @@ _sync_all_managed_vhosts() {
 
     if ls "${OPS_DOMAINS_DIR}"/*.conf >/dev/null 2>&1; then
         for state_file in "${OPS_DOMAINS_DIR}"/*.conf; do
-            domain=$(grep '^DOMAIN=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
+            # P-05 fix: use regex-whitelist parser and validate domain.
+            local DOMAIN
+            eval "$(_load_domain_state "$state_file")"
+            domain="${DOMAIN:-}"
             [[ -n "$domain" ]] || continue
-            _rebuild_domain_vhost "$domain"
+            # Guard: a corrupt state file must not abort the loop for remaining domains.
+            _rebuild_domain_vhost "$domain" || { log_warn "_sync_all_managed_vhosts: skipped '${domain}' due to rebuild error"; continue; }
         done
     fi
 
@@ -774,6 +847,25 @@ _ensure_certbot() {
     fi
 }
 
+# P-04 fix: reliable certbot account detection via filesystem.
+# 'certbot accounts list' output format changed between versions (ACME v1 → v2,
+# apt → snap), making 'grep -q Account ID:' fragile — a false-negative triggers
+# a duplicate 'certbot register' call which certbot rejects with an error.
+# Strategy: check for regr.json (certbot's ACME registration resource file),
+# which is always written on successful registration regardless of certbot version.
+_certbot_has_account() {
+    local acme_dir
+    for acme_dir in \
+        /etc/letsencrypt/accounts/acme-v02.api.letsencrypt.org/directory \
+        /etc/letsencrypt/accounts/acme-v01.api.letsencrypt.org/directory \
+        /var/lib/letsencrypt/accounts; do
+        if [[ -d "$acme_dir" ]] && compgen -G "${acme_dir}/*/regr.json" > /dev/null 2>&1; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # nginx_apply_security_baseline
 # Public function — applies global security tuning to nginx.conf.
 # Idempotent: safe to run on a live server without disrupting sites.
@@ -792,6 +884,7 @@ nginx_apply_security_baseline() {
     if nginx -t >/dev/null 2>&1; then
         service_reload nginx
         print_ok "Nginx security baseline applied and reloaded."
+        log_info "nginx_apply_security_baseline: applied and nginx reloaded"
     else
         print_error "Nginx config test failed after tuning — check /etc/nginx/nginx.conf"
         return 1
@@ -916,6 +1009,7 @@ install_nginx() {
     service_enable nginx
     service_restart nginx
     print_ok "Nginx installed, tuned, and running."
+    log_info "install_nginx: nginx installed and running"
 }
 
 # create_default_deny: always keep a default deny vhost enabled
@@ -946,9 +1040,12 @@ list_domains() {
 
     local state_file domain type backend
     for state_file in "${OPS_DOMAINS_DIR}"/*.conf; do
-        domain=$(grep '^DOMAIN=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
-        type=$(grep '^DOMAIN_BACKEND_TYPE=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
-        backend=$(grep '^DOMAIN_BACKEND_TARGET=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
+        # P-05 fix: regex-whitelist parser — safe against special characters in state file.
+        local DOMAIN DOMAIN_BACKEND_TYPE DOMAIN_BACKEND_TARGET
+        eval "$(_load_domain_state "$state_file")"
+        domain="${DOMAIN:-}"
+        type="${DOMAIN_BACKEND_TYPE:-}"
+        backend="${DOMAIN_BACKEND_TARGET:-}"
         echo "  - ${domain} (${type}) ${backend:+-> ${backend}}"
     done
 }
@@ -1018,6 +1115,10 @@ add_domain() {
             fi
         fi
         log_info "F-03: Overwriting existing vhost for '${domain}' (FORCE_OVERWRITE=${FORCE_OVERWRITE:-0})."
+        # P-02: backup the live vhost before overwriting so it is recoverable.
+        if [[ -f "$available" ]]; then
+            backup_file "$available" >/dev/null || true
+        fi
     fi
     local web_root="/var/www/${domain}"
     local backend_target=""
@@ -1075,6 +1176,7 @@ add_domain() {
     _nginx_test_and_reload
     print_ok "Domain added: ${domain} (${type})"
     print_warn "SSL not issued here. Use SSL Management to issue certificate."
+    log_info "add_domain: '${domain}' added (type=${type})"
 }
 
 nginx_prompt_edit_domain() {
@@ -1148,6 +1250,7 @@ nginx_edit_domain() {
                 return 1
             fi
             print_ok "Domain ${domain}: port updated ${current_port} → ${new_port}"
+            log_info "nginx_edit_domain: '${domain}' updated (node port ${current_port} → ${new_port})"
             ;;
         php)
             local new_php_version new_php_socket site_slug
@@ -1172,6 +1275,7 @@ nginx_edit_domain() {
             fi
             print_ok "Domain ${domain}: PHP version updated ${php_version} → ${new_php_version}"
             print_warn "Ensure php${new_php_version}-fpm is installed and a pool config exists for ${domain}."
+            log_info "nginx_edit_domain: '${domain}' updated (php ${php_version} → ${new_php_version})"
             ;;
         static)
             print_warn "Static site '${domain}' has no configurable backend parameters."
@@ -1275,6 +1379,7 @@ remove_domain() {
     _nginx_test_and_reload
     print_ok "Domain ${domain} removed."
     echo "  Web root /var/www/${domain} NOT deleted — remove manually if needed."
+    log_info "remove_domain: '${domain}' removed (backend_type=${backend_type:-unknown})"
 }
 
 # _dns_check_before_ssl <domain>
@@ -1409,7 +1514,12 @@ issue_ssl() {
     # Without pre-registration, 'certbot --nginx' blocks waiting for TTY input — the TUI
     # appears to hang with no feedback. We check for an existing account first, and if
     # none exists, prompt the operator for email and register non-interactively.
-    if ! certbot accounts list 2>/dev/null | grep -q 'Account ID:'; then
+    # P-04 fix: use filesystem check instead of parsing CLI output.
+    # 'certbot accounts list | grep Account ID:' is fragile — the output format
+    # changed across versions and a false-negative causes a duplicate-registration
+    # error. _certbot_has_account checks for regr.json, which certbot always writes
+    # on successful registration (ACME protocol requirement, stable across versions).
+    if ! _certbot_has_account; then
         echo ""
         print_warn "No Let's Encrypt account found on this server. Registration required for SSL."
         prompt_input "Email for Let's Encrypt notifications (certificate expiry alerts)"
@@ -1444,9 +1554,17 @@ issue_ssl() {
         link_nine_router_domain "$domain"
     fi
 
-    _nginx_test_and_reload || true
-    curl -I "https://${domain}" || true
-    certbot certificates || true
+    # P-03 fix: _nginx_test_and_reload already prints error and returns 1 on failure;
+    # || true was hiding that. If reload fails after SSL issuance operator must know.
+    if ! _nginx_test_and_reload; then
+        print_error "Nginx reload failed after SSL issuance for ${domain}."
+        print_warn "SSL cert was issued but nginx is not serving it — run 'nginx -t' to diagnose."
+        log_error "issue_ssl: _nginx_test_and_reload failed for ${domain}"
+        return 1
+    fi
+    curl -I "https://${domain}" 2>/dev/null || true   # informational
+    certbot certificates 2>/dev/null || true           # informational
+    log_info "issue_ssl: certificate issued for '${domain}'"
 }
 
 # Backward-compatible wrappers used by current callers.
@@ -1497,9 +1615,16 @@ ssl_renew_all() {
     # 'snap refresh core' on every renewal run (~30 s overhead).
     _ensure_certbot
     certbot renew
-    log_info "Post-renew SSL sync for all managed vhosts"
     _sync_all_managed_vhosts
-    _nginx_test_and_reload || true
+    # P-03 fix: if reload fails after renewal, nginx continues to serve expired/stale
+    # certs — this must surface as an error, not be silently swallowed.
+    if ! _nginx_test_and_reload; then
+        print_error "Nginx reload failed after SSL renewal sync."
+        print_warn "Certs renewed OK but nginx may be serving stale certs — check 'nginx -t'."
+        log_error "ssl_renew_all: _nginx_test_and_reload failed"
+        return 1
+    fi
+    log_info "ssl_renew_all: certbot renew completed; all managed vhosts synced"
 }
 ssl_list_certs() {
     # F-21: same guard — only install if absent.
@@ -1660,8 +1785,12 @@ nginx_refresh_cloudflare_ips() {
     log_info "F-22: nginx_refresh_cloudflare_ips: ranges written at $(date -u '+%Y-%m-%dT%H:%MZ')"
 
     if nginx -t 2>/dev/null; then
-        service_reload nginx || true
-        print_ok "Nginx reloaded with updated Cloudflare IP ranges."
+        # P-03 fix: if service_reload fails, don't print_ok — operator needs to know.
+        if service_reload nginx; then
+            print_ok "Nginx reloaded with updated Cloudflare IP ranges."
+        else
+            print_warn "nginx -t OK but reload returned non-zero — check 'systemctl status nginx'."
+        fi
     else
         print_error "nginx -t failed after refresh — check $restrict_conf manually."
         return 1

@@ -184,6 +184,7 @@ install_php_version() {
     service_start "php${ver}-fpm"
     tune_php "$ver"
     print_ok "Installed PHP ${ver} with common extensions."
+    log_info "install_php_version: PHP ${ver} installed"
 }
 
 # configure_php_pool <site> <ver>
@@ -205,6 +206,24 @@ configure_php_pool() {
 
     socket="$(php_get_socket_path "$site" "$ver")"
     pool_file="$(php_get_pool_file "$site" "$ver")"
+
+    # P-02: idempotency guard — pool file already exists.
+    # configure_php_pool previously overwrote silently; now we prompt, consistent
+    # with add_domain (F-03) and node_add_app.
+    # FORCE_OVERWRITE=1 bypasses the prompt for scripted/unattended callers.
+    if [[ -f "$pool_file" ]]; then
+        if [[ "${FORCE_OVERWRITE:-0}" != "1" ]]; then
+            print_warn "PHP-FPM pool '${site}' (PHP ${ver}) already exists: $pool_file"
+            print_warn "Re-running will overwrite any manual customisations (env vars, memory limits, security settings, etc)."
+            local _pool_ow_ans
+            read -r -p "Overwrite existing pool config for '${site}'? [y/N]: " _pool_ow_ans
+            if [[ "${_pool_ow_ans,,}" != "y" ]]; then
+                print_warn "Aborted. Existing pool config for '${site}' was NOT changed."
+                return 0
+            fi
+        fi
+        log_info "P-02: Overwriting existing PHP-FPM pool for '${site}' (FORCE_OVERWRITE=${FORCE_OVERWRITE:-0})."
+    fi
 
     backup_file "$pool_file" >/dev/null 2>&1 || true
     write_file "$pool_file" <<EOF_POOL
@@ -252,6 +271,7 @@ EOF_SITE
 
     service_restart "php${ver}-fpm"
     print_ok "Configured PHP-FPM pool '${site}' for PHP ${ver}."
+    log_info "configure_php_pool: pool '${site}' configured for PHP ${ver}"
 
     # F-08: Sync domain state file + rebuild Nginx vhost when the PHP version changes.
     # Without this, the Nginx vhost continues pointing to the OLD php socket path
@@ -336,6 +356,7 @@ tune_php() {
     print_ok "Applied PHP tuning for version ${ver} (Tier: ${OPS_TIER:-S})."
     print_warn "SECURITY: allow_url_fopen=Off is now enforced. PHP apps using file_get_contents() for remote URLs must use cURL instead."
     print_warn "SECURITY: disable_functions blocks exec/shell_exec/system. Add php_admin_value overrides per-pool if your app requires them."
+    log_info "tune_php: PHP ${ver} tuned (tier=${OPS_TIER:-S})"
 }
 
 php_verify_version() {
@@ -401,6 +422,7 @@ php_manage_version() {
                 "php${ver}-mbstring" "php${ver}-opcache" "php${ver}-xml" "php${ver}-zip" \
                 "php${ver}-soap" "php${ver}-bcmath" || true
             print_ok "Requested removal for PHP ${ver} packages."
+            log_info "php_manage_version: PHP ${ver} removed"
             ;;
         *)
             print_error "Invalid action: ${action}. Use install or remove."

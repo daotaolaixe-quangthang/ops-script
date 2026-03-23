@@ -496,6 +496,7 @@ DB_PASSWORD=\"${db_password}\""
 
     print_ok "Database '${db_name}' and user '${db_user}' created."
     print_ok "Credentials saved to ${credentials_file} (0600)."
+    log_info "create_db_user: user '${db_user}'@localhost created on db '${db_name}'; creds=${credentials_file}"
 }
 
 # ── Public menu entry ─────────────────────────────────────────
@@ -532,6 +533,7 @@ menu_database() {
 
 db_install() {
     install_mariadb
+    log_info "db_install: MariaDB installed"
 }
 
 db_secure() {
@@ -557,8 +559,10 @@ db_secure() {
     if prompt_confirm "Restart MariaDB now?"; then
         service_restart mariadb
         print_ok "MariaDB restarted with hardened configuration."
+        log_info "db_secure: hardening applied; MariaDB restarted"
     else
         print_warn "Restart skipped. Settings will take effect on next MariaDB restart."
+        log_info "db_secure: hardening applied; restart skipped (operator choice)"
     fi
 }
 
@@ -584,6 +588,7 @@ db_apply_tuning() {
 
     service_restart mariadb
     print_ok "MariaDB fully re-hardened and restarted."
+    log_info "db_apply_tuning: tuning applied and MariaDB restarted (tier=${OPS_TIER:-M})"
 }
 
 # db_audit — show current compliance status for all OPS-managed settings.
@@ -660,6 +665,7 @@ db_create() {
 
     _db_mysql_root_exec "CREATE DATABASE IF NOT EXISTS \`${db_name}\`;"
     print_ok "Database created: ${db_name}"
+    log_info "db_create: created database '${db_name}'"
 }
 
 db_create_user() {
@@ -718,6 +724,7 @@ db_drop() {
 
     _db_mysql_root_exec "DROP DATABASE IF EXISTS \`${db_name}\`;"
     print_ok "Database dropped: ${db_name}"
+    log_info "db_drop: dropped database '${db_name}'"
 }
 
 db_list() {

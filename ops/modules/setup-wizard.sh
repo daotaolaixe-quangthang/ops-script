@@ -216,8 +216,21 @@ wizard_step_nginx() {
         if declare -f _nginx_apply_global_tuning >/dev/null 2>&1; then
             log_info "Wizard: applying nginx security tuning baseline..."
             _nginx_apply_global_tuning
-            nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
-            print_ok "Nginx security baseline applied (server_tokens off, TLSv1.2+, security headers)."
+            # P-03 fix: explicit guard — if nginx -t fails after tuning, abort step
+            # so WIZARD_DONE_NGINX is NOT written and operator sees the real error.
+            if nginx -t >/dev/null 2>&1; then
+                if systemctl reload nginx >/dev/null 2>&1; then
+                    log_info "Nginx reloaded after global tuning."
+                else
+                    print_warn "Nginx reload returned non-zero after tuning — check 'systemctl status nginx'."
+                fi
+                print_ok "Nginx security baseline applied (server_tokens off, TLSv1.2+, security headers)."
+            else
+                print_error "Nginx config test failed after global tuning — NOT reloading."
+                print_warn "Check /etc/nginx/nginx.conf before re-running this step."
+                log_error "wizard_step_nginx: nginx -t failed after _nginx_apply_global_tuning"
+                return 1
+            fi
         fi
     fi
 
