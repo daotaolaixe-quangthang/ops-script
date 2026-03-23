@@ -571,6 +571,36 @@ node_remove_app() {
         fi
     fi
 
+    # F-10 fix: remove OPS-generated ecosystem.config.js from the app directory.
+    # The file is OPS-managed (written by node_add_app) and must be OPS-removed.
+    # Default: prompt + backup to avoid breaking CI/CD pipelines that own the dir.
+    local eco_file="${APP_DIR}/ecosystem.config.js"
+    if [[ -f "$eco_file" ]]; then
+        echo ""
+        print_warn "Found OPS-generated ecosystem.config.js: $eco_file"
+        if prompt_confirm "Remove ecosystem.config.js? (a timestamped backup will be kept)"; then
+            local eco_bak="${eco_file}.bak.$(date +%Y%m%d%H%M%S)"
+            # File is owned by runtime user — prefer removing as that user.
+            if _node_run_as_runtime_user cp "$eco_file" "$eco_bak" 2>/dev/null && \
+               _node_run_as_runtime_user rm -f "$eco_file" 2>/dev/null; then
+                print_ok "ecosystem.config.js removed (backup: $eco_bak)"
+                log_info "node_remove_app: ecosystem.config.js removed backup=$eco_bak"
+            else
+                # Fallback: root may own the parent dir in some deployment setups.
+                if cp "$eco_file" "$eco_bak" 2>/dev/null && rm -f "$eco_file" 2>/dev/null; then
+                    print_ok "ecosystem.config.js removed via root (backup: $eco_bak)"
+                    log_info "node_remove_app: ecosystem.config.js removed (root fallback) backup=$eco_bak"
+                else
+                    print_warn "Could not remove $eco_file — please remove manually."
+                    log_warn "node_remove_app: failed to remove ecosystem.config.js at $eco_file"
+                fi
+            fi
+        else
+            print_warn "ecosystem.config.js kept at: $eco_file"
+            print_warn "Re-registering to the same path will overwrite it via node_add_app."
+        fi
+    fi
+
     backup_file "$conf_path"
     rm -f "$conf_path"
     print_ok "App '${app_name}' removed from registry."
