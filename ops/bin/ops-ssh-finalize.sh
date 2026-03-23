@@ -181,8 +181,21 @@ EOF
         # Continue to clear ops.conf so the login hook does not loop on future sessions.
     fi
 
-    # ── 5. Update UFW: remove transition port rule ─────────────
+    # ── 5. Update UFW: ensure locked port is allowed and UFW is enabled ──
+    # Bug fix (S0-2): previously only removed the transition port rule without
+    # enabling UFW or adding the locked port rule. This created a security window
+    # where the server had zero firewall enforcement between ops-ssh-finalize
+    # running and the wizard security step completing.
     if command -v ufw > /dev/null 2>&1; then
+        # Always apply baseline rules before enabling — safe even if already enabled
+        ufw default deny incoming  > /dev/null 2>&1 || true
+        ufw default allow outgoing > /dev/null 2>&1 || true
+        ufw allow "${locked_port}/tcp" comment "ops: SSH managed" > /dev/null 2>&1 || true
+        ufw allow 80/tcp            comment "ops: HTTP"           > /dev/null 2>&1 || true
+        ufw allow 443/tcp           comment "ops: HTTPS"          > /dev/null 2>&1 || true
+        ufw --force enable          > /dev/null 2>&1 || true
+        _log "UFW: enabled with locked port ${locked_port}/tcp, HTTP 80, HTTPS 443."
+        # Now safe to remove the transition port rule
         if ufw status 2>/dev/null | grep -qE "^${transition_port}/tcp"; then
             ufw delete allow "${transition_port}/tcp" > /dev/null 2>&1 || true
             ufw reload > /dev/null 2>&1 || true
