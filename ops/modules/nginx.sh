@@ -871,6 +871,11 @@ _install_certbot_snap() {
         log_warn "S1-2: systemctl enable --now snap.certbot.renew.timer failed — relying on cron fallback."
     fi
     _install_certbot_cron_fallback
+    # S3-3 fix: limit snap to 2 retained revisions and immediately purge any stale ones.
+    # Default is 3 revisions; on a VPS with certbot+snapd+core chain each refresh cycle
+    # accumulates loop devices. retain=2 caps the per-snap overhead at install time.
+    snap set system refresh.retain=2 2>/dev/null || true
+    _snap_cleanup_stale_revisions
 }
 
 # F-21 fix: guard wrapper — only call _install_certbot_snap when certbot is absent.
@@ -882,6 +887,47 @@ _ensure_certbot() {
     if ! command -v certbot >/dev/null 2>&1; then
         _install_certbot_snap
     fi
+}
+
+# S3-3 fix: remove disabled (stale) snap revisions to reclaim loop devices.
+# snapd keeps old revisions for rollback but does not promptly auto-purge them.
+# Each stale revision holds a loop device + mount entry, adding /dev/loopN clutter.
+# Safe to call at any time: only targets revisions snapd has already marked 'disabled'.
+_snap_cleanup_stale_revisions() {
+    if ! command -v snap >/dev/null 2>&1; then
+        return 0
+    fi
+    local pkg rev removed=0
+    while read -r pkg rev; do
+        if snap remove "$pkg" "--revision=${rev}" 2>/dev/null; then
+            log_info "S3-3: removed stale snap revision ${pkg}@${rev}"
+            removed=$(( removed + 1 ))
+        fi
+    done < <(snap list --all 2>/dev/null | awk '/disabled/{print $1, $3}')
+    if (( removed == 0 )); then
+        log_info "S3-3: no stale snap revisions found."
+    else
+        log_info "S3-3: removed ${removed} stale snap revision(s)."
+    fi
+}
+
+# snap_housekeeping: public operator command — set retain=2 + purge stale revisions.
+# Idempotent: safe to run repeatedly. Exposes _snap_cleanup_stale_revisions via menu.
+snap_housekeeping() {
+    print_section "Snap Housekeeping"
+    require_root || return 1
+    if ! command -v snap >/dev/null 2>&1; then
+        print_warn "snapd is not installed — nothing to do."
+        return 0
+    fi
+    print_warn "Setting snap refresh.retain=2 (keep max 2 revisions per snap)..."
+    snap set system refresh.retain=2
+    print_warn "Removing stale (disabled) snap revisions to reclaim loop devices..."
+    _snap_cleanup_stale_revisions
+    local loop_count
+    loop_count=$(losetup -l 2>/dev/null | grep -c snap || true)
+    print_ok "Snap housekeeping complete. Active snap loop devices: ${loop_count}"
+    log_info "snap_housekeeping: refresh.retain=2 set, stale revisions purged, loop_count=${loop_count}"
 }
 
 # P-04 fix: reliable certbot account detection via filesystem.
@@ -966,6 +1012,7 @@ menu_ssl() {
         echo "  2) Renew all certificates"
         echo "  3) Show certificate status"
         echo "  4) Install / repair Certbot (snap)"
+        echo "  5) Snap housekeeping (clean stale revisions, set retain=2)"
         echo "  0) Back"
         echo ""
         read -r -p "Select: " choice
@@ -974,6 +1021,7 @@ menu_ssl() {
             2) ssl_renew_all ;;
             3) ssl_list_certs ;;
             4) ssl_install_certbot ;;
+            5) snap_housekeeping ;;
             0) return ;;
             *) print_warn "Invalid option" ;;
         esac

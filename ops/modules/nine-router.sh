@@ -39,7 +39,18 @@ _nine_router_run_as_runtime_user() {
     local runtime_user home_dir
     runtime_user="$(_nine_router_runtime_user)"
     home_dir="$(_nine_router_runtime_home)"
-    runuser -u "$runtime_user" -- env HOME="$home_dir" PM2_HOME="$home_dir/.pm2" PATH="$PATH" "$@"
+    # S3-4 fix: use `env -i` (clean environment) so PM2 and its managed processes
+    # do NOT inherit shell variables from the invoking SSH session (SSH_CONNECTION,
+    # ADMIN_USER, etc.). Only whitelisted variables are passed through.
+    runuser -u "$runtime_user" -- env -i \
+        HOME="$home_dir" \
+        PM2_HOME="$home_dir/.pm2" \
+        PATH="$PATH" \
+        USER="$runtime_user" \
+        LOGNAME="$runtime_user" \
+        LANG="${LANG:-C.UTF-8}" \
+        LC_ALL="${LC_ALL:-C.UTF-8}" \
+        "$@"
 }
 
 _nine_router_set_state() {

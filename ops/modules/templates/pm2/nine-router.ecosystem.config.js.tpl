@@ -11,6 +11,11 @@ module.exports = {
     // Cap V8 heap at ~90% of max_memory_restart (512M) so GC runs aggressively
     // before PM2's RSS limit triggers a hard restart. Prevents 93%+ heap usage.
     node_args:  '--max-old-space-size=460',
+    // S3-4: filter_env [] means PM2 will NOT copy shell-inherited env vars
+    // into this process beyond what the `env` block and `env_file` declare.
+    // Combined with `env -i` in the shell launcher, SSH_CONNECTION / ADMIN_USER
+    // and other SSH session variables are fully excluded.
+    filter_env: [],
     env: {
       PORT:     '{{NINE_ROUTER_PORT}}',
       HOSTNAME: '127.0.0.1',
