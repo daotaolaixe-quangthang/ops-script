@@ -68,10 +68,12 @@ php_pool_tuning_for_tier() {
             ;;
         *)
             echo "pm=dynamic"
-            echo "pm.max_children=50"
-            echo "pm.start_servers=10"
-            echo "pm.min_spare_servers=5"
-            echo "pm.max_spare_servers=20"
+            # S2-4: Tier L — conservative 30 workers (7.8 GB VPS, ~40MB/worker).
+            # Leaves headroom for MariaDB + Nginx; prevents OOM under burst.
+            echo "pm.max_children=30"
+            echo "pm.start_servers=5"
+            echo "pm.min_spare_servers=3"
+            echo "pm.max_spare_servers=10"
             echo "pm.max_requests=2000"
             ;;
     esac
@@ -161,6 +163,24 @@ php_ensure_ondrej_ppa() {
     apt_update
 }
 
+# php_disable_default_www_pool <ver>
+#
+# S2-4: The distro ships /etc/php/{ver}/fpm/pool.d/www.conf with pm.max_children=5
+# (a hard-coded default that ignores server tier/RAM completely).  OPS manages all
+# pools via named site pools; the www pool is redundant and wastes worker slots
+# under concurrent load, causing 502s on servers with enough RAM.
+# Disable it by renaming to .disabled so php-fpm ignores it, but it can be
+# manually re-enabled if needed.
+php_disable_default_www_pool() {
+    local ver="$1"
+    local www_pool="/etc/php/${ver}/fpm/pool.d/www.conf"
+    if [[ -f "$www_pool" ]]; then
+        mv "$www_pool" "${www_pool}.disabled"
+        log_info "php_disable_default_www_pool: disabled ${www_pool} (S2-4: prevents 5-worker bottleneck)"
+        print_ok "Disabled default www pool for PHP ${ver} (prevents pm.max_children=5 bottleneck)."
+    fi
+}
+
 # install_php_version <ver>
 install_php_version() {
     local ver="$1"
@@ -182,6 +202,9 @@ install_php_version() {
     apt_install "${packages[@]}"
     service_enable "php${ver}-fpm"
     service_start "php${ver}-fpm"
+    # S2-4: Disable the distro default www pool before tuning so it never
+    # competes with OPS-managed site pools at pm.max_children=5.
+    php_disable_default_www_pool "$ver"
     tune_php "$ver"
     print_ok "Installed PHP ${ver} with common extensions."
     log_info "install_php_version: PHP ${ver} installed"
