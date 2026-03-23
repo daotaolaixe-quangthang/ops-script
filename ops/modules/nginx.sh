@@ -763,6 +763,17 @@ _install_certbot_snap() {
     _install_certbot_cron_fallback
 }
 
+# F-21 fix: guard wrapper — only call _install_certbot_snap when certbot is absent.
+# ssl_renew_all and ssl_list_certs previously called _install_certbot_snap
+# unconditionally, triggering 'snap refresh core' on every run (~30 s each).
+# This wrapper makes the install path a true fast-path no-op on systems where
+# certbot is already in PATH (the vast majority of renewal / list invocations).
+_ensure_certbot() {
+    if ! command -v certbot >/dev/null 2>&1; then
+        _install_certbot_snap
+    fi
+}
+
 # nginx_apply_security_baseline
 # Public function — applies global security tuning to nginx.conf.
 # Idempotent: safe to run on a live server without disrupting sites.
@@ -1273,7 +1284,8 @@ issue_ssl() {
     fi
 
     create_default_deny
-    _install_certbot_snap
+    # F-21: only install certbot if not already present (avoids snap refresh on every issue).
+    _ensure_certbot
 
     # F-16: certbot prompts for email + ToS acceptance on first ever use on this server.
     # Without pre-registration, 'certbot --nginx' blocks waiting for TTY input — the TUI
@@ -1362,14 +1374,18 @@ ssl_issue_cert() {
 }
 ssl_renew_all() {
     require_root || return 1
-    _install_certbot_snap
+    # F-21: guard — only install certbot if not already present.
+    # Previously called _install_certbot_snap unconditionally, running
+    # 'snap refresh core' on every renewal run (~30 s overhead).
+    _ensure_certbot
     certbot renew
     log_info "Post-renew SSL sync for all managed vhosts"
     _sync_all_managed_vhosts
     _nginx_test_and_reload || true
 }
 ssl_list_certs() {
-    _install_certbot_snap
+    # F-21: same guard — only install if absent.
+    _ensure_certbot
     certbot certificates
 }
 
