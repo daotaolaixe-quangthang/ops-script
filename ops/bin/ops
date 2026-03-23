@@ -96,27 +96,39 @@ main_menu() {
     done
 }
 
-# ── P4-D: Session lock ───────────────────────────────────────
+# ── F-13: Session lock ───────────────────────────────────────
 # Prevents two concurrent 'ops' sessions from corrupting shared state
 # (config files, service restarts, PM2 saves, UFW rules, etc.).
-# The lock is released automatically when the process exits (trap).
 #
-# Uses a PID-file instead of exec-fd/flock so that both 'ops'
-# (opsuser) and 'sudo ops' (root) always create a fresh file as
-# themselves — eliminating any ownership / AppArmor fd-redirect
-# permission conflict between the two users.
-OPS_LOCK_FILE="/tmp/ops.lock"
-if [[ -f "$OPS_LOCK_FILE" ]]; then
+# Uses flock(1) on a file descriptor opened against /run/lock/ops-menu.lock:
+#   • /run/lock has sticky-bit (1777) — world-writable but each user can
+#     only delete their own files, so no unprivileged tampering.
+#   • flock is atomic — no TOCTOU window between check and acquire.
+#   • Works for both 'ops' (opsuser) and 'sudo ops' (root): flock operates
+#     on the fd, not the file owner, so no AppArmor/ownership conflict.
+OPS_LOCK_FILE="/run/lock/ops-menu.lock"
+OPS_LOCK_FD=9
+
+# Open/create the lock file on fd 9.
+exec 9>"$OPS_LOCK_FILE" 2>/dev/null || {
+    echo "[ERROR] Cannot open lock file $OPS_LOCK_FILE" >&2
+    exit 1
+}
+
+# Attempt a non-blocking exclusive lock.
+if ! flock -n 9 2>/dev/null; then
     _ops_old_pid=$(cat "$OPS_LOCK_FILE" 2>/dev/null || true)
-    if [[ "$_ops_old_pid" =~ ^[0-9]+$ ]] && kill -0 "$_ops_old_pid" 2>/dev/null; then
-        echo "[ERROR] Another ops session is already running (PID $_ops_old_pid)." >&2
-        echo "        Exit that session first, then run 'ops' again." >&2
-        exit 1
-    fi
-    # Stale lock — previous session ended without cleanup; remove it.
-    rm -f "$OPS_LOCK_FILE" 2>/dev/null || true
+    echo "[ERROR] Another ops session is already running${_ops_old_pid:+ (PID $_ops_old_pid)}." >&2
+    echo "        Exit that session first, then run 'ops' again." >&2
+    exec 9>&-
+    exit 1
 fi
-echo "$$" > "$OPS_LOCK_FILE"
-trap 'rm -f "$OPS_LOCK_FILE" 2>/dev/null || true' EXIT INT TERM HUP
+
+# Write our PID into the locked file (informational — shown on conflict above).
+echo "$$" >&9
+
+# Lock is released automatically when fd 9 is closed (process exits).
+# The trap also removes the file to keep /run/lock tidy.
+trap 'flock -u 9; exec 9>&-; rm -f "$OPS_LOCK_FILE" 2>/dev/null || true' EXIT INT TERM HUP
 
 main_menu
