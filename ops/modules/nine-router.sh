@@ -7,7 +7,8 @@
 # Called by bin/ops via menu dispatch.
 # Do NOT add set -euo pipefail here - inherited from bin/ops.
 
-NINE_ROUTER_REPO_URL="https://github.com/daotaolaixe-quangthang/9routervps.git"
+NINE_ROUTER_REPO_URL="https://github.com/daotaolaixe-quangthang/9routervps/archive/refs/heads/vpswork.tar.gz"
+NINE_ROUTER_RAW_PKG_URL="https://raw.githubusercontent.com/daotaolaixe-quangthang/9routervps/vpswork/package.json"
 NINE_ROUTER_DIR="/opt/9router"
 NINE_ROUTER_DATA_DIR="/var/lib/9router"
 NINE_ROUTER_PM2_NAME="nine-router"
@@ -19,6 +20,25 @@ NINE_ROUTER_PM2_CONFIG="${NINE_ROUTER_DIR}/nine-router.ecosystem.config.js"
 
 _nine_router_tpl_dir() {
     echo "${OPS_ROOT}/modules/templates"
+}
+
+# Return the version string from the locally installed package.json, or empty.
+_nine_router_local_version() {
+    local pkg="${NINE_ROUTER_DIR}/package.json"
+    if [[ ! -f "$pkg" ]]; then
+        echo ""
+        return
+    fi
+    grep -m1 '"version"' "$pkg" | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
+}
+
+# Fetch the version string from the remote package.json (branch vpswork).
+# Returns empty string on network failure (non-blocking).
+_nine_router_remote_version() {
+    curl -fsSL --max-time 8 "$NINE_ROUTER_RAW_PKG_URL" 2>/dev/null \
+        | grep -m1 '"version"' \
+        | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' \
+        || echo ""
 }
 
 _nine_router_runtime_user() {
@@ -265,10 +285,10 @@ install_nine_router() {
     ensure_dir "$OPS_CONFIG_DIR"
 
     if [[ -e "$NINE_ROUTER_DIR" ]]; then
-        if [[ -d "${NINE_ROUTER_DIR}/.git" ]]; then
+        if [[ -d "$NINE_ROUTER_DIR" ]]; then
             print_warn "9router is already installed at ${NINE_ROUTER_DIR}."
         else
-            print_warn "${NINE_ROUTER_DIR} exists but is not a git repository."
+            print_warn "${NINE_ROUTER_DIR} exists but is not a directory."
         fi
         if ! prompt_confirm "Xóa và cài lại từ đầu?"; then
             print_warn "Installation cancelled."
@@ -282,11 +302,18 @@ install_nine_router() {
         log_info "Removed ${NINE_ROUTER_DIR}"
     fi
 
-    # Ensure git trusts the target directory (fixes "dubious ownership" error
-    # when root clones into a dir previously owned by another user).
-    git config --global --add safe.directory "$NINE_ROUTER_DIR" 2>/dev/null || true
+    # Download source archive from branch vpswork, extract, then remove archive.
+    local _archive
+    _archive="$(mktemp /tmp/nine-router-XXXXXX.tar.gz)"
+    log_info "Downloading 9router archive from branch vpswork..."
+    curl -fsSL "$NINE_ROUTER_REPO_URL" -o "$_archive"
 
-    git clone "$NINE_ROUTER_REPO_URL" "$NINE_ROUTER_DIR"
+    log_info "Extracting archive to ${NINE_ROUTER_DIR}..."
+    mkdir -p "$NINE_ROUTER_DIR"
+    tar -xzf "$_archive" --strip-components=1 -C "$NINE_ROUTER_DIR"
+
+    rm -f "$_archive"
+    log_info "Archive removed"
 
     cd "$NINE_ROUTER_DIR"
     npm install
@@ -461,21 +488,54 @@ update_nine_router() {
     print_section "Update 9router"
     require_root || return 1
 
-    if [[ ! -d "${NINE_ROUTER_DIR}/.git" ]]; then
+    if [[ ! -d "$NINE_ROUTER_DIR" ]]; then
         log_error "9router is not installed in ${NINE_ROUTER_DIR}"
         return 1
     fi
 
-    cd "$NINE_ROUTER_DIR"
+    # ── Version check ─────────────────────────────────────────────
+    local local_ver remote_ver
+    local_ver="$(_nine_router_local_version)"
+    log_info "Checking remote version (branch vpswork)..."
+    remote_ver="$(_nine_router_remote_version)"
+
+    if [[ -n "$local_ver" && -n "$remote_ver" ]]; then
+        echo -e "  Installed : ${BLD}${local_ver}${RST}"
+        echo -e "  Available : ${BLD}${remote_ver}${RST}"
+        if [[ "$local_ver" == "$remote_ver" ]]; then
+            print_ok "9router is already up to date (${local_ver})"
+            if ! prompt_confirm "Update anyway?"; then
+                return 0
+            fi
+        else
+            print_warn "New version available: ${local_ver} → ${remote_ver}"
+        fi
+    else
+        log_warn "Could not compare versions (offline or package.json missing); proceeding with update"
+    fi
+
     _nine_router_run_as_runtime_user pm2 stop "$NINE_ROUTER_PM2_NAME" || true
-    git pull origin main
+
+    # Preserve .env and data; re-download source archive from branch vpswork.
+    local _archive
+    _archive="$(mktemp /tmp/nine-router-XXXXXX.tar.gz)"
+    log_info "Downloading 9router archive from branch vpswork..."
+    curl -fsSL "$NINE_ROUTER_REPO_URL" -o "$_archive"
+
+    log_info "Extracting update to ${NINE_ROUTER_DIR}..."
+    tar -xzf "$_archive" --strip-components=1 -C "$NINE_ROUTER_DIR"
+
+    rm -f "$_archive"
+    log_info "Archive removed"
+
+    cd "$NINE_ROUTER_DIR"
     npm install
     npm run build
     _nine_router_run_as_runtime_user pm2 start "$NINE_ROUTER_PM2_NAME"
     _nine_router_run_as_runtime_user pm2 save
 
     _nine_router_assert_ufw_closed
-    print_ok "9router updated"
+    print_ok "9router updated to ${remote_ver:-unknown}"
 }
 
 # Backward-compatible wrappers for old menu/action names.
@@ -518,10 +578,13 @@ _nine_router_show_status() {
     local installed_label domain pm2_status restarts api_key log_lines
     local runtime_user pm2_json pm2_entry
 
-    # ── Installation ─────────────────────────────────────────────
-    if [[ -d "${NINE_ROUTER_DIR}/.git" ]]; then
-        installed_label="${GRN}✓ Installed${RST}  (${NINE_ROUTER_DIR})"
+    # ── Installation & version ────────────────────────────────────
+    local local_ver_status
+    if [[ -d "$NINE_ROUTER_DIR" ]] && [[ -f "${NINE_ROUTER_DIR}/package.json" ]]; then
+        local_ver_status="$(_nine_router_local_version)"
+        installed_label="${GRN}✓ Installed${RST}  (${NINE_ROUTER_DIR})  v${local_ver_status:-?}"
     else
+        local_ver_status=""
         installed_label="${RED}✗ Not installed${RST}"
     fi
 
