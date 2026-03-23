@@ -74,7 +74,7 @@ main_menu() {
         echo "  s) Security Management"
         echo "  0) Exit"
         echo ""
-        read -r -p "Select: " choice
+        read -r -p "Select: " choice < /dev/tty
         case "$choice" in
             # F-02: Each arm guarded with || true so that any non-zero return from a
             # sub-function (e.g. stopped service, pm2 not found, sshd -T on container)
@@ -110,7 +110,7 @@ OPS_LOCK_FILE="/run/lock/ops-menu.lock"
 OPS_LOCK_FD=9
 
 # Open/create the lock file on fd 9.
-exec 9>"$OPS_LOCK_FILE" 2>/dev/null || {
+exec 9>"$OPS_LOCK_FILE" || {
     echo "[ERROR] Cannot open lock file $OPS_LOCK_FILE" >&2
     exit 1
 }

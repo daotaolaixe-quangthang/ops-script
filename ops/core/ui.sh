@@ -91,5 +91,5 @@ show_menu() {
     done
     echo -e "  ${BLD}0)${RST} Back / Exit"
     echo ""
-    read -r -p "Select option: " MENU_CHOICE
+    read -r -p "Select option: " MENU_CHOICE < /dev/tty
 }
