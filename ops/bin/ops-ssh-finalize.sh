@@ -30,7 +30,9 @@ conf_clear() {
     local key="$1"
     local tmp
     tmp=$(mktemp)
-    sed "s|^${key}=.*|${key}=\"\"|" "$OPS_CONF" > "$tmp"
+    # Use awk to avoid sed delimiter conflicts: safe regardless of key/value content.
+    awk -v k="$key" 'BEGIN{pat="^"k"="} $0 ~ pat {print k"=\"\""; next} {print}' \
+        "$OPS_CONF" > "$tmp"
     mv "$tmp" "$OPS_CONF"
 }
 
