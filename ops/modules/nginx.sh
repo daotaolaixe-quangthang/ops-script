@@ -1090,6 +1090,8 @@ menu_ssl() {
             4) ssl_install_certbot ;;
             5) snap_housekeeping ;;
             6) ssl_set_cf_token ; press_enter ;;
+            7) ssl_prompt_cf_origin_cert ; press_enter ;;
+            8) ssl_show_cf_origin_certs ; press_enter ;;
             0) return ;;
             *) print_warn "Invalid option" ;;
         esac
