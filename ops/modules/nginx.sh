@@ -1257,13 +1257,18 @@ remove_domain() {
             ;;
     esac
 
-    # Step 3: Remove Nginx config files.
+    # Step 3: P-01 fix — commit OPS state file FIRST, BEFORE removing nginx files.
+    # Rationale: state file is the OPS source of truth. If we crash after this rm
+    # but before the nginx rm below, list_domains will correctly show the domain as
+    # removed (state gone) while nginx retains its old config until the next reload.
+    # The inverse (state file survives but nginx files gone) leaves a "zombie" entry
+    # in list_domains pointing to non-existent nginx config — harder to diagnose.
+    rm -f "$state_file"
+
+    # Step 4: Remove Nginx config files.
     # Remove symlink first so nginx -t at step 5 won't reference the available file.
     rm -f "${NGINX_SITES_ENABLED}/${domain}"
     rm -f "${NGINX_SITES_AVAILABLE}/${domain}"
-
-    # Step 4: Commit — remove OPS state file only after backend and Nginx files are gone.
-    rm -f "$state_file"
 
     # Step 5: Ensure default-deny vhost and reload Nginx.
     create_default_deny

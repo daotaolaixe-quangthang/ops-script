@@ -563,10 +563,25 @@ db_secure() {
 }
 
 db_apply_tuning() {
-    tune_mariadb
+    # P-01 fix: DB_TUNING_NO_RESTART=1 prevents tune_mariadb from restarting
+    # MariaDB internally — avoids a double restart when db_apply_tuning also
+    # restarts at the end after all blocks are written.
+    DB_TUNING_NO_RESTART=1 tune_mariadb
     _db_apply_security_hardening
     _db_setup_ssl
     _db_setup_logging
+
+    # P-01 fix: validate the assembled config BEFORE restarting MariaDB.
+    # Catching a malformed config here prevents a failed restart from taking
+    # MariaDB offline. mysqld --verbose --help parses the config and exits.
+    if ! mysqld --defaults-extra-file="$MARIADB_TUNING_CNF" \
+            --verbose --help > /dev/null 2>&1; then
+        print_error "P-01: MariaDB config validation failed — NOT restarting."
+        print_error "      Check ${MARIADB_TUNING_CNF} and run 'db_apply_tuning' again."
+        log_error "db_apply_tuning: mysqld config validation failed — restart skipped"
+        return 1
+    fi
+
     service_restart mariadb
     print_ok "MariaDB fully re-hardened and restarted."
 }
