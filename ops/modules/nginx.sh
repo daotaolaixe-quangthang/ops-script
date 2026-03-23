@@ -833,6 +833,16 @@ _install_certbot_snap() {
         return 0
     fi
     ln -sf /snap/bin/certbot /usr/bin/certbot
+    # S1-2 fix: explicitly enable the snap certbot renewal timer.
+    # snapd creates snap.certbot.renew.timer on install but does NOT guarantee
+    # it is enabled/active — it may remain inactive on some hosts (Ubuntu 22+, cloud images).
+    # systemctl enable --now is idempotent: safe to call on re-install or upgrade.
+    if systemctl enable --now snap.certbot.renew.timer 2>/dev/null; then
+        log_info "S1-2: snap.certbot.renew.timer enabled and started."
+    else
+        print_warn "snap.certbot.renew.timer could not be enabled (LXC/OpenVZ/no-systemd?). Cron fallback is active."
+        log_warn "S1-2: systemctl enable --now snap.certbot.renew.timer failed — relying on cron fallback."
+    fi
     _install_certbot_cron_fallback
 }
 
