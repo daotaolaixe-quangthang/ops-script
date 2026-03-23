@@ -171,8 +171,11 @@ _db_apply_security_hardening() {
 # Disable LOAD DATA LOCAL INFILE (file exfiltration vector)
 local_infile            = OFF
 
-# Restrict file import/export to NULL (disables SELECT INTO OUTFILE)
-secure_file_priv        = NULL
+# Restrict file import/export — empty string disables SELECT INTO OUTFILE/INFILE.
+# NOTE: MariaDB 10.6 on Ubuntu 22.04 does NOT accept the literal word NULL here;
+#       it tries to stat it as a directory path and crashes with "Failed to normalize".
+#       Empty string ("") is the correct syntax for disabling secure_file_priv.
+secure_file_priv        = ""
 
 # Skip reverse DNS on connections (prevents latency + DNS rebinding)
 skip_name_resolve       = ON
@@ -293,6 +296,50 @@ EOF_LOG
     print_ok "MariaDB logging configured (error log + slow query log)."
 }
 
+# _db_innodb_log_resize_if_needed
+# MariaDB 10.x refuses to start if innodb_log_file_size in the config differs
+# from the actual size of /var/lib/mysql/ib_logfile0 on disk.
+# This function reads the target size from MARIADB_TUNING_CNF, compares it
+# with ib_logfile0, and if they differ:
+#   1. Stops MariaDB cleanly so InnoDB writes a full checkpoint.
+#   2. Removes the old ib_logfile0 / ib_logfile1.
+# MariaDB will then create fresh log files at the correct size on next start.
+# Safe to call even when MariaDB is already stopped.
+_db_innodb_log_resize_if_needed() {
+    local logfile="/var/lib/mysql/ib_logfile0"
+    [[ -f "$logfile" ]] || return 0   # fresh install — nothing to resize
+
+    local target_str current_bytes target_bytes num
+    target_str=$(grep -E '^[[:space:]]*innodb_log_file_size[[:space:]]*=' \
+                     "$MARIADB_TUNING_CNF" 2>/dev/null \
+                 | tail -1 | sed 's/.*=[[:space:]]*//' | tr -d ' ')
+    [[ -n "$target_str" ]] || return 0
+
+    current_bytes=$(stat -c '%s' "$logfile" 2>/dev/null || echo 0)
+    num="${target_str//[^0-9]/}"
+    if [[ "$target_str" =~ [Gg] ]]; then
+        target_bytes=$(( num * 1024 * 1024 * 1024 ))
+    else
+        target_bytes=$(( num * 1024 * 1024 ))
+    fi
+
+    if [[ "$current_bytes" -eq "$target_bytes" ]]; then
+        return 0   # sizes match — no action needed
+    fi
+
+    print_warn "InnoDB log resize required: $(( current_bytes / 1024 / 1024 ))M on disk → ${target_str} in config"
+    print_warn "Stopping MariaDB for a clean InnoDB checkpoint before removing old log files ..."
+    systemctl stop mariadb 2>/dev/null || true
+    # Wait up to 15 s for clean shutdown
+    local _i=0
+    while systemctl is-active mariadb >/dev/null 2>&1 && [[ $_i -lt 15 ]]; do
+        sleep 1; (( _i++ )) || true
+    done
+    rm -f /var/lib/mysql/ib_logfile0 /var/lib/mysql/ib_logfile1
+    print_ok "Old InnoDB log files removed — MariaDB will create new ${target_str} files on next start."
+    log_info "_db_innodb_log_resize_if_needed: resized $(( current_bytes/1024/1024 ))M → ${target_str}"
+}
+
 install_mariadb() {
     print_section "Install MariaDB"
     require_root || return 1
@@ -330,6 +377,9 @@ install_mariadb() {
     _db_setup_ssl
     _db_setup_logging
 
+    # Resize ib_logfile* if innodb_log_file_size was changed by tune_mariadb above.
+    # Without this, MariaDB refuses to start when config size ≠ on-disk log file size.
+    _db_innodb_log_resize_if_needed
     service_restart mariadb
 
     print_ok "MariaDB installed, hardened, and tuned."
@@ -456,6 +506,8 @@ EOF_TUNE
 
     # Restart only if called standalone (not from install_mariadb which restarts at the end)
     if [[ "${DB_TUNING_NO_RESTART:-0}" != "1" ]]; then
+        # Resize ib_logfile* if innodb_log_file_size changed vs what's on disk.
+        _db_innodb_log_resize_if_needed
         service_restart mariadb
     fi
 }
@@ -586,6 +638,8 @@ db_apply_tuning() {
         return 1
     fi
 
+    # Resize ib_logfile* if innodb_log_file_size changed vs what's on disk.
+    _db_innodb_log_resize_if_needed
     service_restart mariadb
     print_ok "MariaDB fully re-hardened and restarted."
     log_info "db_apply_tuning: tuning applied and MariaDB restarted (tier=${OPS_TIER:-M})"
@@ -629,10 +683,11 @@ db_audit() {
     _db_audit_check "Network isolation"       "bind_address"          "127\.0\.0\.1"
     _db_audit_check "SSL enabled"             "have_ssl"              "YES"
     _db_audit_check "local_infile disabled"   "local_infile"          "OFF"
-    # P3-D fix: MariaDB returns the string "NULL" (not empty) for secure_file_priv.
-    # The empty-string expected regex always matched nothing — every audit showed PASS incorrectly.
-    # The correct expected regex is "NULL|" which matches either the literal word NULL or an empty value.
-    _db_audit_check "secure_file_priv=NULL"   "secure_file_priv"      "NULL|"        "WARN"
+    # secure_file_priv is set to empty string "" in ops-script (not the word NULL).
+    # MariaDB 10.6 Ubuntu 22.04 crashes if given the literal word NULL — it treats it
+    # as a directory path. Empty string ("") is the correct way to disable this setting.
+    # At runtime MariaDB returns an actual empty string for SHOW VARIABLES, so regex is "".
+    _db_audit_check "secure_file_priv disabled" "secure_file_priv"    ""             "WARN"
     _db_audit_check "skip_name_resolve"       "skip_name_resolve"     "ON"
     _db_audit_check "slow_query_log ON"       "slow_query_log"        "ON"            "WARN"
     # P3-3 fix: old regex [1-9][0-9]?[0-9]? matched values 1-999 -- 600 would
