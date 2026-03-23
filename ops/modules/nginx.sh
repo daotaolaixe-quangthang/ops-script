@@ -137,7 +137,7 @@ _nginx_ensure_http_directive() {
     local rendered="${key} ${value};"
 
     if grep -Eq "^[[:space:]]*${key}[[:space:]]+" "$conf"; then
-        sed -i -E "s|^[[:space:]]*${key}[[:space:]]+.*;|    ${rendered}|" "$conf"
+        sed -i -E "s#^[[:space:]]*${key}[[:space:]]+.*;#    ${rendered}#" "$conf"
         return 0
     fi
 
@@ -166,7 +166,7 @@ _nginx_ensure_events_directive() {
     local rendered="${key} ${value};"
 
     if grep -Eq "^[[:space:]]*${key}[[:space:]]+" "$conf"; then
-        sed -i -E "s|^[[:space:]]*${key}[[:space:]]+.*;|    ${rendered}|" "$conf"
+        sed -i -E "s#^[[:space:]]*${key}[[:space:]]+.*;#    ${rendered}#" "$conf"
         return 0
     fi
 
@@ -188,7 +188,7 @@ _nginx_ensure_main_directive() {
     local rendered="${key} ${value};"
 
     if grep -Eq "^[[:space:]]*${key}[[:space:]]+" "$conf"; then
-        sed -i -E "s|^[[:space:]]*${key}[[:space:]]+.*;|${rendered}|" "$conf"
+        sed -i -E "s#^[[:space:]]*${key}[[:space:]]+.*;#${rendered}#" "$conf"
         return 0
     fi
 
