@@ -1913,9 +1913,24 @@ ssl_set_cf_token() {
 ssl_prompt_cf_origin_cert() {
     print_section "Issue Cloudflare Origin Certificate (15 years)"
     require_root || return 1
+
+    echo "  ┌─────────────────────────────────────────────────────────────────┐"
+    echo "  │  ⚠  API Token Permission Required                               │"
+    echo "  │                                                                 │"
+    echo "  │  Your CF API token must have:                                   │"
+    echo "  │    Zone → DNS → Edit          (already set for DNS-01)          │"
+    echo "  │    Zone → SSL and Certificates → Edit   ← THÊM CÁI NÀY         │"
+    echo "  │                                                                 │"
+    echo "  │  Cách thêm permission:                                          │"
+    echo "  │    1. Cloudflare Dashboard → Profile → API Tokens               │"
+    echo "  │    2. Click Edit trên token hiện tại                            │"
+    echo "  │    3. Add permission: Zone → SSL and Certificates → Edit        │"
+    echo "  │    4. Save → token vẫn giữ nguyên, chỉ thêm quyền              │"
+    echo "  └─────────────────────────────────────────────────────────────────┘"
+    echo ""
+
     if [[ -z "${CF_API_TOKEN:-}" ]]; then
         print_error "Cloudflare API token not configured. Run option 6 first."
-        print_error "Token needs permissions: Zone:DNS:Edit + Zone:SSL and Certificates:Edit"
         return 1
     fi
     prompt_input "Enter domain (e.g. ducnv.email)"
