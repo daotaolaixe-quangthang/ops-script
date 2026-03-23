@@ -93,7 +93,8 @@ _nginx_ensure_default_tls_cert() {
         -subj "/CN=ops-default-deny" \
         -keyout "$NGINX_DEFAULT_KEY" \
         -out "$NGINX_DEFAULT_CERT"
-    chmod 600 "$NGINX_DEFAULT_KEY"
+    chmod 640 "$NGINX_DEFAULT_KEY"
+    chown root:nginx "$NGINX_DEFAULT_KEY"
     chmod 644 "$NGINX_DEFAULT_CERT"
     log_info "Generated default deny self-signed cert for Nginx."
 }
@@ -2164,12 +2165,14 @@ ssl_issue_cf_origin_cert() {
     # ── Step 2: Generate private key + CSR ───────────────────────────────────
     ensure_dir "$cert_dir"
     chmod 750 "$cert_dir"
+    chown root:nginx "$cert_dir"
     print_warn "Generating RSA-2048 private key and CSR..."
     openssl req -new -newkey rsa:2048 -nodes \
         -keyout "$key_file" \
         -out "$csr_file" \
         -subj "/CN=${domain}" 2>/dev/null
-    chmod 600 "$key_file"
+    chmod 640 "$key_file"
+    chown root:nginx "$key_file"
     log_info "ssl_issue_cf_origin_cert: key + CSR generated at ${cert_dir}"
 
     # ── Step 3: POST CSR to CF Origin CA API ─────────────────────────────────
