@@ -97,6 +97,10 @@ _node_list_conf_names() {
 }
 
 # _node_write_app_conf <appname> key=value ...
+# F-18 fix: write to a temp file then mv (atomic rename) so the conf is never
+# left in a partial/truncated state if the process is killed mid-write.
+# The caller (node_add_app) runs backup_file before calling here, so the
+# original conf stays intact until the rename succeeds.
 _node_write_app_conf() {
     local appname="$1"
     shift
@@ -104,15 +108,17 @@ _node_write_app_conf() {
     apps_dir=$(_node_apps_dir)
     ensure_dir "$apps_dir"
     local conf="$apps_dir/${appname}.conf"
-    # Write fresh conf (clobber if re-added — caller handles backup)
+    local tmp_conf
+    tmp_conf="$(mktemp "${conf}.tmp.XXXXXX")"
     {
         echo "APP_NAME=\"${appname}\""
         for kv in "$@"; do
             echo "${kv%%=*}=\"${kv#*=}\""
         done
         echo "APP_RUNTIME_USER=\"$(_node_runtime_user)\""
-    } > "$conf"
-    chmod 640 "$conf"
+    } > "$tmp_conf"
+    chmod 640 "$tmp_conf"
+    mv -f "$tmp_conf" "$conf"
     log_info "Wrote app conf: $conf"
 }
 
