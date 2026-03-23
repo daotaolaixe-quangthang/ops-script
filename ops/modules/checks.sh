@@ -15,9 +15,14 @@
 CHECKS_CPU_WARN_PERCENT="${CHECKS_CPU_WARN_PERCENT:-90}"
 CHECKS_RAM_WARN_PERCENT="${CHECKS_RAM_WARN_PERCENT:-85}"
 CHECKS_DISK_WARN_PERCENT="${CHECKS_DISK_WARN_PERCENT:-85}"
+CHECKS_DISK_CRIT_PERCENT="${CHECKS_DISK_CRIT_PERCENT:-95}"
 CHECKS_SSL_WARN_DAYS="${CHECKS_SSL_WARN_DAYS:-14}"
 CHECKS_DOMAIN_WARN_DAYS="${CHECKS_DOMAIN_WARN_DAYS:-30}"
 CHECKS_COOLDOWN_SECONDS="${CHECKS_COOLDOWN_SECONDS:-3600}"   # 1 hour
+CHECKS_PM2_RESTART_THRESHOLD="${CHECKS_PM2_RESTART_THRESHOLD:-3}"  # restarts per cycle
+CHECKS_LOG_SPIKE_LINES="${CHECKS_LOG_SPIKE_LINES:-200}"            # new lines per 5-min cycle
+CHECKS_DDOS_IP_REQS="${CHECKS_DDOS_IP_REQS:-100}"                 # req/IP in last 500 lines
+CHECKS_DDOS_TOTAL_REQS="${CHECKS_DDOS_TOTAL_REQS:-500}"           # total reqs in last 500 lines
 CHECKS_CRON_FILE="/etc/cron.d/ops-checks"
 CHECKS_CONF_DIR="${OPS_CONFIG_DIR:-/etc/ops}/checks"
 
@@ -400,29 +405,392 @@ check_security_scan() {
     return "$rc"
 }
 
+# ── check_services ────────────────────────────────────────────
+# Checks that all installed system services and PM2 processes are running.
+# Alerts on service crash and PM2 restart loops.
+check_services() {
+    local rc=0
+    local hostname
+    hostname=$(hostname -f 2>/dev/null || hostname)
+
+    # Fix-2: cache unit list — call systemctl list-unit-files once, reuse for all lookups.
+    # Previously called 5-9 times per run (1 IPC round-trip each ≈ 10-30ms → 50-270ms overhead).
+    local _unit_list
+    _unit_list=$(systemctl list-unit-files 2>/dev/null || true)
+
+    # ── Systemd services ──
+    local svc label
+    declare -A SVC_LABELS=(
+        [nginx]="Nginx"
+        [mariadb]="MariaDB"
+        [mysql]="MySQL"
+        [fail2ban]="fail2ban"
+    )
+
+    for svc in nginx mariadb mysql fail2ban; do
+        # Only check if the unit file exists (service is installed)
+        if ! printf '%s' "$_unit_list" | grep -q "^${svc}\.service"; then
+            continue
+        fi
+        # mysql and mariadb are exclusive — skip mysql if mariadb is installed
+        if [[ "$svc" == "mysql" ]] && printf '%s' "$_unit_list" | grep -q '^mariadb\.service'; then
+            continue
+        fi
+
+        label="${SVC_LABELS[$svc]:-$svc}"
+        if ! systemctl is-active --quiet "$svc" 2>/dev/null; then
+            local msg="Service DOWN: ${label} on ${hostname}"
+            log_warn "check_services: $msg"
+            if _checks_cooldown_ok "svc" "$svc"; then
+                _checks_send_telegram "🔴 ${msg}"
+            fi
+            rc=2
+        else
+            log_info "check_services: ${label} OK"
+        fi
+    done
+
+    # ── PHP-FPM versions ──
+    local php_ver fpm_svc
+    for php_ver in 7.4 8.1 8.2 8.3; do
+        fpm_svc="php${php_ver}-fpm"
+        if ! printf '%s' "$_unit_list" | grep -q "^${fpm_svc}\.service"; then
+            continue
+        fi
+        if ! systemctl is-active --quiet "$fpm_svc" 2>/dev/null; then
+            local msg="Service DOWN: PHP ${php_ver}-FPM on ${hostname}"
+            log_warn "check_services: $msg"
+            if _checks_cooldown_ok "svc" "$fpm_svc"; then
+                _checks_send_telegram "🔴 ${msg}"
+            fi
+            rc=2
+        else
+            log_info "check_services: PHP ${php_ver}-FPM OK"
+        fi
+    done
+
+    # ── PM2 processes ──
+    if command -v pm2 >/dev/null 2>&1; then
+        # Fix-3 (partial): capture pm2 jlist once — reused by restart-loop check below.
+        local pm2_json
+        pm2_json=$(pm2 jlist 2>/dev/null || echo '[]')
+
+        # Parse with python3: check status and restart counter
+        local pm2_issues
+        pm2_issues=$(printf '%s' "$pm2_json" | python3 - <<'PYEOF' 2>/dev/null || true
+import sys, json, os, time
+
+try:
+    procs = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+
+cache_dir = "/tmp"
+restart_threshold = int(os.environ.get("CHECKS_PM2_RESTART_THRESHOLD", 3))
+issues = []
+
+for p in procs:
+    name = p.get("name", "?")
+    env  = p.get("pm2_env", {})
+    status = env.get("status", "?")
+    restarts = env.get("restart_time", 0)
+
+    # Check if not online
+    if status != "online":
+        issues.append(f"PM2 process NOT online: {name} (status={status})")
+        continue
+
+    # Check restart loop: compare vs cached restart count
+    cache_file = f"{cache_dir}/ops-pm2-restart-{name}.cache"
+    prev_restarts = 0
+    try:
+        with open(cache_file) as f:
+            prev_restarts = int(f.read().strip())
+    except Exception:
+        pass
+
+    delta = restarts - prev_restarts
+    if delta >= restart_threshold and prev_restarts > 0:
+        issues.append(f"PM2 restart loop: {name} ({delta} restarts since last check)")
+
+    # Write current restart count
+    try:
+        with open(cache_file, "w") as f:
+            f.write(str(restarts))
+    except Exception:
+        pass
+
+for i in issues:
+    print(i)
+PYEOF
+)
+
+        if [[ -n "$pm2_issues" ]]; then
+            while IFS= read -r issue_line; do
+                [[ -z "$issue_line" ]] && continue
+                log_warn "check_services: $issue_line"
+                # Use first word of issue as cooldown key
+                local pm2_key
+                pm2_key=$(printf '%s' "$issue_line" | awk '{print $NF}' | tr -cs 'a-zA-Z0-9._-' '_')
+                if _checks_cooldown_ok "pm2" "$pm2_key"; then
+                    _checks_send_telegram "⚠️ ${issue_line} [${hostname}]"
+                fi
+                [[ "$rc" -lt 2 ]] && rc=2
+            done <<< "$pm2_issues"
+        else
+            log_info "check_services: PM2 OK"
+        fi
+    fi
+
+    return "$rc"
+}
+
+# ── check_log_spikes ──────────────────────────────────────────
+# Detects sudden log growth that signals crashes, floods, or runaway processes.
+# Compares current log line count vs cached value; alerts if delta > threshold.
+check_log_spikes() {
+    local rc=0
+    local hostname
+    hostname=$(hostname -f 2>/dev/null || hostname)
+
+    # Logs to monitor: label:path
+    local -a LOG_TARGETS=(
+        "Nginx-Error:/var/log/nginx/error.log"
+        "PHP-FPM:/var/log/php8.3-fpm.log"
+        "PHP-FPM:/var/log/php8.2-fpm.log"
+        "PHP-FPM:/var/log/php8.1-fpm.log"
+        "PHP-FPM:/var/log/php7.4-fpm.log"
+        "MariaDB:/var/log/mysql/error.log"
+        "MariaDB:/var/log/mariadb/mariadb.log"
+    )
+
+    local entry label log_path
+    for entry in "${LOG_TARGETS[@]}"; do
+        label="${entry%%:*}"
+        log_path="${entry#*:}"
+        [[ -f "$log_path" ]] || continue
+
+        local current_lines prev_lines delta
+        current_lines=$(wc -l < "$log_path" 2>/dev/null || echo 0)
+
+        local safe_name
+        safe_name=$(printf '%s' "$log_path" | tr '/' '_')
+        local cache_file="/tmp/ops-logsize${safe_name}.cache"
+
+        prev_lines=0
+        [[ -f "$cache_file" ]] && prev_lines=$(cat "$cache_file" 2>/dev/null || echo 0)
+
+        # Write current count for next cycle
+        printf '%s\n' "$current_lines" > "$cache_file" 2>/dev/null || true
+
+        delta=$(( current_lines - prev_lines ))
+        if (( prev_lines > 0 && delta >= CHECKS_LOG_SPIKE_LINES )); then
+            local msg="Log spike detected: ${label} grew by ${delta} lines (${log_path})"
+            log_warn "check_log_spikes: $msg"
+            if _checks_cooldown_ok "logspike" "$safe_name"; then
+                _checks_send_telegram "📈 ${msg} on ${hostname}"
+            fi
+            rc=1
+        else
+            log_info "check_log_spikes: ${label} OK (lines=${current_lines}, delta=${delta})"
+        fi
+    done
+
+    return "$rc"
+}
+
+# ── check_ddos ────────────────────────────────────────────────
+# Lightweight DDoS / HTTP flood detection via Nginx access.log analysis.
+# Uses pure awk/grep — no external tools required.
+check_ddos() {
+    local rc=0
+    local hostname
+    hostname=$(hostname -f 2>/dev/null || hostname)
+
+    local access_log="/var/log/nginx/access.log"
+    [[ -f "$access_log" ]] || { log_info "check_ddos: access log not found, skipping"; return 0; }
+
+    # Analyse last 500 lines for IP frequency and total request count
+    local analysis
+    analysis=$(tail -500 "$access_log" 2>/dev/null | awk '
+    {
+        ip = $1
+        total++
+        count[ip]++
+    }
+    END {
+        max_ip = ""; max_count = 0
+        for (ip in count) {
+            if (count[ip] > max_count) { max_count = count[ip]; max_ip = ip }
+        }
+        print total " " max_ip " " max_count
+    }' 2>/dev/null || echo "0  0")
+
+    local total_reqs top_ip top_ip_reqs
+    # Use read to split on whitespace cleanly — avoids embedded newlines from awk
+    read -r total_reqs top_ip top_ip_reqs <<< "$analysis"
+    total_reqs="${total_reqs:-0}"
+    top_ip="${top_ip:--}"
+    top_ip_reqs="${top_ip_reqs:-0}"
+
+    # Alert: single-IP flood
+    if (( top_ip_reqs >= CHECKS_DDOS_IP_REQS )); then
+        local msg="Possible DDoS: IP ${top_ip} made ${top_ip_reqs} requests in last 500 Nginx log entries"
+        log_warn "check_ddos: $msg"
+        if _checks_cooldown_ok "ddos" "ip_${top_ip}"; then
+            _checks_send_telegram "🚨 ${msg} on ${hostname}"
+        fi
+        rc=2
+    fi
+
+    # Alert: total flood
+    if (( total_reqs >= CHECKS_DDOS_TOTAL_REQS )); then
+        local msg="Traffic flood: ${total_reqs} requests in last 500 Nginx log entries"
+        log_warn "check_ddos: $msg"
+        if _checks_cooldown_ok "ddos" "total"; then
+            _checks_send_telegram "🚨 ${msg} on ${hostname}"
+        fi
+        [[ "$rc" -lt 1 ]] && rc=1
+    fi
+
+    if (( rc == 0 )); then
+        log_info "check_ddos: OK (total=${total_reqs}, top_ip=${top_ip} [${top_ip_reqs} reqs])"
+    fi
+
+    return "$rc"
+}
+
+# ── check_health_digest ───────────────────────────────────────
+# Sends a daily full-system snapshot to Telegram.
+# Intended to run once per day (07:00 cron) so operators get a routine overview.
+check_health_digest() {
+    local hostname
+    hostname=$(hostname -f 2>/dev/null || hostname)
+    local ts
+    ts=$(date '+%Y-%m-%d %H:%M')
+
+    # ── Resources ──
+    local load_1 load_5 load_15
+    read -r load_1 load_5 load_15 _ < /proc/loadavg
+    local cpu_cores
+    cpu_cores=$(nproc)
+
+    local total_mb avail_mb used_mb ram_pct
+    total_mb=$(awk '/MemTotal/    { printf "%d", $2/1024 }' /proc/meminfo)
+    avail_mb=$(awk '/MemAvailable/{ printf "%d", $2/1024 }' /proc/meminfo)
+    used_mb=$(( total_mb - avail_mb ))
+    ram_pct=$(awk "BEGIN { printf \"%d\", (${used_mb}/${total_mb})*100 }")
+
+    local disk_pct disk_avail
+    disk_pct=$(df / 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}')
+    disk_avail=$(df -h / 2>/dev/null | awk 'NR==2{print $4}')
+
+    # ── Services ──
+    local svc_lines=""
+    for svc in nginx mariadb fail2ban; do
+        if systemctl list-unit-files 2>/dev/null | grep -q "^${svc}\.service"; then
+            if systemctl is-active --quiet "$svc" 2>/dev/null; then
+                svc_lines+="  ✅ ${svc}\n"
+            else
+                svc_lines+="  🔴 ${svc} (DOWN)\n"
+            fi
+        fi
+    done
+    for php_ver in 8.3 8.2 8.1 7.4; do
+        local fpm_svc="php${php_ver}-fpm"
+        if systemctl list-unit-files 2>/dev/null | grep -q "^${fpm_svc}\.service"; then
+            if systemctl is-active --quiet "$fpm_svc" 2>/dev/null; then
+                svc_lines+="  ✅ PHP ${php_ver}-FPM\n"
+            else
+                svc_lines+="  🔴 PHP ${php_ver}-FPM (DOWN)\n"
+            fi
+            break  # only report first installed version
+        fi
+    done
+
+    # ── PM2 ──
+    # Fix-3: call pm2 jlist once, pass the cached JSON to both python3 invocations.
+    # Previously called twice → 2× PM2 daemon startup latency (~1-2 s each).
+    local pm2_summary="not installed"
+    if command -v pm2 >/dev/null 2>&1; then
+        local _pm2_json online_count total_count
+        _pm2_json=$(pm2 jlist 2>/dev/null || echo '[]')
+        online_count=$(printf '%s' "$_pm2_json" | python3 -c "
+import sys,json
+try:
+    p=json.load(sys.stdin); print(sum(1 for x in p if x.get('pm2_env',{}).get('status')=='online'))
+except: print('?')
+" 2>/dev/null || echo "?")
+        total_count=$(printf '%s' "$_pm2_json" | python3 -c "
+import sys,json
+try:
+    p=json.load(sys.stdin); print(len(p))
+except: print('?')
+" 2>/dev/null || echo "?")
+        pm2_summary="${online_count}/${total_count} online"
+    fi
+
+    # ── Compose message ──
+    local msg
+    msg=$(printf '📊 Daily Health Digest\n'
+          printf '🖥️ Host: %s\n' "$hostname"
+          printf '🕐 Time: %s UTC\n' "$ts"
+          printf '\n'
+          printf '💻 CPU load: %s %s %s (%s cores)\n' "$load_1" "$load_5" "$load_15" "$cpu_cores"
+          printf '🧠 RAM: %s/%s MB (%s%%)\n' "$used_mb" "$total_mb" "$ram_pct"
+          printf '💾 Disk /: %s%% used (%s free)\n' "$disk_pct" "$disk_avail"
+          printf '\n'
+          printf '🔧 Services:\n'
+          printf '%b' "$svc_lines"
+          printf '🔄 PM2: %s\n' "$pm2_summary")
+
+    # Send unconditionally (no cooldown — this IS the daily digest)
+    local token_file="${OPS_CONFIG_DIR:-/etc/ops}/.telegram-bot-token"
+    local chat_id tg_enabled
+    chat_id=$(ops_conf_get "notifications.conf" "TELEGRAM_CHAT_ID" 2>/dev/null || true)
+    tg_enabled=$(ops_conf_get "notifications.conf" "TELEGRAM_ENABLED" 2>/dev/null || echo "no")
+
+    if [[ "$tg_enabled" != "yes" || -z "$chat_id" || ! -f "$token_file" ]]; then
+        log_info "check_health_digest: Telegram not configured, skipping"
+        return 0
+    fi
+
+    local bot_token http_code
+    bot_token=$(cat "$token_file" 2>/dev/null || true)
+    [[ -z "$bot_token" ]] && return 0
+
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+        -X POST "https://api.telegram.org/bot${bot_token}/sendMessage" \
+        -d "chat_id=${chat_id}" \
+        --data-urlencode "text=${msg}" 2>/dev/null || echo "000")
+
+    log_info "check_health_digest: sent digest, http_code=${http_code}"
+    return 0
+}
+
 # ── Cron install/remove ───────────────────────────────────────
 checks_install_cron() {
     print_section "Install Scheduled Checks (cron)"
+    require_root || return 1
 
-    local ops_bin="/usr/local/bin/ops"
-    if [[ ! -x "$ops_bin" ]]; then
-        ops_bin="${OPS_ROOT}/bin/ops"
-    fi
-
+    # Fix-1: Consolidate all */5 checks into ONE cron job (ops-check 5min).
+    # Previously 5 separate jobs fired simultaneously → 5× process spawn + source overhead
+    # at the same minute. Now: 1 process, 1× source, checks run sequentially in one shell.
     cat > "$CHECKS_CRON_FILE" <<EOF
 # OPS scheduled health checks — managed by OPS, do not edit manually.
 # Generated: $(date '+%Y-%m-%d %H:%M:%S')
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
-# Resource check every 5 minutes
-*/5 * * * * root  ${OPS_ROOT}/bin/ops-check resources  >> /var/log/ops/checks.log 2>&1
-# Uptime check every 5 minutes
-*/5 * * * * root  ${OPS_ROOT}/bin/ops-check uptime     >> /var/log/ops/checks.log 2>&1
+# ALL 5-minute checks in one process (resources, uptime, services, logspike, ddos)
+# Fix-1: was 5 separate */5 cron jobs; consolidated → eliminates simultaneous CPU burst.
+*/5 * * * * root  ${OPS_ROOT}/bin/ops-check 5min       >> /var/log/ops/checks.log 2>&1
 # SSL expiry daily at 06:00
 0 6 * * *   root  ${OPS_ROOT}/bin/ops-check ssl        >> /var/log/ops/checks.log 2>&1
 # Domain expiry daily at 07:00
 0 7 * * *   root  ${OPS_ROOT}/bin/ops-check domain     >> /var/log/ops/checks.log 2>&1
+# Daily health digest at 07:05
+5 7 * * *   root  ${OPS_ROOT}/bin/ops-check digest     >> /var/log/ops/checks.log 2>&1
 # Security scan weekly on Sunday at 03:00
 0 3 * * 0   root  ${OPS_ROOT}/bin/ops-check security   >> /var/log/ops/checks.log 2>&1
 EOF
@@ -437,6 +805,11 @@ EOF
 
     # Also create the ops-check dispatcher script
     _checks_write_dispatcher
+
+    # Fix-4: Install systemd OnFailure dropin units for instant crash alerting.
+    # These fire the moment systemd detects a service failure — no 5-minute polling lag.
+    _checks_install_systemd_dropins
+
     log_info "checks_install_cron: done"
 }
 
@@ -448,7 +821,85 @@ checks_remove_cron() {
     else
         print_warn "No cron file found at $CHECKS_CRON_FILE"
     fi
+    # Fix-4: also remove systemd OnFailure dropin units
+    _checks_remove_systemd_dropins
     log_info "checks_remove_cron: done"
+}
+
+# Fix-4: Install systemd OnFailure dropin units.
+# When any listed service crashes, systemd immediately runs ops-check alert-crash <svc>.
+# This provides <1 second crash-to-Telegram latency vs the previous 5-minute polling gap.
+_checks_install_systemd_dropins() {
+    local dropin_svc="/etc/systemd/system/ops-alert-crash@.service"
+    local svcs_to_watch=(nginx mariadb fail2ban)
+    local php_ver
+    for php_ver in 8.3 8.2 8.1 7.4; do
+        local fpm_unit="php${php_ver}-fpm"
+        systemctl list-unit-files 2>/dev/null | grep -q "^${fpm_unit}\.service" && svcs_to_watch+=("$fpm_unit")
+    done
+
+    # Write the generic crash alert service template
+    # ExecStart uses /usr/local/bin/ops-check — the standard install path (set by ops installer).
+    cat > "$dropin_svc" <<'DROPIN_EOF'
+[Unit]
+Description=OPS crash alert for %i
+DefaultDependencies=no
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ops-check alert-crash %i
+DROPIN_EOF
+    chmod 644 "$dropin_svc"
+    systemctl daemon-reload 2>/dev/null || true
+
+    # Install OnFailure dropin for each watched service
+    local svc installed=0
+    for svc in "${svcs_to_watch[@]}"; do
+        # Only install dropin if the service unit actually exists
+        if ! systemctl list-unit-files 2>/dev/null | grep -q "^${svc}\.service"; then
+            continue
+        fi
+        local dropin_dir="/etc/systemd/system/${svc}.service.d"
+        mkdir -p "$dropin_dir"
+        cat > "${dropin_dir}/ops-alert.conf" <<DROPIN_CONF
+[Unit]
+OnFailure=ops-alert-crash@${svc}.service
+DROPIN_CONF
+        chmod 644 "${dropin_dir}/ops-alert.conf"
+        (( installed++ )) || true
+        log_info "_checks_install_systemd_dropins: installed dropin for ${svc}"
+    done
+
+    if (( installed > 0 )); then
+        systemctl daemon-reload 2>/dev/null || true
+        print_ok "Systemd OnFailure dropin installed for ${installed} service(s) — instant crash alerts enabled."
+    else
+        print_warn "No watched services found for systemd dropin (nginx/mariadb/php-fpm not installed?)"
+    fi
+}
+
+# Fix-4: Remove systemd OnFailure dropin units
+_checks_remove_systemd_dropins() {
+    local dropin_svc="/etc/systemd/system/ops-alert-crash@.service"
+    local svcs=(nginx mariadb fail2ban php8.3-fpm php8.2-fpm php8.1-fpm php7.4-fpm)
+    local svc removed=0
+    for svc in "${svcs[@]}"; do
+        local dropin_file="/etc/systemd/system/${svc}.service.d/ops-alert.conf"
+        if [[ -f "$dropin_file" ]]; then
+            rm -f "$dropin_file"
+            # Remove dropin dir if empty
+            local dropin_dir="/etc/systemd/system/${svc}.service.d"
+            [[ -d "$dropin_dir" ]] && rmdir "$dropin_dir" 2>/dev/null || true
+            (( removed++ )) || true
+        fi
+    done
+    [[ -f "$dropin_svc" ]] && rm -f "$dropin_svc"
+    if (( removed > 0 )); then
+        systemctl daemon-reload 2>/dev/null || true
+        print_ok "Removed ${removed} systemd OnFailure dropin(s)."
+    fi
+    log_info "_checks_remove_systemd_dropins: removed=${removed}"
 }
 
 _checks_write_dispatcher() {
@@ -457,7 +908,9 @@ _checks_write_dispatcher() {
     cat > "$dispatcher" <<'DISPATCHER_EOF'
 #!/usr/bin/env bash
 # ops-check — OPS scheduled check dispatcher
-# Called by /etc/cron.d/ops-checks
+# Called by /etc/cron.d/ops-checks and systemd OnFailure dropin units.
+# Fix-1: supports '5min' type to run all */5 checks in one process (1× source overhead).
+# Fix-4: supports 'alert-crash <svc>' for instant systemd OnFailure alerting.
 set -euo pipefail
 
 SCRIPT_PATH="${BASH_SOURCE[0]}"
@@ -479,13 +932,32 @@ source "$OPS_ROOT/modules/backup.sh"
 
 CHECK_TYPE="${1:-}"
 case "$CHECK_TYPE" in
-    resources) check_resources  ;;
-    uptime)    check_uptime     ;;
-    ssl)       check_ssl_expiry ;;
-    domain)    check_domain_expiry ;;
-    security)  check_security_scan ;;
+    # Fix-1: consolidated 5-minute batch — all checks in one bash process.
+    5min)
+        check_resources  || true
+        check_uptime     || true
+        check_services   || true
+        check_log_spikes || true
+        check_ddos       || true
+        ;;
+    # Fix-4: instant crash alert via systemd OnFailure — called with service name as arg.
+    alert-crash)
+        _CRASHED_SVC="${2:-unknown}"
+        _HOSTNAME=$(hostname -f 2>/dev/null || hostname)
+        _checks_send_telegram "🔴 Service CRASHED: ${_CRASHED_SVC} on ${_HOSTNAME} (systemd OnFailure)"
+        log_warn "alert-crash: ${_CRASHED_SVC} crashed on ${_HOSTNAME}"
+        ;;
+    resources) check_resources      ;;
+    uptime)    check_uptime         ;;
+    ssl)       check_ssl_expiry     ;;
+    domain)    check_domain_expiry  ;;
+    security)  check_security_scan  ;;
+    services)  check_services       ;;
+    logspike)  check_log_spikes     ;;
+    ddos)      check_ddos           ;;
+    digest)    check_health_digest  ;;
     *)
-        echo "Usage: ops-check <resources|uptime|ssl|domain|security>" >&2
+        echo "Usage: ops-check <5min|alert-crash <svc>|resources|uptime|ssl|domain|security|services|logspike|ddos|digest>" >&2
         exit 1
         ;;
 esac
@@ -506,20 +978,28 @@ menu_checks() {
         echo "  6) Run domain expiry check now"
         echo "  7) Run security scan now"
         echo "  8) Show check log"
+        echo "  9) Run service crash check now"
+        echo "  10) Run log spike check now"
+        echo "  11) Run DDoS pattern check now"
+        echo "  12) Send daily health digest now"
         echo "  0) Back"
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) checks_install_cron   || true; press_enter ;;
-            2) checks_remove_cron    || true; press_enter ;;
-            3) check_resources       || true; press_enter ;;
-            4) check_uptime          || true; press_enter ;;
-            5) check_ssl_expiry      || true; press_enter ;;
-            6) check_domain_expiry   || true; press_enter ;;
-            7) check_security_scan   || true; press_enter ;;
-            8) _checks_show_log      || true; press_enter ;;
-            0) return                        ;;
-            *) print_warn "Invalid option"   ;;
+            1)  checks_install_cron   || true; press_enter ;;
+            2)  checks_remove_cron    || true; press_enter ;;
+            3)  check_resources       || true; press_enter ;;
+            4)  check_uptime          || true; press_enter ;;
+            5)  check_ssl_expiry      || true; press_enter ;;
+            6)  check_domain_expiry   || true; press_enter ;;
+            7)  check_security_scan   || true; press_enter ;;
+            8)  _checks_show_log      || true; press_enter ;;
+            9)  check_services        || true; press_enter ;;
+            10) check_log_spikes      || true; press_enter ;;
+            11) check_ddos            || true; press_enter ;;
+            12) check_health_digest   || true; press_enter ;;
+            0)  return                        ;;
+            *)  print_warn "Invalid option"   ;;
         esac
     done
 }
