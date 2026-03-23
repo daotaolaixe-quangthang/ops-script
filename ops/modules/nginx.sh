@@ -2025,8 +2025,61 @@ ssl_prompt_cf_origin_cert() {
         print_error "Cloudflare API token not configured. Run option 6 first."
         return 1
     fi
-    prompt_input "Enter domain (e.g. ducnv.email)"
-    ssl_issue_cf_origin_cert "$REPLY"
+
+    # Build list of OPS-managed domains
+    local domains=()
+    if ls "${OPS_DOMAINS_DIR}"/*.conf > /dev/null 2>&1; then
+        local _sf _DOMAIN
+        for _sf in "${OPS_DOMAINS_DIR}"/*.conf; do
+            _DOMAIN=""
+            eval "$(_load_domain_state "$_sf")"
+            [[ -n "${_DOMAIN:-}" ]] && domains+=("$_DOMAIN")
+        done
+    fi
+
+    local domain=""
+
+    if [[ ${#domains[@]} -eq 0 ]]; then
+        print_warn "No OPS-managed domains found. Enter domain manually."
+        prompt_input "Enter domain (e.g. ducnv.email)"
+        domain="$REPLY"
+    else
+        echo "  Available domains:"
+        echo ""
+        local i
+        for i in "${!domains[@]}"; do
+            local d="${domains[$i]}"
+            local cf_status=""
+            if [[ -f "/etc/nginx/ssl/${d}/cf-origin.pem" ]]; then
+                cf_status="  ✓ CF Cert"
+            fi
+            printf '  %2d) %s%s\n' "$(( i + 1 ))" "$d" "$cf_status"
+        done
+        echo ""
+        echo "  0) Cancel"
+        echo ""
+        read -r -p "  Select domain [1-${#domains[@]}]: " _sel < /dev/tty
+
+        if [[ "$_sel" == "0" || -z "$_sel" ]]; then
+            print_warn "Cancelled."
+            return 0
+        fi
+
+        if ! [[ "$_sel" =~ ^[0-9]+$ ]] || (( _sel < 1 || _sel > ${#domains[@]} )); then
+            print_error "Invalid selection: ${_sel}"
+            return 1
+        fi
+
+        domain="${domains[$(( _sel - 1 ))]}"
+    fi
+
+    if [[ -z "$domain" ]]; then
+        print_error "No domain selected."
+        return 1
+    fi
+
+    echo ""
+    ssl_issue_cf_origin_cert "$domain"
 }
 
 # ssl_issue_cf_origin_cert <domain>
