@@ -76,7 +76,7 @@ _nine_router_assert_ufw_closed() {
 
     # Also clean up any stale DENY rule (not a security issue, but keep UFW tidy)
     if printf '%s\n' "$ufw_out" | grep -Eq "20128.*DENY|DENY.*20128"; then
-        log_info "Removing stale UFW DENY rule for port 20128 (unnecessary — 9router binds only on localhost)"
+        log_info "Removing stale UFW DENY rule for port 20128 (unnecessary — 9router binds on 127.0.0.1 only)"
         ufw delete deny 20128/tcp >/dev/null 2>&1 || true
         ufw delete deny 20128     >/dev/null 2>&1 || true
         ufw delete deny 20128/udp >/dev/null 2>&1 || true
@@ -211,7 +211,7 @@ _nine_router_write_env() {
     backup_file "$NINE_ROUTER_ENV_FILE" >/dev/null || true
     write_file "$NINE_ROUTER_ENV_FILE" <<EOF
 PORT=${NINE_ROUTER_PORT}
-HOSTNAME=0.0.0.0
+HOSTNAME=127.0.0.1
 NODE_ENV=production
 DATA_DIR=${NINE_ROUTER_DATA_DIR}
 JWT_SECRET=${jwt_secret}
@@ -589,7 +589,7 @@ _nine_router_show_status() {
 
     # ── Render ────────────────────────────────────────────────────
     echo -e "  ${BLD}📦 Installation  :${RST} ${installed_label}"
-    echo -e "  ${BLD}🌐 Local address  :${RST} 127.0.0.1:${NINE_ROUTER_PORT}"
+    echo -e "  ${BLD}🌐 Local address  :${RST} 127.0.0.1:${NINE_ROUTER_PORT}  (loopback-only)"
     echo -e "  ${BLD}🔗 Domain         :${RST} ${domain_label}"
     echo -e "  ${BLD}🚦 PM2 Status     :${RST} ${pm2_status_label}"
     echo -e "  ${BLD}🔄 Restarts       :${RST} ${restarts}"

@@ -4,7 +4,7 @@ module.exports = {
   apps: [{
     name:       'nine-router',
     script:     'node_modules/.bin/next',
-    args:       'start',
+    args:       'start -H 127.0.0.1',
     cwd:        '{{NINE_ROUTER_DIR}}',
     instances:  1,
     exec_mode:  'fork',
@@ -13,7 +13,7 @@ module.exports = {
     node_args:  '--max-old-space-size=460',
     env: {
       PORT:     '{{NINE_ROUTER_PORT}}',
-      HOSTNAME: '0.0.0.0',
+      HOSTNAME: '127.0.0.1',
       NODE_ENV: 'production',
       DATA_DIR: '/var/lib/9router',
       // Secrets loaded from .env file — do NOT inline here
