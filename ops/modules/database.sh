@@ -668,9 +668,37 @@ db_drop() {
         return 1
     fi
 
-    if ! prompt_confirm "Drop database '${db_name}'?"; then
-        print_warn "Cancelled."
-        return 0
+    # F-23: Scan credentials dir for any OPS-managed app that uses this database.
+    local cred_file registered_apps=()
+    if [[ -d "$DB_CREDENTIALS_DIR" ]]; then
+        for cred_file in "${DB_CREDENTIALS_DIR}"/*.conf; do
+            [[ -f "$cred_file" ]] || continue
+            local file_db_name
+            file_db_name=$(grep -E '^DB_NAME=' "$cred_file" | head -1 | cut -d'=' -f2- | tr -d '"'"'" )
+            if [[ "$file_db_name" == "$db_name" ]]; then
+                registered_apps+=("$(basename "$cred_file")")
+            fi
+        done
+    fi
+
+    if [[ "${#registered_apps[@]}" -gt 0 ]]; then
+        print_warn "WARNING: The following OPS-managed app(s) use database '${db_name}':"
+        local app
+        for app in "${registered_apps[@]}"; do
+            print_warn "  • ${app}"
+        done
+        print_warn "Dropping this database will break the app(s) listed above."
+        echo ""
+        read -r -p "  Type 'yes' to confirm you understand and want to drop '${db_name}': " _drop_confirm
+        if [[ "$_drop_confirm" != "yes" ]]; then
+            print_warn "Cancelled."
+            return 0
+        fi
+    else
+        if ! prompt_confirm "Drop database '${db_name}'?"; then
+            print_warn "Cancelled."
+            return 0
+        fi
     fi
 
     _db_mysql_root_exec "DROP DATABASE IF EXISTS \`${db_name}\`;"
