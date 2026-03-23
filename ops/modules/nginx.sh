@@ -16,6 +16,11 @@ NGINX_DEFAULT_CERT_DIR="/etc/nginx/ssl"
 NGINX_DEFAULT_CERT="${NGINX_DEFAULT_CERT_DIR}/ops-default.crt"
 NGINX_DEFAULT_KEY="${NGINX_DEFAULT_CERT_DIR}/ops-default.key"
 
+# Cloudflare API credentials file (chmod 600, root-only)
+CF_CREDS_FILE="/etc/ops/cloudflare.conf"
+# Load CF_API_TOKEN if the credentials file exists
+[[ -f "$CF_CREDS_FILE" ]] && source "$CF_CREDS_FILE" 2>/dev/null || true
+
 _nginx_disable_packaged_default_site() {
     local packaged_enabled="${NGINX_SITES_ENABLED}/default"
     local packaged_available="${NGINX_SITES_AVAILABLE}/default"
@@ -891,6 +896,30 @@ _ensure_certbot() {
     fi
 }
 
+# _ensure_certbot_dns_cloudflare
+# Install the certbot Cloudflare DNS plugin if not already present.
+# Supports both snap certbot and apt certbot installations.
+_ensure_certbot_dns_cloudflare() {
+    _ensure_certbot
+    # snap-based certbot: use snap plugin
+    if snap list certbot >/dev/null 2>&1; then
+        if ! snap list certbot-dns-cloudflare >/dev/null 2>&1; then
+            log_info "Installing certbot-dns-cloudflare snap plugin..."
+            snap install certbot-dns-cloudflare
+            snap set certbot trust-plugin-with-root=ok
+            snap connect certbot:plugin certbot-dns-cloudflare
+            log_info "certbot-dns-cloudflare snap plugin installed."
+        fi
+        return 0
+    fi
+    # apt-based certbot fallback
+    if ! dpkg -l python3-certbot-dns-cloudflare >/dev/null 2>&1; then
+        log_info "Installing python3-certbot-dns-cloudflare via apt..."
+        apt_install python3-certbot-dns-cloudflare
+        log_info "python3-certbot-dns-cloudflare installed."
+    fi
+}
+
 # S3-3 fix: remove disabled (stale) snap revisions to reclaim loop devices.
 # snapd keeps old revisions for rollback but does not promptly auto-purge them.
 # Each stale revision holds a loop device + mount entry, adding /dev/loopN clutter.
@@ -1015,6 +1044,11 @@ menu_ssl() {
         echo "  3) Show certificate status"
         echo "  4) Install / repair Certbot (snap)"
         echo "  5) Snap housekeeping (clean stale revisions, set retain=2)"
+        if [[ -n "${CF_API_TOKEN:-}" ]]; then
+            echo "  6) Set Cloudflare API Token  ✓ (configured)"
+        else
+            echo "  6) Set Cloudflare API Token  (enables auto DNS-01 for CF-proxied domains)"
+        fi
         echo "  0) Back"
         echo ""
         read -r -p "Select: " choice
@@ -1024,6 +1058,7 @@ menu_ssl() {
             3) ssl_list_certs ;;
             4) ssl_install_certbot ;;
             5) snap_housekeeping ;;
+            6) ssl_set_cf_token ; press_enter ;;
             0) return ;;
             *) print_warn "Invalid option" ;;
         esac
@@ -1552,17 +1587,23 @@ _dns_check_before_ssl() {
         print_warn "F-07: Cloudflare proxy detected for ${domain}."
         print_warn "  DNS resolves to ${resolved_ip} (Cloudflare IP), not ${server_ip} (this server)."
         echo ""
+        # If CF API token is set → use DNS-01 challenge automatically (return 3)
+        if [[ -n "${CF_API_TOKEN:-}" ]]; then
+            print_ok "  CF API token found — will use DNS-01 challenge automatically."
+            log_info "_dns_check_before_ssl: CF proxy + token available for ${domain} — DNS-01 path selected"
+            return 3
+        fi
         echo "  Certbot HTTP-01 challenge CANNOT reach your server through Cloudflare's proxy."
         echo "  Options:"
         echo "    A) Temporarily set Cloudflare DNS to 'DNS only' (grey cloud) for ${domain},"
         echo "       issue the SSL cert, then switch back to 'Proxied'."
         echo "    B) Use Cloudflare's own SSL (Full or Full Strict mode) — no certbot needed."
-        echo "    C) Use certbot DNS-01 challenge with CF API token (advanced)."
+        echo "    C) Set Cloudflare API Token in OPS (SSL Management → option 6) for fully automatic DNS-01."
         echo ""
         echo "  Certbot NOT called. Resolve the Cloudflare proxy conflict first."
         print_warn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         log_warn "_dns_check_before_ssl: CF proxy detected for ${domain} (resolved=${resolved_ip}, server=${server_ip})"
-        return 1
+        return 2
     fi
 
     # Step 5: Different IP, not CF proxy — DNS is simply not pointed at this server.
@@ -1630,13 +1671,25 @@ issue_ssl() {
 
     # F-07: DNS readiness check — abort before certbot if DNS not pointed at this server.
     # Prevents burning Let's Encrypt rate-limit slots on predictable DNS failures.
-    if ! _dns_check_before_ssl "$domain"; then
-        return 1
-    fi
+    # Return codes: 0=direct DNS OK, 2=CF proxy no token, 3=CF proxy with token (DNS-01)
+    local dns_check_rc=0
+    _dns_check_before_ssl "$domain" || dns_check_rc=$?
+    case "$dns_check_rc" in
+        0)
+            # DNS points directly to this server — use HTTP-01 (standard path)
+            certbot --nginx -d "$domain" --non-interactive --agree-tos
+            ;;
+        3)
+            # Cloudflare proxy detected + CF_API_TOKEN available → DNS-01 challenge
+            _issue_ssl_dns01_cloudflare "$domain"
+            ;;
+        *)
+            # DNS not ready or CF proxy without token — abort
+            return 1
+            ;;
+    esac
 
-    certbot --nginx -d "$domain" --non-interactive --agree-tos
-
-    log_info "Post-issue SSL sync for managed vhosts"
+    log_info "issue_ssl: SSL issued for ${domain} — syncing managed vhosts"
     _rebuild_domain_vhost "$domain"
 
     local nine_router_domain
@@ -1699,6 +1752,120 @@ ssl_install_certbot() { _install_certbot_snap; }
 ssl_issue_cert() {
     prompt_input "Enter domain to issue SSL"
     issue_ssl "$REPLY"
+}
+
+# _issue_ssl_dns01_cloudflare <domain>
+# Issue a Let's Encrypt cert via Cloudflare DNS-01 challenge.
+# Requires CF_API_TOKEN to be set (Zone:DNS:Edit permission).
+# Called by issue_ssl when _dns_check_before_ssl returns 3.
+_issue_ssl_dns01_cloudflare() {
+    local domain="$1"
+    local certbot_email
+
+    log_info "_issue_ssl_dns01_cloudflare: starting DNS-01 issuance for ${domain}"
+    print_warn "Using Cloudflare DNS-01 challenge for ${domain} (domain is behind CF proxy)..."
+
+    _ensure_certbot_dns_cloudflare
+
+    # Write CF credentials file (chmod 600 — token never world-readable)
+    printf 'dns_cloudflare_api_token = %s\n' "$CF_API_TOKEN" > "$CF_CREDS_FILE"
+    chmod 600 "$CF_CREDS_FILE"
+    log_info "CF credentials written to ${CF_CREDS_FILE}"
+
+    # Build certbot command
+    # --dns-cloudflare-propagation-seconds 20: CF DNS propagates within seconds globally
+    local certbot_args=(
+        certonly
+        --dns-cloudflare
+        --dns-cloudflare-credentials "$CF_CREDS_FILE"
+        --dns-cloudflare-propagation-seconds 20
+        -d "$domain"
+        --non-interactive
+        --agree-tos
+    )
+
+    # Attach email if account already registered
+    if ! _certbot_has_account; then
+        prompt_input "Email for Let's Encrypt notifications (certificate expiry alerts)"
+        certbot_email="$REPLY"
+        if [[ -z "$certbot_email" ]]; then
+            print_error "Email is required for Let's Encrypt registration. SSL issuance cancelled."
+            return 1
+        fi
+        certbot_args+=(-m "$certbot_email")
+        if ! certbot register --agree-tos --non-interactive -m "$certbot_email"; then
+            print_error "Certbot account registration failed."
+            return 1
+        fi
+    fi
+
+    if ! certbot "${certbot_args[@]}"; then
+        print_error "certbot DNS-01 issuance failed for ${domain}. Check CF token permissions (Zone:DNS:Edit)."
+        log_error "_issue_ssl_dns01_cloudflare: certbot failed for ${domain}"
+        return 1
+    fi
+
+    print_ok "Let's Encrypt certificate issued via DNS-01 for ${domain}."
+    log_info "_issue_ssl_dns01_cloudflare: cert issued for ${domain}"
+}
+
+# ssl_set_cf_token
+# Store Cloudflare API token in /etc/ops/cloudflare.conf (chmod 600).
+# Token must have Zone:DNS:Edit permission for all managed zones.
+# The token is validated against the Cloudflare API before saving.
+ssl_set_cf_token() {
+    print_section "Set Cloudflare API Token"
+    require_root || return 1
+
+    echo ""
+    echo "  Required permission: Zone → DNS → Edit"
+    echo "  Tip: Create a scoped token at https://dash.cloudflare.com/profile/api-tokens"
+    echo "  This token is stored in ${CF_CREDS_FILE} (chmod 600, root-only)."
+    echo ""
+
+    if [[ -n "${CF_API_TOKEN:-}" ]]; then
+        print_warn "A Cloudflare API token is already configured."
+        read -r -p "  Replace existing token? [y/N]: " _replace_ans
+        if [[ "${_replace_ans,,}" != "y" ]]; then
+            print_warn "Aborted — existing token retained."
+            return 0
+        fi
+    fi
+
+    prompt_input "Enter Cloudflare API Token"
+    local new_token="$REPLY"
+
+    if [[ -z "$new_token" ]]; then
+        print_error "Token cannot be empty."
+        return 1
+    fi
+
+    # Validate token via CF API
+    print_warn "Validating token with Cloudflare API..."
+    local verify_result status_ok
+    verify_result=$(curl -sf --max-time 10 \
+        -H "Authorization: Bearer ${new_token}" \
+        -H "Content-Type: application/json" \
+        https://api.cloudflare.com/client/v4/user/tokens/verify 2>/dev/null || true)
+    status_ok=$(printf '%s' "$verify_result" | grep -o '"status":"active"' || true)
+
+    if [[ -z "$status_ok" ]]; then
+        print_error "Token validation FAILED. CF API response: ${verify_result:-<no response>}"
+        print_error "Check token value and permissions, then retry."
+        log_error "ssl_set_cf_token: CF token validation failed"
+        return 1
+    fi
+
+    # Save token to credentials file (chmod 600)
+    ensure_dir "$(dirname "$CF_CREDS_FILE")"
+    printf 'CF_API_TOKEN="%s"\n' "$new_token" > "$CF_CREDS_FILE"
+    chmod 600 "$CF_CREDS_FILE"
+    # Reload into current session
+    CF_API_TOKEN="$new_token"
+
+    print_ok "Cloudflare API token saved to ${CF_CREDS_FILE} (chmod 600)."
+    print_ok "DNS-01 challenge will now be used automatically for Cloudflare-proxied domains."
+    log_info "ssl_set_cf_token: CF API token saved and validated successfully"
 }
 ssl_renew_all() {
     require_root || return 1
