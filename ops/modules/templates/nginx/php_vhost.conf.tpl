@@ -14,6 +14,19 @@ server {
         log_not_found off;
     }
 
+    # F-06: Restrict FPM status/ping endpoints to localhost only.
+    # This is defense-in-depth: pm.status_path is also omitted from the pool config.
+    # If monitoring is re-enabled on pool level, this block ensures external exposure is blocked.
+    location ~ ^/(fpm-status|fpm-ping)$ {
+        allow 127.0.0.1;
+        allow ::1;
+        deny all;
+        include        snippets/fastcgi-php.conf;
+        fastcgi_pass   unix:/run/php/php{{PHP_VERSION}}-fpm.sock;
+        fastcgi_param  SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        include        fastcgi_params;
+    }
+
     location / {
         limit_req  zone=ops_req burst=200 nodelay;
         limit_conn zone=ops_conn 30;

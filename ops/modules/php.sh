@@ -197,8 +197,9 @@ listen = ${socket}
 listen.owner = www-data
 listen.group = www-data
 listen.mode = 0660
-pm.status_path = /fpm-status
-ping.path = /fpm-ping
+; F-06: pm.status_path and ping.path intentionally omitted.
+; If you re-enable them, the Nginx vhost MUST include a location block
+; that restricts access to 127.0.0.1 only. See nginx.sh _render_php_vhost.
 chdir = /
 ; P3-B: clear_env=yes prevents FPM workers inheriting parent env secrets.
 ; If your app needs specific env vars, add explicit lines below this pool config, e.g.:
