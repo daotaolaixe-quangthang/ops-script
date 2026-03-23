@@ -1816,8 +1816,65 @@ nginx_remove_vhost() {
 nginx_status() { nginx -t && service_status nginx || true; }
 ssl_install_certbot() { _install_certbot_snap; }
 ssl_issue_cert() {
-    prompt_input "Enter domain to issue SSL"
-    issue_ssl "$REPLY"
+    print_section "Issue SSL Certificate (Let's Encrypt)"
+    require_root || return 1
+
+    # Build list of OPS-managed domains from state files
+    local domains=()
+    if ls "${OPS_DOMAINS_DIR}"/*.conf > /dev/null 2>&1; then
+        local _sf _DOMAIN
+        for _sf in "${OPS_DOMAINS_DIR}"/*.conf; do
+            _DOMAIN=""
+            eval "$(_load_domain_state "$_sf")"
+            [[ -n "${_DOMAIN:-}" ]] && domains+=("$_DOMAIN")
+        done
+    fi
+
+    local domain=""
+
+    if [[ ${#domains[@]} -eq 0 ]]; then
+        # No managed domains — fall back to manual input
+        print_warn "No OPS-managed domains found. Enter domain manually."
+        prompt_input "Enter domain to issue SSL (e.g. example.com)"
+        domain="$REPLY"
+    else
+        echo ""
+        echo "  Available domains:"
+        echo ""
+        local i
+        for i in "${!domains[@]}"; do
+            local d="${domains[$i]}"
+            local ssl_status=""
+            if _domain_ssl_cert_ready "$d"; then
+                ssl_status="  ✓ SSL"
+            fi
+            printf '  %2d) %s%s\n' "$(( i + 1 ))" "$d" "$ssl_status"
+        done
+        echo ""
+        echo "  0) Cancel"
+        echo ""
+        read -r -p "  Select domain [1-${#domains[@]}]: " _sel < /dev/tty
+
+        if [[ "$_sel" == "0" || -z "$_sel" ]]; then
+            print_warn "Cancelled."
+            return 0
+        fi
+
+        if ! [[ "$_sel" =~ ^[0-9]+$ ]] || (( _sel < 1 || _sel > ${#domains[@]} )); then
+            print_error "Invalid selection: ${_sel}"
+            return 1
+        fi
+
+        domain="${domains[$(( _sel - 1 ))]}"
+    fi
+
+    if [[ -z "$domain" ]]; then
+        print_error "No domain selected."
+        return 1
+    fi
+
+    echo ""
+    issue_ssl "$domain"
 }
 
 # _issue_ssl_dns01_cloudflare <domain>
