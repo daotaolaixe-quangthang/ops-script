@@ -110,16 +110,26 @@ _nginx_add_official_repo() {
     fi
 
     local codename
-    codename=$(lsb_release -cs 2>/dev/null || . /etc/os-release && echo "$UBUNTU_CODENAME")
+    codename=$(lsb_release -cs 2>/dev/null) \
+        || codename=$(. /etc/os-release 2>/dev/null && printf '%s' "${UBUNTU_CODENAME:-}")
+
+    if [[ -z "$codename" ]]; then
+        log_error "_nginx_add_official_repo: cannot detect Ubuntu codename — aborting repo setup."
+        return 1
+    fi
+
     local keyring="/usr/share/keyrings/nginx-archive-keyring.gpg"
 
     curl -fsSL https://nginx.org/keys/nginx_signing.key \
         | gpg --dearmor --yes -o "$keyring" 2>/dev/null
     chmod 644 "$keyring"
 
-    cat > "/etc/apt/sources.list.d/nginx.list" <<EOF
-deb [signed-by=${keyring}] http://nginx.org/packages/mainline/ubuntu ${codename} nginx
-EOF
+    # Use printf (not heredoc) to guarantee a single clean line with no
+    # trailing whitespace or extra newlines — heredoc expansion of
+    # ${codename} is safe here but printf is unambiguous.
+    printf 'deb [signed-by=%s] http://nginx.org/packages/mainline/ubuntu %s nginx\n' \
+        "$keyring" "$codename" \
+        > "/etc/apt/sources.list.d/nginx.list"
     # Pin official repo above distro repo so apt always picks mainline
     cat > "/etc/apt/preferences.d/99nginx" <<'EOF'
 Package: nginx
