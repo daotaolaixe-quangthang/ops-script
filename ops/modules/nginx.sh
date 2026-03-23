@@ -278,9 +278,11 @@ _nginx_ensure_log_format() {
         { print }
     ' "$conf" > "${conf}.tmp" && mv "${conf}.tmp" "$conf" || rm -f "${conf}.tmp"
 
-    # Switch access_log to use our new format
+    # Switch access_log to use our new format (replace any existing format name with main_ext)
+    # Pattern: match 'access_log <path> [old_format]' and normalise to 'access_log <path> main_ext'
+    # The [^;[:space:]]+ at the end strips the current format word (e.g. 'main') before appending.
     sed -i -E \
-        "s|^([[:space:]]*access_log[[:space:]]+[^;]+);|\1 main_ext;|" \
+        "s|^([[:space:]]*access_log[[:space:]]+[^[:space:];]+)([[:space:]]+[^[:space:];]+)?[[:space:]]*;|\1 main_ext;|" \
         "$conf"
 }
 
