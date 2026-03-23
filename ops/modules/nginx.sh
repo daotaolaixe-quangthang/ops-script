@@ -1216,13 +1216,18 @@ nginx_edit_domain() {
         return 1
     fi
 
-    # Read current state.
-    local type backend_target php_version php_socket web_root
-    type=$(grep '^DOMAIN_BACKEND_TYPE=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
-    backend_target=$(grep '^DOMAIN_BACKEND_TARGET=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
-    php_version=$(grep '^DOMAIN_PHP_VERSION=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
-    php_socket=$(grep '^DOMAIN_PHP_SOCKET=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
-    web_root=$(grep '^DOMAIN_WEB_ROOT=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
+    # Read current state via the safe parser (P-05 fix) — same path as _rebuild_domain_vhost.
+    local DOMAIN DOMAIN_BACKEND_TYPE DOMAIN_BACKEND_TARGET DOMAIN_PHP_VERSION DOMAIN_PHP_SOCKET DOMAIN_WEB_ROOT
+    eval "$(_load_domain_state "$state_file")"
+    local type="${DOMAIN_BACKEND_TYPE:-}"
+    local backend_target="${DOMAIN_BACKEND_TARGET:-}"
+    local php_version="${DOMAIN_PHP_VERSION:-}"
+    local php_socket="${DOMAIN_PHP_SOCKET:-}"
+    local web_root="${DOMAIN_WEB_ROOT:-}"
+    if ! _validate_domain_state "$domain" "$type" "$php_version" "$php_socket" "$web_root"; then
+        print_error "State file for '${domain}' is corrupted — cannot edit. Check ${state_file}."
+        return 1
+    fi
 
     print_section "Edit Domain: ${domain} (type=${type})"
 

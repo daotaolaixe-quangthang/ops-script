@@ -149,8 +149,31 @@ detect_ssh_state() {
         # Primary path: parse sshd -T output (field: "port <N>")
         port_source=$(printf '%s\n' "$sshd_t_out" | awk '/^port / {print $2}')
     elif [[ -f "$sshd_conf" ]]; then
-        # Fallback: grep main sshd_config file (misses sshd_config.d/)
+        # Fallback 1: grep main sshd_config (misses sshd_config.d/ includes)
         port_source=$(grep -E '^[[:space:]]*Port[[:space:]]+[0-9]+' "$sshd_conf" | awk '{print $2}')
+    fi
+
+    # F-01b fix: if still empty, try live socket detection via ss.
+    # Covers restricted containers (OpenVZ/LXC) where sshd -T returns nothing.
+    if [[ -z "$port_source" ]] && command -v ss > /dev/null 2>&1; then
+        local _live_ports
+        _live_ports=$(ss -tlnp 2>/dev/null \
+            | awk '/sshd/{match($4,/[0-9]+$/); if(RSTART) print substr($4,RSTART,RLENGTH)}' \
+            | sort -un | head -5 || true)
+        if [[ -n "$_live_ports" ]]; then
+            warn "sshd -T returned no output — using live ss port detection."
+            port_source="$_live_ports"
+        fi
+    fi
+
+    # Safety guard: if sshd is running but we still cannot detect any port,
+    # skip reconfiguration to avoid an unexpected port change / lockout.
+    if [[ -z "$port_source" ]] && pgrep -x sshd > /dev/null 2>&1; then
+        warn "Cannot determine active SSH port(s) — skipping automatic SSH reconfiguration."
+        warn "Check 'ss -tlnp' manually, then re-run: bash ops-install.sh"
+        SSH_ALREADY_CONFIGURED="yes"
+        export SSH_ALREADY_CONFIGURED
+        return 0
     fi
 
     local port
@@ -546,6 +569,7 @@ install_ops_core() {
             chown -R "${ADMIN_USER}:${ADMIN_USER}" "${OPS_INSTALL_DIR}/${_data_dir}"
         fi
     done
+    unset _data_dir _exec_dir
 
     ok "OPS core installed at ${OPS_INSTALL_DIR} (from tarball — no git required)."
 }
