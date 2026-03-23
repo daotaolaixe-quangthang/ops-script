@@ -1815,26 +1815,59 @@ nginx_remove_vhost() {
 }
 nginx_status() { nginx -t && service_status nginx || true; }
 ssl_install_certbot() { _install_certbot_snap; }
-ssl_issue_cert() {
-    print_section "Issue SSL Certificate (Let's Encrypt)"
-    require_root || return 1
 
-    # Build list of OPS-managed domains from state files
-    local domains=()
+# _ssl_collect_domains
+# Populate the caller's 'domains' array with all known domains.
+# Sources (deduplicated, sorted):
+#   1. /etc/ops/domains/*.conf  — OPS-managed domains (add_domain)
+#   2. /etc/nginx/sites-available/*  — all nginx vhosts incl. nine-router
+# Excludes: 00-default-deny, *.bak.* backup files, and directories.
+_ssl_collect_domains() {
+    local -A _seen=()
+
+    # Source 1: OPS state files
     if ls "${OPS_DOMAINS_DIR}"/*.conf > /dev/null 2>&1; then
         local _sf _DOMAIN
         for _sf in "${OPS_DOMAINS_DIR}"/*.conf; do
             _DOMAIN=""
             eval "$(_load_domain_state "$_sf")"
-            [[ -n "${_DOMAIN:-}" ]] && domains+=("$_DOMAIN")
+            if [[ -n "${_DOMAIN:-}" && -z "${_seen[$_DOMAIN]:-}" ]]; then
+                domains+=("$_DOMAIN")
+                _seen[$_DOMAIN]=1
+            fi
         done
     fi
+
+    # Source 2: nginx sites-available (catches nine-router and manual vhosts)
+    if [[ -d "$NGINX_SITES_AVAILABLE" ]]; then
+        local _f _name
+        for _f in "${NGINX_SITES_AVAILABLE}"/*; do
+            [[ -f "$_f" ]] || continue
+            _name="$(basename "$_f")"
+            # Skip default deny and backup files
+            [[ "$_name" == "${NGINX_DEFAULT_DENY_NAME}" ]] && continue
+            [[ "$_name" == *.bak.* ]] && continue
+            # Extract domain: strip leading nine-router. prefix if present
+            local _d="${_name#nine-router.}"
+            if _domain_is_valid "$_d" && [[ -z "${_seen[$_d]:-}" ]]; then
+                domains+=("$_d")
+                _seen[$_d]=1
+            fi
+        done
+    fi
+}
+
+ssl_issue_cert() {
+    print_section "Issue SSL Certificate (Let's Encrypt)"
+    require_root || return 1
+
+    local domains=()
+    _ssl_collect_domains
 
     local domain=""
 
     if [[ ${#domains[@]} -eq 0 ]]; then
-        # No managed domains — fall back to manual input
-        print_warn "No OPS-managed domains found. Enter domain manually."
+        print_warn "No domains found. Enter domain manually."
         prompt_input "Enter domain to issue SSL (e.g. example.com)"
         domain="$REPLY"
     else
@@ -2026,21 +2059,13 @@ ssl_prompt_cf_origin_cert() {
         return 1
     fi
 
-    # Build list of OPS-managed domains
     local domains=()
-    if ls "${OPS_DOMAINS_DIR}"/*.conf > /dev/null 2>&1; then
-        local _sf _DOMAIN
-        for _sf in "${OPS_DOMAINS_DIR}"/*.conf; do
-            _DOMAIN=""
-            eval "$(_load_domain_state "$_sf")"
-            [[ -n "${_DOMAIN:-}" ]] && domains+=("$_DOMAIN")
-        done
-    fi
+    _ssl_collect_domains
 
     local domain=""
 
     if [[ ${#domains[@]} -eq 0 ]]; then
-        print_warn "No OPS-managed domains found. Enter domain manually."
+        print_warn "No domains found. Enter domain manually."
         prompt_input "Enter domain (e.g. ducnv.email)"
         domain="$REPLY"
     else
