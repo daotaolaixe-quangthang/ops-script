@@ -60,6 +60,17 @@ _nginx_detect_tuning() {
             worker_connections="4096"
             ;;
     esac
+
+    # S1-4 fix: Tier is RAM-based; a Tier-L VPS may have fewer vCPUs than the
+    # tier's nominal worker count (e.g. 2 cores + 8 GB RAM → Tier L → 4 workers).
+    # Extra workers beyond core count increase context-switch overhead with no
+    # throughput gain. Cap to the actual physical/virtual core count.
+    local cpu_cap
+    cpu_cap="${CPU_CORES:-$(nproc)}"
+    if (( worker_processes > cpu_cap )); then
+        worker_processes="$cpu_cap"
+    fi
+
     printf '%s;%s\n' "$worker_processes" "$worker_connections"
 }
 
@@ -282,6 +293,12 @@ _nginx_apply_global_tuning() {
 
     [[ -f "$conf" ]] || return 0
     backup_file "$conf" > /dev/null || true
+
+    # S1-4 fix: Remove stale Strict-Transport-Security from the global http{}
+    # block if present from older OPS versions. HSTS must only appear inside
+    # SSL vhost server{} blocks (RFC 6797 §7.2); a global HSTS header is ignored
+    # by browsers on plain HTTP and causes policy errors on non-SSL vhosts.
+    sed -i '/^[[:space:]]*add_header[[:space:]]\+Strict-Transport-Security/d' "$conf"
 
     # ── Main context ──────────────────────────────────────────
     sed -i -E "s/^\s*worker_processes\s+[^;]+;/worker_processes ${worker_processes};/" "$conf"
