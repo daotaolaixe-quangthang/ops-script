@@ -197,17 +197,19 @@ test_claude_cli() {
 
 # ── Telegram Bot ─────────────────────────────────────────────
 
-CLAUDE_TG_DIR="/opt/claude-code-telegram"
-CLAUDE_TG_ENV="${CLAUDE_TG_DIR}/.env"
 CLAUDE_TG_SERVICE="claude-telegram-bot"
 
-_tg_admin_home() { _claude_admin_home; }
+_tg_dir() { echo "$(_claude_admin_home)/claude-telegram"; }
+_tg_env() { echo "$(_tg_dir)/.env"; }
 
 install_claude_telegram_bot() {
     print_section "Install Claude Code Telegram Bot"
     echo ""
 
     local repo_url="https://github.com/daotaolaixe-quangthang/claude-code-telegram"
+    local tg_dir tg_env
+    tg_dir="$(_tg_dir)"
+    tg_env="$(_tg_env)"
 
     log_info "Installing Python dependencies (pip3)..."
     pip3 install --quiet git+"${repo_url}" 2>&1 || {
@@ -220,42 +222,50 @@ install_claude_telegram_bot() {
         fi
     }
 
-    log_info "Cloning repo to ${CLAUDE_TG_DIR} for config templates..."
-    if [[ -d "${CLAUDE_TG_DIR}" ]]; then
-        git -C "${CLAUDE_TG_DIR}" pull --quiet 2>&1
+    log_info "Cloning repo to ${tg_dir} for config templates..."
+    if [[ -d "${tg_dir}" ]]; then
+        git -C "${tg_dir}" pull --quiet 2>&1
     else
-        git clone --depth=1 "${repo_url}" "${CLAUDE_TG_DIR}" 2>&1
+        git clone --depth=1 "${repo_url}" "${tg_dir}" 2>&1
     fi
+    chown -R "${ADMIN_USER}:${ADMIN_USER}" "${tg_dir}"
 
     # Copy .env.example if .env not yet present
-    if [[ ! -f "${CLAUDE_TG_ENV}" ]] && [[ -f "${CLAUDE_TG_DIR}/.env.example" ]]; then
-        cp "${CLAUDE_TG_DIR}/.env.example" "${CLAUDE_TG_ENV}"
-        chmod 600 "${CLAUDE_TG_ENV}"
-        chown "${ADMIN_USER}:${ADMIN_USER}" "${CLAUDE_TG_ENV}"
-        log_info "Created ${CLAUDE_TG_ENV} from example — please configure it."
+    if [[ ! -f "${tg_env}" ]] && [[ -f "${tg_dir}/.env.example" ]]; then
+        cp "${tg_dir}/.env.example" "${tg_env}"
+        chmod 600 "${tg_env}"
+        chown "${ADMIN_USER}:${ADMIN_USER}" "${tg_env}"
+        log_info "Created ${tg_env} from example — please configure it."
     fi
 
     _claude_set_state "CLAUDE_TG_INSTALLED"    "yes"
     _claude_set_state "CLAUDE_TG_INSTALL_DATE" "$(date +%Y-%m-%d)"
-    log_info "Claude Code Telegram Bot installed."
+    log_info "Claude Code Telegram Bot installed → ${tg_dir}"
     echo ""
 }
 
 configure_claude_telegram_bot() {
+    local tg_dir tg_env bashrc
+    tg_dir="$(_tg_dir)"
+    tg_env="$(_tg_env)"
+    bashrc="$(_claude_bashrc)"
+
     print_section "Configure Claude Code Telegram Bot"
     echo ""
     echo "  ── Hướng dẫn ──────────────────────────────────────────────"
     echo "  Bot Token  : Nhắn tin @BotFather trên Telegram → /newbot"
     echo "  User ID    : Nhắn tin @userinfobot trên Telegram để lấy ID"
-    echo "  API Key    : Tự động dùng auth của Claude Code CLI (không cần nhập)"
+    echo "  API Key    : Tự động copy từ cấu hình Claude Code CLI"
     echo "  ─────────────────────────────────────────────────────────────"
     echo ""
 
     # Ensure install dir exists
-    if [[ ! -d "${CLAUDE_TG_DIR}" ]]; then
+    if [[ ! -d "${tg_dir}" ]]; then
         log_error "Telegram bot not installed. Run install first."
         return 1
     fi
+
+    # ── User inputs ───────────────────────────────────────────
 
     # Bot Token
     local bot_token
@@ -279,29 +289,51 @@ configure_claude_telegram_bot() {
         return 1
     fi
 
-    # Approved directory
+    # Approved directory (default: admin home)
+    local admin_home
+    admin_home="$(_claude_admin_home)"
     local approved_dir
-    read -r -p "  Approved directory for project access [/var/www]: " approved_dir
-    approved_dir="${approved_dir:-/var/www}"
+    read -r -p "  Approved directory [${admin_home}]: " approved_dir
+    approved_dir="${approved_dir:-${admin_home}}"
+
+    # ── Auto-copy ANTHROPIC_* from Claude Code CLI bashrc ─────
+    local api_key base_url model
+    if [[ -f "$bashrc" ]]; then
+        api_key=$(grep  "^export ANTHROPIC_API_KEY="  "$bashrc" | tail -1 | cut -d= -f2-)
+        base_url=$(grep "^export ANTHROPIC_BASE_URL=" "$bashrc" | tail -1 | cut -d= -f2-)
+        model=$(grep    "^export ANTHROPIC_MODEL="    "$bashrc" | tail -1 | cut -d= -f2- | tr -d '"')
+    fi
 
     echo ""
-    log_info "Writing ${CLAUDE_TG_ENV} ..."
+    log_info "Writing ${tg_env} ..."
+    if [[ -n "$api_key" ]];  then log_info "  ANTHROPIC_API_KEY  : ${api_key:0:8}****"; fi
+    if [[ -n "$base_url" ]]; then log_info "  ANTHROPIC_BASE_URL : ${base_url}"; fi
+    if [[ -n "$model" ]];    then log_info "  ANTHROPIC_MODEL    : ${model}"; fi
 
-    # Build .env — API key omitted, reuses Claude Code CLI auth
-    cat > "${CLAUDE_TG_ENV}" <<EOF
+    mkdir -p "${tg_dir}"
+
+    # Build .env
+    cat > "${tg_env}" <<EOF
 TELEGRAM_BOT_TOKEN=${bot_token}
 TELEGRAM_BOT_USERNAME=${bot_username}
 APPROVED_DIRECTORY=${approved_dir}
 ALLOWED_USERS=${allowed_users}
+AGENTIC_MODE=true
+VERBOSE_LEVEL=1
 EOF
 
-    chmod 600 "${CLAUDE_TG_ENV}"
-    chown "${ADMIN_USER}:${ADMIN_USER}" "${CLAUDE_TG_ENV}"
+    # Append ANTHROPIC_* only if available from Claude Code CLI
+    if [[ -n "$api_key" ]];  then echo "ANTHROPIC_API_KEY=${api_key}"   >> "${tg_env}"; fi
+    if [[ -n "$base_url" ]]; then echo "ANTHROPIC_BASE_URL=${base_url}" >> "${tg_env}"; fi
+    if [[ -n "$model" ]];    then echo "ANTHROPIC_MODEL=${model}"       >> "${tg_env}"; fi
+
+    chmod 600 "${tg_env}"
+    chown "${ADMIN_USER}:${ADMIN_USER}" "${tg_env}"
 
     _claude_set_state "CLAUDE_TG_BOT_USERNAME"  "$bot_username"
     _claude_set_state "CLAUDE_TG_ALLOWED_USERS" "$allowed_users"
     _claude_set_state "CLAUDE_TG_APPROVED_DIR"  "$approved_dir"
-    log_info "Telegram bot configured."
+    log_info "Telegram bot configured → ${tg_env}"
     echo ""
     print_warn "Run 'Start Telegram bot' from the menu to launch."
     echo ""
@@ -311,7 +343,11 @@ start_claude_telegram_bot() {
     print_section "Start Claude Code Telegram Bot"
     echo ""
 
-    if [[ ! -f "${CLAUDE_TG_ENV}" ]]; then
+    local tg_dir tg_env
+    tg_dir="$(_tg_dir)"
+    tg_env="$(_tg_env)"
+
+    if [[ ! -f "${tg_env}" ]]; then
         log_error ".env not found. Run Configure first."
         return 1
     fi
@@ -323,7 +359,8 @@ start_claude_telegram_bot() {
     fi
 
     # Fallback: run via nohup as admin user
-    local log_file="/var/log/claude-telegram-bot.log"
+    local log_file
+    log_file="$(_claude_admin_home)/claude-telegram-bot.log"
     local pid_file="/var/run/claude-telegram-bot.pid"
 
     if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
@@ -333,7 +370,7 @@ start_claude_telegram_bot() {
 
     log_info "Starting bot in background..."
     sudo -u "${ADMIN_USER}" bash -c \
-        "cd '${CLAUDE_TG_DIR}' && nohup python3 -m claude_code_telegram >> '${log_file}' 2>&1 & echo \$! > '${pid_file}'"
+        "cd '${tg_dir}' && nohup python3 -m claude_code_telegram >> '${log_file}' 2>&1 & echo \$! > '${pid_file}'"
     sleep 1
     if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
         log_info "Bot started (PID $(cat "$pid_file")). Log: ${log_file}"
@@ -392,7 +429,8 @@ status_claude_telegram_bot() {
         echo "  Status : STOPPED"
     fi
 
-    local log_file="/var/log/claude-telegram-bot.log"
+    local log_file
+    log_file="$(_claude_admin_home)/claude-telegram-bot.log"
     if [[ -f "$log_file" ]]; then
         echo ""
         echo "  --- Last 10 log lines ---"
