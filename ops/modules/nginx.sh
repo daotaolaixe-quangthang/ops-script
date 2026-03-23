@@ -877,6 +877,38 @@ _install_certbot_cron_fallback() {
         chmod 644 "$cron_file"
         log_info "P5-B: certbot cron renewal fallback written to ${cron_file}"
     fi
+    _install_certbot_deploy_hook
+}
+
+_install_certbot_deploy_hook() {
+    # P5-C: Create a deploy hook to reload nginx after certbot successfully renews a cert.
+    # Without this hook, certbot renew updates the cert files on disk but nginx keeps
+    # serving the old (possibly expired) cert until manually reloaded — invisible failure.
+    # Certbot runs all executable scripts in /etc/letsencrypt/renewal-hooks/deploy/
+    # automatically after each successful renewal. Idempotent: only writes if absent.
+    local hook_dir="/etc/letsencrypt/renewal-hooks/deploy"
+    local hook_file="${hook_dir}/nginx-reload.sh"
+    if [[ ! -f "$hook_file" ]]; then
+        mkdir -p "$hook_dir"
+        cat > "$hook_file" << 'HOOK'
+#!/bin/bash
+# Managed by OPS — reload nginx after certbot cert renewal
+# Runs automatically by certbot after each successful renewal.
+if systemctl is-active --quiet nginx; then
+    if nginx -t 2>&1; then
+        systemctl reload nginx
+        echo "[$(date)] nginx reloaded after cert renewal for: $RENEWED_DOMAINS"
+    else
+        echo "[$(date)] ERROR: nginx config test failed after cert renewal for: $RENEWED_DOMAINS" >&2
+        exit 1
+    fi
+else
+    echo "[$(date)] WARNING: nginx not running, skipping reload for: $RENEWED_DOMAINS"
+fi
+HOOK
+        chmod +x "$hook_file"
+        log_info "P5-C: certbot deploy hook (nginx reload) written to ${hook_file}"
+    fi
 }
 
 _install_certbot_snap() {
@@ -907,6 +939,7 @@ _install_certbot_snap() {
         log_warn "S1-2: systemctl enable --now snap.certbot.renew.timer failed — relying on cron fallback."
     fi
     _install_certbot_cron_fallback
+    _install_certbot_deploy_hook
     # S3-3 fix: limit snap to 2 retained revisions and immediately purge any stale ones.
     # Default is 3 revisions; on a VPS with certbot+snapd+core chain each refresh cycle
     # accumulates loop devices. retain=2 caps the per-snap overhead at install time.
