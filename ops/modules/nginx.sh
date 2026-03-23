@@ -814,7 +814,7 @@ menu_nginx() {
         case "$choice" in
             1) list_domains                 ;;
             2) nginx_prompt_add_domain      ;;
-            3) print_warn "Edit domain: not implemented yet." ;;
+            3) nginx_prompt_edit_domain      ;;
             4) nginx_prompt_remove_domain   ;;
             5) _nginx_test_and_reload       ;;
             6) install_nginx               ;;
@@ -1073,6 +1073,117 @@ add_domain() {
     _nginx_test_and_reload
     print_ok "Domain added: ${domain} (${type})"
     print_warn "SSL not issued here. Use SSL Management to issue certificate."
+}
+
+nginx_prompt_edit_domain() {
+    print_section "Edit Domain"
+    require_root || return 1
+
+    if ! ls "${OPS_DOMAINS_DIR}"/*.conf > /dev/null 2>&1; then
+        print_warn "No managed domains found."
+        return 0
+    fi
+
+    list_domains
+    echo ""
+    prompt_input "Enter domain to edit"
+    local domain="$REPLY"
+    nginx_edit_domain "$domain"
+}
+
+# nginx_edit_domain <domain>
+# F-25 fix: implement the previously-stubbed "Edit domain" menu option.
+# Reads the current state file, prompts for the field(s) relevant to the
+# backend type, writes the updated state, rebuilds the vhost from scratch,
+# and reloads Nginx.  Atomic: the state file is only overwritten after the
+# new vhost passes nginx -t (enforced inside _rebuild_domain_vhost).
+nginx_edit_domain() {
+    local domain="${1:-}"
+    require_root || return 1
+
+    if [[ -z "$domain" ]]; then
+        print_error "Usage: nginx_edit_domain <domain>"
+        return 1
+    fi
+
+    local state_file="${OPS_DOMAINS_DIR}/${domain}.conf"
+    if [[ ! -f "$state_file" ]]; then
+        print_error "No state file for domain '${domain}'. Is it managed by OPS?"
+        return 1
+    fi
+
+    # Read current state.
+    local type backend_target php_version php_socket web_root
+    type=$(grep '^DOMAIN_BACKEND_TYPE=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
+    backend_target=$(grep '^DOMAIN_BACKEND_TARGET=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
+    php_version=$(grep '^DOMAIN_PHP_VERSION=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
+    php_socket=$(grep '^DOMAIN_PHP_SOCKET=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
+    web_root=$(grep '^DOMAIN_WEB_ROOT=' "$state_file" | head -n1 | cut -d= -f2- | tr -d '"')
+
+    print_section "Edit Domain: ${domain} (type=${type})"
+
+    case "$type" in
+        node)
+            local current_port new_port
+            current_port="${backend_target#127.0.0.1:}"
+            echo "  Current port: ${current_port}"
+            prompt_input "Enter new Node.js port (leave blank to keep ${current_port})"
+            new_port="${REPLY:-$current_port}"
+            if [[ ! "$new_port" =~ ^[0-9]{2,5}$ ]]; then
+                print_error "Invalid port: ${new_port}"
+                return 1
+            fi
+            if [[ "$new_port" == "$current_port" ]]; then
+                print_warn "Port unchanged — no action taken."
+                return 0
+            fi
+            backend_target="127.0.0.1:${new_port}"
+            # State written first, then vhost rebuilt from it.
+            _write_domain_state "$domain" "$type" "$backend_target" "" ""
+            if ! _rebuild_domain_vhost "$domain"; then
+                print_error "Vhost rebuild failed — rolling back state file."
+                _write_domain_state "$domain" "$type" "127.0.0.1:${current_port}" "" ""
+                return 1
+            fi
+            print_ok "Domain ${domain}: port updated ${current_port} → ${new_port}"
+            ;;
+        php)
+            local new_php_version new_php_socket site_slug
+            echo "  Current PHP version: ${php_version}"
+            prompt_input "Enter new PHP version (e.g. 8.3, leave blank to keep ${php_version})"
+            new_php_version="${REPLY:-$php_version}"
+            if [[ ! "$new_php_version" =~ ^[0-9]+\.[0-9]+$ ]]; then
+                print_error "Invalid PHP version: ${new_php_version}"
+                return 1
+            fi
+            if [[ "$new_php_version" == "$php_version" ]]; then
+                print_warn "PHP version unchanged — no action taken."
+                return 0
+            fi
+            site_slug="$(_domain_slug "$domain")"
+            new_php_socket="/run/php/php${new_php_version}-fpm-${site_slug}.sock"
+            _write_domain_state "$domain" "$type" "$new_php_socket" "$new_php_version" "$new_php_socket"
+            if ! _rebuild_domain_vhost "$domain"; then
+                print_error "Vhost rebuild failed — rolling back state file."
+                _write_domain_state "$domain" "$type" "$php_socket" "$php_version" "$php_socket"
+                return 1
+            fi
+            print_ok "Domain ${domain}: PHP version updated ${php_version} → ${new_php_version}"
+            print_warn "Ensure php${new_php_version}-fpm is installed and a pool config exists for ${domain}."
+            ;;
+        static)
+            print_warn "Static site '${domain}' has no configurable backend parameters."
+            echo "  Web root: ${web_root}"
+            echo "  To move the web root, remove and re-add the domain."
+            return 0
+            ;;
+        *)
+            print_error "Unknown backend type '${type}' for domain '${domain}'."
+            return 1
+            ;;
+    esac
+
+    _nginx_test_and_reload
 }
 
 nginx_prompt_remove_domain() {
