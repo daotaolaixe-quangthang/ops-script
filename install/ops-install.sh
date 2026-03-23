@@ -246,8 +246,13 @@ _configure_sshd_fresh() {
 }
 
 # _strip_cloud_init_ssh_overrides
-# Removes PasswordAuthentication, PermitRootLogin, X11Forwarding directives
-# from all sshd_config.d/ files EXCEPT 99-ops-hardening.conf.
+# Removes Port, PasswordAuthentication, PermitRootLogin, X11Forwarding and other
+# directives from all sshd_config.d/ files EXCEPT 99-ops-hardening.conf.
+# Port is included because _configure_sshd_fresh writes the authoritative Port
+# lines to the main sshd_config; any Port directive left in sshd_config.d/ would
+# cause sshd to listen on a stale cloud-init port in addition to the OPS-managed
+# ports (e.g. cloud-init sets Port 5022 → after fresh‑configure sshd would listen
+# on 22, NEW_PORT, AND 5022 if this strip were not applied).
 # Idempotent: safe to call multiple times.
 _strip_cloud_init_ssh_overrides() {
     local sshd_inc_dir="/etc/ssh/sshd_config.d"
@@ -258,11 +263,11 @@ _strip_cloud_init_ssh_overrides() {
         [[ -f "$f" ]] || continue
         [[ "$(basename "$f")" == "99-ops-hardening.conf" ]] && continue
         if grep -Eq \
-            '^[[:space:]]*(PasswordAuthentication|PermitRootLogin|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|PermitTunnel)[[:space:]]+' \
+            '^[[:space:]]*(Port|PasswordAuthentication|PermitRootLogin|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|PermitTunnel)[[:space:]]+' \
             "$f" 2>/dev/null; then
             cp "$f" "${f}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
             sed -i -E \
-                '/^[[:space:]]*(PasswordAuthentication|PermitRootLogin|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|PermitTunnel)[[:space:]]+/d' \
+                '/^[[:space:]]*(Port|PasswordAuthentication|PermitRootLogin|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|PermitTunnel)[[:space:]]+/d' \
                 "$f"
             ok "Stripped conflicting SSH directives from: $(basename "$f")"
         fi

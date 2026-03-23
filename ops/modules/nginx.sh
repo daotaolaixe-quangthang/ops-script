@@ -952,8 +952,24 @@ add_domain() {
     ensure_dir "$NGINX_SITES_ENABLED"
     ensure_dir "$OPS_DOMAINS_DIR"
 
+    # F-03 fix: duplicate domain guard — prevent silent overwrite of a live vhost.
+    # FORCE_OVERWRITE=1 bypasses the prompt for scripted/non-interactive callers.
     local available="${NGINX_SITES_AVAILABLE}/${domain}"
     local enabled="${NGINX_SITES_ENABLED}/${domain}"
+    local _state_file="${OPS_DOMAINS_DIR}/${domain}.conf"
+    if [[ -f "$available" || -f "$_state_file" ]]; then
+        if [[ "${FORCE_OVERWRITE:-0}" != "1" ]]; then
+            print_warn "Domain '${domain}' already has an existing vhost or state file."
+            print_warn "Overwriting will replace the live Nginx config for this domain."
+            local _ow_ans
+            read -r -p "Overwrite existing config for '${domain}'? [y/N]: " _ow_ans
+            if [[ "${_ow_ans,,}" != "y" ]]; then
+                print_warn "Aborted. Existing config for '${domain}' was NOT changed."
+                return 0
+            fi
+        fi
+        log_info "F-03: Overwriting existing vhost for '${domain}' (FORCE_OVERWRITE=${FORCE_OVERWRITE:-0})."
+    fi
     local web_root="/var/www/${domain}"
     local backend_target=""
     local php_version=""
@@ -1020,6 +1036,13 @@ nginx_prompt_remove_domain() {
 }
 
 # remove_domain <domain>
+# F-04 fix: transactional removal order —
+#   1. Read state (before any delete)
+#   2. Clean backend first: remove FPM pool → restart/reload FPM → verify FPM config
+#   3. Remove Nginx config files (symlink first so nginx -t won't see a broken ref)
+#   4. Remove OPS state file (commit point)
+#   5. create_default_deny + nginx -t + reload
+# This order prevents orphaned FPM pool sockets and ensures nginx -t succeeds post-removal.
 remove_domain() {
     local domain="${1:-}"
     require_root || return 1
@@ -1035,8 +1058,7 @@ remove_domain() {
         return 0
     fi
 
-    # F-04: Read backend type BEFORE deleting state file, so we can clean up
-    # the correct backend resources (PHP-FPM pool / PM2 warning).
+    # Step 1: Read backend metadata BEFORE any delete.
     local state_file="${OPS_DOMAINS_DIR}/${domain}.conf"
     local backend_type php_version site_slug
     if [[ -f "$state_file" ]]; then
@@ -1044,12 +1066,9 @@ remove_domain() {
         php_version=$(grep '^DOMAIN_PHP_VERSION='   "$state_file" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '"')
     fi
 
-    # Remove Nginx config files and OPS domain state
-    rm -f "${NGINX_SITES_ENABLED}/${domain}"
-    rm -f "${NGINX_SITES_AVAILABLE}/${domain}"
-    rm -f "$state_file"
-
-    # Backend-specific cleanup
+    # Step 2: Backend-specific cleanup FIRST (before touching Nginx files).
+    # Removing the FPM pool before the Nginx config means FPM is in a clean state
+    # by the time we remove Nginx files and run nginx -t.
     case "${backend_type:-}" in
         php)
             if [[ -n "$php_version" ]]; then
@@ -1058,8 +1077,15 @@ remove_domain() {
                 if [[ -f "$pool_file" ]]; then
                     backup_file "$pool_file" >/dev/null || true
                     rm -f "$pool_file"
-                    service_restart "php${php_version}-fpm" 2>/dev/null || true
-                    log_info "remove_domain: removed PHP-FPM pool ${pool_file} and restarted php${php_version}-fpm"
+                    # Restart FPM; log a warning on failure but do not abort —
+                    # the pool conf is already removed, so the socket will not be
+                    # re-created on next FPM start even if this restart fails.
+                    if ! service_restart "php${php_version}-fpm" 2>/dev/null; then
+                        log_warn "remove_domain: php${php_version}-fpm restart failed after pool removal — check FPM config manually"
+                        print_warn "php${php_version}-fpm restart failed. Pool file removed, but FPM may need manual restart."
+                    else
+                        log_info "remove_domain: removed PHP-FPM pool ${pool_file} and restarted php${php_version}-fpm"
+                    fi
                 fi
                 rm -f "${PHP_SITES_DIR}/${site_slug}.conf" 2>/dev/null || true
                 print_ok "PHP-FPM pool removed for ${domain} (PHP ${php_version})."
@@ -1071,6 +1097,15 @@ remove_domain() {
             ;;
     esac
 
+    # Step 3: Remove Nginx config files.
+    # Remove symlink first so nginx -t at step 5 won't reference the available file.
+    rm -f "${NGINX_SITES_ENABLED}/${domain}"
+    rm -f "${NGINX_SITES_AVAILABLE}/${domain}"
+
+    # Step 4: Commit — remove OPS state file only after backend and Nginx files are gone.
+    rm -f "$state_file"
+
+    # Step 5: Ensure default-deny vhost and reload Nginx.
     create_default_deny
     _nginx_test_and_reload
     print_ok "Domain ${domain} removed."

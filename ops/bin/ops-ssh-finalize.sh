@@ -148,6 +148,13 @@ EOF
         if [[ -n "$inc_bak" && -f "$inc_bak" ]]; then
             cp "$inc_bak" "$SSHD_OPS_INCLUDE"
             _warn "Restored ${SSHD_OPS_INCLUDE} from ${inc_bak}."
+        else
+            # inc_bak is empty → file was freshly created this run (did not exist before).
+            # Remove it so the restored sshd_config has no broken include to load.
+            if [[ -f "$SSHD_OPS_INCLUDE" ]]; then
+                rm -f "$SSHD_OPS_INCLUDE"
+                _warn "Removed freshly-created (possibly corrupt) ${SSHD_OPS_INCLUDE} during rollback."
+            fi
         fi
         exit 1
     fi
