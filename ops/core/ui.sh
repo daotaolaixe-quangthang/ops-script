@@ -38,10 +38,10 @@ prompt_input() {
     local label="$1"
     local default="${2:-}"
     if [[ -n "$default" ]]; then
-        read -r -p "${label} [${default}]: " REPLY
+        read -r -p "${label} [${default}]: " REPLY </dev/tty
         REPLY="${REPLY:-$default}"
     else
-        read -r -p "${label}: " REPLY
+        read -r -p "${label}: " REPLY </dev/tty
     fi
 }
 
@@ -53,7 +53,7 @@ prompt_text() {
 # Returns 0 (yes) or 1 (no). Treats anything other than y/Y as no.
 prompt_confirm() {
     local label="${1:-Are you sure?}"
-    read -r -p "${label} [y/N]: " ans
+    read -r -p "${label} [y/N]: " ans </dev/tty
     [[ "${ans,,}" == "y" ]]
 }
 
@@ -65,7 +65,7 @@ confirm() {
 # Reads a secret without echoing; stores result in SECRET.
 prompt_secret() {
     local label="${1:-Enter secret}"
-    read -r -s -p "${label}: " SECRET
+    read -r -s -p "${label}: " SECRET </dev/tty
     echo
 }
 
