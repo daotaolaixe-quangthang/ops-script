@@ -291,6 +291,29 @@ _nginx_ensure_log_format() {
         "$conf"
 }
 
+# _nginx_ensure_sites_enabled_include <conf>
+# nginx mainline (nginx.org package) only ships with:
+#   include /etc/nginx/conf.d/*.conf;
+# Our managed vhosts live in sites-enabled/. Without this include they are
+# silently ignored — port 443 never binds even when the vhost file is valid.
+# This function idempotently adds the include if not already present.
+_nginx_ensure_sites_enabled_include() {
+    local conf="$1"
+    # Already present? Nothing to do.
+    if grep -q 'sites-enabled' "$conf" 2>/dev/null; then
+        return 0
+    fi
+    # Insert after the conf.d include line (it must already exist)
+    if grep -q 'conf\.d/\*\.conf' "$conf" 2>/dev/null; then
+        sed -i 's|include /etc/nginx/conf\.d/\*\.conf;|include /etc/nginx/conf.d/*.conf;\n    include /etc/nginx/sites-enabled/*;|' "$conf"
+        log_info "Added 'include /etc/nginx/sites-enabled/*;' to ${conf}"
+        return 0
+    fi
+    # Fallback: append inside http block before closing brace
+    _nginx_ensure_http_directive "$conf" "include" "/etc/nginx/sites-enabled/*"
+    log_info "Fallback: inserted sites-enabled include into http{} block in ${conf}"
+}
+
 _nginx_apply_global_tuning() {
     local conf="/etc/nginx/nginx.conf"
     local tuning worker_processes worker_connections
@@ -368,6 +391,12 @@ _nginx_apply_global_tuning() {
 
     # ── HTTP block: custom log format with upstream timing ────
     _nginx_ensure_log_format "$conf"
+
+    # ── Ensure sites-enabled is included ─────────────────────
+    # nginx mainline (nginx.org package) only ships with conf.d/*.conf include.
+    # Our vhosts live in sites-enabled/ — without this include they are silently
+    # ignored and port 443 never binds even with a valid vhost + cert.
+    _nginx_ensure_sites_enabled_include "$conf"
 
     log_info "Applied nginx tuning: worker_processes=${worker_processes}, worker_connections=${worker_connections}, rlimit=65535, multi_accept=on, epoll, keepalive=30s, client limits, gzip full, open_file_cache, rate limit zones, security headers, log_format main_ext."
 }
