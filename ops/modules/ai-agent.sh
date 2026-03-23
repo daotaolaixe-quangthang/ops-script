@@ -195,6 +195,235 @@ test_claude_cli() {
     echo ""
 }
 
+# ── Telegram Bot ─────────────────────────────────────────────
+
+CLAUDE_TG_DIR="/opt/claude-code-telegram"
+CLAUDE_TG_ENV="${CLAUDE_TG_DIR}/.env"
+CLAUDE_TG_SERVICE="claude-telegram-bot"
+
+_tg_admin_home() { _claude_admin_home; }
+
+install_claude_telegram_bot() {
+    print_section "Install Claude Code Telegram Bot"
+    echo ""
+
+    local repo_url="https://github.com/daotaolaixe-quangthang/claude-code-telegram"
+
+    log_info "Installing Python dependencies (pip3)..."
+    pip3 install --quiet git+"${repo_url}" 2>&1 || {
+        log_error "pip3 install failed. Trying with uv..."
+        if command -v uv &>/dev/null; then
+            uv tool install git+"${repo_url}"
+        else
+            log_error "Neither pip3 nor uv succeeded. Aborting."
+            return 1
+        fi
+    }
+
+    log_info "Cloning repo to ${CLAUDE_TG_DIR} for config templates..."
+    if [[ -d "${CLAUDE_TG_DIR}" ]]; then
+        git -C "${CLAUDE_TG_DIR}" pull --quiet 2>&1
+    else
+        git clone --depth=1 "${repo_url}" "${CLAUDE_TG_DIR}" 2>&1
+    fi
+
+    # Copy .env.example if .env not yet present
+    if [[ ! -f "${CLAUDE_TG_ENV}" ]] && [[ -f "${CLAUDE_TG_DIR}/.env.example" ]]; then
+        cp "${CLAUDE_TG_DIR}/.env.example" "${CLAUDE_TG_ENV}"
+        chmod 600 "${CLAUDE_TG_ENV}"
+        chown "${ADMIN_USER}:${ADMIN_USER}" "${CLAUDE_TG_ENV}"
+        log_info "Created ${CLAUDE_TG_ENV} from example — please configure it."
+    fi
+
+    _claude_set_state "CLAUDE_TG_INSTALLED"    "yes"
+    _claude_set_state "CLAUDE_TG_INSTALL_DATE" "$(date +%Y-%m-%d)"
+    log_info "Claude Code Telegram Bot installed."
+    echo ""
+}
+
+configure_claude_telegram_bot() {
+    print_section "Configure Claude Code Telegram Bot"
+    echo ""
+    echo "  ── Hướng dẫn ──────────────────────────────────────────────"
+    echo "  Bot Token  : Nhắn tin @BotFather trên Telegram → /newbot"
+    echo "  User ID    : Nhắn tin @userinfobot trên Telegram để lấy ID"
+    echo "  API Key    : Tự động dùng auth của Claude Code CLI (không cần nhập)"
+    echo "  ─────────────────────────────────────────────────────────────"
+    echo ""
+
+    # Ensure install dir exists
+    if [[ ! -d "${CLAUDE_TG_DIR}" ]]; then
+        log_error "Telegram bot not installed. Run install first."
+        return 1
+    fi
+
+    # Bot Token
+    local bot_token
+    read -r -s -p "  Telegram Bot Token (from @BotFather): " bot_token
+    echo ""
+    if [[ -z "$bot_token" ]]; then
+        log_error "Bot token cannot be empty"
+        return 1
+    fi
+
+    # Bot Username
+    local bot_username
+    read -r -p "  Telegram Bot Username (without @): " bot_username
+    bot_username="${bot_username:-my_claude_bot}"
+
+    # Allowed Users
+    local allowed_users
+    read -r -p "  Allowed Telegram User IDs (comma-separated, from @userinfobot): " allowed_users
+    if [[ -z "$allowed_users" ]]; then
+        log_error "At least one allowed user ID is required."
+        return 1
+    fi
+
+    # Approved directory
+    local approved_dir
+    read -r -p "  Approved directory for project access [/var/www]: " approved_dir
+    approved_dir="${approved_dir:-/var/www}"
+
+    echo ""
+    log_info "Writing ${CLAUDE_TG_ENV} ..."
+
+    # Build .env — API key omitted, reuses Claude Code CLI auth
+    cat > "${CLAUDE_TG_ENV}" <<EOF
+TELEGRAM_BOT_TOKEN=${bot_token}
+TELEGRAM_BOT_USERNAME=${bot_username}
+APPROVED_DIRECTORY=${approved_dir}
+ALLOWED_USERS=${allowed_users}
+EOF
+
+    chmod 600 "${CLAUDE_TG_ENV}"
+    chown "${ADMIN_USER}:${ADMIN_USER}" "${CLAUDE_TG_ENV}"
+
+    _claude_set_state "CLAUDE_TG_BOT_USERNAME"  "$bot_username"
+    _claude_set_state "CLAUDE_TG_ALLOWED_USERS" "$allowed_users"
+    _claude_set_state "CLAUDE_TG_APPROVED_DIR"  "$approved_dir"
+    log_info "Telegram bot configured."
+    echo ""
+    print_warn "Run 'Start Telegram bot' from the menu to launch."
+    echo ""
+}
+
+start_claude_telegram_bot() {
+    print_section "Start Claude Code Telegram Bot"
+    echo ""
+
+    if [[ ! -f "${CLAUDE_TG_ENV}" ]]; then
+        log_error ".env not found. Run Configure first."
+        return 1
+    fi
+
+    # Use systemd service if available, else nohup
+    if systemctl list-unit-files "${CLAUDE_TG_SERVICE}.service" &>/dev/null; then
+        systemctl start "${CLAUDE_TG_SERVICE}" && log_info "Service ${CLAUDE_TG_SERVICE} started." || log_error "systemctl start failed."
+        return
+    fi
+
+    # Fallback: run via nohup as admin user
+    local log_file="/var/log/claude-telegram-bot.log"
+    local pid_file="/var/run/claude-telegram-bot.pid"
+
+    if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+        log_warn "Bot is already running (PID $(cat "$pid_file"))"
+        return
+    fi
+
+    log_info "Starting bot in background..."
+    sudo -u "${ADMIN_USER}" bash -c \
+        "cd '${CLAUDE_TG_DIR}' && nohup python3 -m claude_code_telegram >> '${log_file}' 2>&1 & echo \$! > '${pid_file}'"
+    sleep 1
+    if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+        log_info "Bot started (PID $(cat "$pid_file")). Log: ${log_file}"
+    else
+        log_error "Bot failed to start. Check ${log_file}"
+    fi
+    echo ""
+}
+
+stop_claude_telegram_bot() {
+    print_section "Stop Claude Code Telegram Bot"
+    echo ""
+
+    if systemctl list-unit-files "${CLAUDE_TG_SERVICE}.service" &>/dev/null; then
+        systemctl stop "${CLAUDE_TG_SERVICE}" && log_info "Service stopped." || log_error "systemctl stop failed."
+        return
+    fi
+
+    local pid_file="/var/run/claude-telegram-bot.pid"
+    if [[ -f "$pid_file" ]]; then
+        local pid
+        pid=$(cat "$pid_file")
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" && log_info "Bot stopped (PID ${pid})" || log_error "Failed to kill PID ${pid}"
+        else
+            log_warn "PID ${pid} not running."
+        fi
+        rm -f "$pid_file"
+    else
+        log_warn "No PID file found. Bot may not be running."
+    fi
+    echo ""
+}
+
+status_claude_telegram_bot() {
+    print_section "Claude Code Telegram Bot — Status"
+    echo ""
+
+    # systemd
+    if systemctl list-unit-files "${CLAUDE_TG_SERVICE}.service" &>/dev/null; then
+        systemctl status "${CLAUDE_TG_SERVICE}" --no-pager 2>&1 | head -20
+        echo ""
+        return
+    fi
+
+    local pid_file="/var/run/claude-telegram-bot.pid"
+    if [[ -f "$pid_file" ]]; then
+        local pid
+        pid=$(cat "$pid_file")
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "  Status : RUNNING (PID ${pid})"
+        else
+            echo "  Status : STOPPED (stale PID file)"
+        fi
+    else
+        echo "  Status : STOPPED"
+    fi
+
+    local log_file="/var/log/claude-telegram-bot.log"
+    if [[ -f "$log_file" ]]; then
+        echo ""
+        echo "  --- Last 10 log lines ---"
+        tail -10 "$log_file" | sed 's/^/  /'
+    fi
+    echo ""
+}
+
+menu_telegram_bot() {
+    while true; do
+        print_section "Claude Code Telegram Bot"
+        echo "  1) Install Telegram Bot"
+        echo "  2) Configure Telegram Bot"
+        echo "  3) Start Telegram Bot"
+        echo "  4) Stop Telegram Bot"
+        echo "  5) Status / Logs"
+        echo "  0) Back"
+        echo ""
+        read -r -p "Select: " choice
+        case "$choice" in
+            1) install_claude_telegram_bot  || true ;;
+            2) configure_claude_telegram_bot || true ;;
+            3) start_claude_telegram_bot    || true ;;
+            4) stop_claude_telegram_bot     || true ;;
+            5) status_claude_telegram_bot   || true ;;
+            0) return ;;
+            *) print_warn "Invalid option" ;;
+        esac
+    done
+}
+
 # ── Menus ─────────────────────────────────────────────────────
 
 menu_claude_cli() {
@@ -204,14 +433,16 @@ menu_claude_cli() {
         echo "  2) Configure environment Claude for this server"
         echo "  3) Test Claude Code CLI"
         echo "  4) Install Vietnamese fix for Claude Code CLI"
+        echo "  5) Claude Code Telegram Bot"
         echo "  0) Back"
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) install_claude_cli           || true ;;
-            2) configure_claude_cli         || true ;;
-            3) test_claude_cli              || true ;;
-            4) install_claude_vietnamese_fix || true ;;
+            1) install_claude_cli            || true ;;
+            2) configure_claude_cli          || true ;;
+            3) test_claude_cli               || true ;;
+            4) install_claude_vietnamese_fix  || true ;;
+            5) menu_telegram_bot             || true ;;
             0) return ;;
             *) print_warn "Invalid option" ;;
         esac
