@@ -343,7 +343,9 @@ _nginx_test_and_reload() {
         print_error "Nginx config test failed."
         return 1
     fi
-    service_reload nginx
+    # F-15 fix: use reload-or-restart so this is safe both when nginx is already
+    # running (reload = zero-downtime) and when it is not yet started (restart = start).
+    systemctl reload-or-restart nginx && log_info "Nginx reloaded-or-restarted successfully."
     print_ok "Nginx reloaded successfully."
 }
 
@@ -865,20 +867,42 @@ LOGROTATE_EOF
 }
 
 # install_nginx: add official mainline repo, install + tune nginx.conf per OPS_TIER, ensure default deny
+# F-15 fix: service_enable/start moved to AFTER all config tuning.
+# Rationale: starting nginx before writing the tuned config means a broken pre-existing
+# config causes service_start to fail and aborts the script (set -euo pipefail) before
+# the tuning that would fix it ever runs. On re-install/upgrade the prior service_start
+# was a no-op (systemd is idempotent), but _nginx_test_and_reload only calls
+# service_reload — which silently succeeds if nginx is already running, but returns an
+# error if it is not. By enabling + service_restart AFTER all config is written we:
+#   1. Guarantee config is correct before nginx first starts.
+#   2. Use service_restart (has 3x2s health-check polling) instead of service_start
+#      (bare systemctl start, no liveness check) for post-install verification.
+#   3. Remain idempotent: service_restart works whether nginx is stopped or running.
+#   4. Drop the now-redundant _nginx_test_and_reload at the end (service_restart
+#      already verifies liveness; nginx -t is still called inside create_default_deny).
 install_nginx() {
     print_section "Install Nginx"
     require_root || return 1
     _nginx_add_official_repo          # ensures nginx >= 1.24 from nginx.org mainline
     apt_update
     apt_install nginx
-    service_enable nginx
-    service_start nginx
 
+    # Apply all config changes BEFORE starting the service.
     _nginx_apply_global_tuning
     _nginx_write_logrotate            # P2-2: ensure per-domain log rotation
     create_default_deny
     _nginx_disable_packaged_default_site
-    _nginx_test_and_reload
+
+    # Validate config before touching the service.
+    if ! nginx -t; then
+        print_error "F-15: Nginx config test failed after tuning — service NOT started. Check /etc/nginx/nginx.conf"
+        return 1
+    fi
+
+    # Now enable + restart with health-check polling (service_restart polls 3x2s).
+    service_enable nginx
+    service_restart nginx
+    print_ok "Nginx installed, tuned, and running."
 }
 
 # create_default_deny: always keep a default deny vhost enabled
@@ -1538,10 +1562,22 @@ nginx_add_custom_powered_by() {
         print_error "Header value cannot be empty."
         return 1
     fi
+    # F-14 fix: reject newlines unconditionally (an HTTP header value must be a single line).
+    if [[ "$header_value" == *$'\n'* ]]; then
+        print_error "Header value must not contain newlines."
+        return 1
+    fi
+    # F-14 fix: sanitize for sed replacement — escape \, &, and | (the sed delimiter)
+    # so that special characters in operator input cannot corrupt the sed command or
+    # the generated snippet file.
+    local safe_header_value
+    safe_header_value="${header_value//\\/\\\\}"   # \ → \\
+    safe_header_value="${safe_header_value//&/\\&}" # & → \&
+    safe_header_value="${safe_header_value//|/\\|}"  # | → \|  (delimiter escape)
 
     ensure_dir "$NGINX_SNIPPETS_DIR"
     backup_file "$snippet" >/dev/null || true
-    sed "s|{{VALUE}}|${header_value}|g" "$tpl" > "$snippet"
+    sed "s|{{VALUE}}|${safe_header_value}|g" "$tpl" > "$snippet"
     chmod 644 "$snippet"
 
     print_ok "Snippet installed: $snippet"
