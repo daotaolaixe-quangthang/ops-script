@@ -2282,42 +2282,52 @@ ssl_issue_cf_origin_cert() {
 }
 
 # ssl_show_cf_origin_certs
-# List all Cloudflare Origin Certificates on the account via API.
+# List all locally installed Cloudflare Origin Certificates.
+# Note: The CF Origin CA API (/v4/certificates) requires a zone_id per request
+# and cannot list all certs globally — so we rely on local files as ground truth.
 ssl_show_cf_origin_certs() {
     print_section "Cloudflare Origin Certificates"
     require_root || return 1
-    if [[ -z "${CF_API_TOKEN:-}" ]]; then
-        print_error "CF_API_TOKEN not set. Run option 6 first."
-        return 1
-    fi
 
-    local resp
-    resp=$(curl -s --max-time 15 \
-        -H "Authorization: Bearer ${CF_API_TOKEN}" \
-        -H "Content-Type: application/json" \
-        "https://api.cloudflare.com/client/v4/certificates?status=active" 2>/dev/null || true)
-
-    local count
-    count=$(printf '%s' "$resp" | python3 -c \
-        'import json,sys; d=json.load(sys.stdin); certs=d.get("result",[]) or []; [print(f"  Domain: {c[\"hostnames\"]}  Expires: {c[\"expires_on\"]}  ID: {c[\"id\"]}") for c in certs]; print(f"\nTotal: {len(certs)} certificate(s)")' \
-        2>/dev/null || true)
-
-    if [[ -z "$count" ]]; then
-        local cf_err
-        cf_err=$(printf '%s' "$resp" | grep -o '"message":"[^"]*"' | head -1 | sed 's/"message"://;s/"//g' || true)
-        print_warn "Could not fetch certificates."
-        [[ -n "$cf_err" ]] && print_warn "  CF: ${cf_err}"
-        return 1
-    fi
-    echo "$count"
+    local cert_count=0
+    local found_any=0
 
     echo ""
-    echo "  Local cert files:"
-    ls /etc/nginx/ssl/*/cf-origin.pem 2>/dev/null | while read -r f; do
-        local exp
+    echo "  Locally installed CF Origin Certificates:"
+    echo "  ─────────────────────────────────────────────────────────────────"
+
+    local f
+    for f in /etc/nginx/ssl/*/cf-origin.pem; do
+        [[ -f "$f" ]] || continue
+        found_any=1
+        local domain exp san
+        domain=$(basename "$(dirname "$f")")
         exp=$(openssl x509 -in "$f" -noout -enddate 2>/dev/null | cut -d= -f2 || echo "unknown")
-        printf '  %s  (expires: %s)\n' "$f" "$exp"
-    done || echo "  No local CF origin certs found."
+        san=$(openssl x509 -in "$f" -noout -text 2>/dev/null \
+            | grep -A1 'Subject Alternative Name' | tail -1 \
+            | sed 's/DNS://g; s/,//g; s/^[[:space:]]*//' || echo "")
+        local key_file
+        key_file="$(dirname "$f")/cf-origin.key"
+        local key_status="✓ key present"
+        [[ -f "$key_file" ]] || key_status="✗ key MISSING"
+        (( cert_count++ ))
+        printf '  %2d) Domain : %s\n' "$cert_count" "$domain"
+        printf '      SANs   : %s\n' "${san:-n/a}"
+        printf '      Expires: %s\n' "$exp"
+        printf '      Key    : %s\n' "$key_status"
+        printf '      Cert   : %s\n' "$f"
+        echo ""
+    done
+
+    if [[ "$found_any" -eq 0 ]]; then
+        print_warn "No local CF origin certs found under /etc/nginx/ssl/*/cf-origin.pem"
+        print_warn "Use option 7 to issue a Cloudflare Origin Certificate."
+        return 0
+    fi
+
+    echo "  ─────────────────────────────────────────────────────────────────"
+    print_ok "Total: ${cert_count} CF origin certificate(s) installed."
+    log_info "ssl_show_cf_origin_certs: listed ${cert_count} cert(s)"
 }
 
 ssl_renew_all() {
