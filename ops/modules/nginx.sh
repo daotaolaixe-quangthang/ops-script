@@ -1124,6 +1124,117 @@ remove_domain() {
     echo "  Web root /var/www/${domain} NOT deleted — remove manually if needed."
 }
 
+# _dns_check_before_ssl <domain>
+# F-07 fix: DNS readiness guard before calling certbot.
+# Let's Encrypt ACME HTTP-01 requires the domain to resolve to THIS server's IP.
+# If DNS is wrong, certbot fails and burns a failed-authorization slot (5/hour/hostname).
+# This function checks BEFORE certbot runs and aborts with a clear message.
+#
+# Strategy:
+#   1. Resolve domain A record via 8.8.8.8 (external — avoids split-horizon false pass)
+#   2. Compare with this server's public IP
+#   3. If IPs match → proceed
+#   4. If IPs differ → probe HTTP to detect Cloudflare-proxied case (CF IP ≠ VPS IP)
+#      CF proxy returns a CF-branded response; direct nginx returns our probe marker.
+#   5. Warn on CF proxy (certbot may still work via CF-flexible, but warn operator).
+#   6. Hard abort if neither check passes — certbot would fail with a rate-limit cost.
+#
+# Returns:
+#   0  — DNS looks correct, safe to call certbot
+#   1  — DNS not pointed at server; certbot NOT called
+#   2  — Cloudflare proxied detected; operator warned, certbot NOT called (let them decide)
+_dns_check_before_ssl() {
+    local domain="$1"
+    local resolved_ip server_ip http_probe cf_header
+
+    echo ""
+    print_warn "F-07: Checking DNS before calling certbot (prevents Let's Encrypt rate-limit burn)..."
+
+    # Step 1: Get server's own public IP (try multiple sources for resilience)
+    server_ip=$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null \
+        || curl -s --max-time 5 https://ifconfig.me 2>/dev/null \
+        || curl -s --max-time 5 https://icanhazip.com 2>/dev/null || true)
+    server_ip="${server_ip//[[:space:]]/}"  # strip whitespace/newlines
+
+    if [[ -z "$server_ip" ]]; then
+        print_warn "F-07: Could not determine server public IP (no internet?). Skipping DNS check."
+        log_warn "_dns_check_before_ssl: could not fetch server public IP — skipping check for ${domain}"
+        return 0
+    fi
+
+    # Step 2: Resolve A record via Google DNS (8.8.8.8) — avoids split-horizon false pass
+    if command -v dig >/dev/null 2>&1; then
+        resolved_ip=$(dig +short A "${domain}" @8.8.8.8 2>/dev/null | grep -E '^[0-9]+\.' | head -n1 || true)
+    elif command -v nslookup >/dev/null 2>&1; then
+        resolved_ip=$(nslookup -type=A "${domain}" 8.8.8.8 2>/dev/null \
+            | awk '/^Address:/{ip=$2} END{print ip}' | head -n1 || true)
+    elif command -v getent >/dev/null 2>&1; then
+        resolved_ip=$(getent hosts "${domain}" 2>/dev/null | awk '{print $1}' | head -n1 || true)
+    fi
+    resolved_ip="${resolved_ip//[[:space:]]/}"
+
+    if [[ -z "$resolved_ip" ]]; then
+        print_error "F-07: DNS lookup for '${domain}' returned no A record."
+        echo "  → Domain may not exist or DNS has not propagated yet."
+        echo "  → Check: dig +short A ${domain} @8.8.8.8"
+        echo "  → Certbot NOT called. Fix DNS first, then retry."
+        log_error "_dns_check_before_ssl: no A record for ${domain} via 8.8.8.8"
+        return 1
+    fi
+
+    log_info "_dns_check_before_ssl: ${domain} resolves to ${resolved_ip}; server IP is ${server_ip}"
+
+    # Step 3: IPs match → DNS is correct, safe to certbot
+    if [[ "$resolved_ip" == "$server_ip" ]]; then
+        print_ok "  DNS check passed: ${domain} → ${resolved_ip} (matches server IP)"
+        return 0
+    fi
+
+    # Step 4: IPs differ — check if Cloudflare proxy is in the way.
+    # CF proxied A records point to CF edge IPs, not VPS IP.
+    # We probe HTTP and look for the CF-Ray or Server: cloudflare response headers.
+    cf_header=$(curl -s --max-time 8 -o /dev/null -D - "http://${domain}/" 2>/dev/null \
+        | grep -i 'CF-Ray:\|server: cloudflare\|cf-cache-status:' | head -n1 || true)
+
+    if [[ -n "$cf_header" ]]; then
+        echo ""
+        print_warn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        print_warn "F-07: Cloudflare proxy detected for ${domain}."
+        print_warn "  DNS resolves to ${resolved_ip} (Cloudflare IP), not ${server_ip} (this server)."
+        echo ""
+        echo "  Certbot HTTP-01 challenge CANNOT reach your server through Cloudflare's proxy."
+        echo "  Options:"
+        echo "    A) Temporarily set Cloudflare DNS to 'DNS only' (grey cloud) for ${domain},"
+        echo "       issue the SSL cert, then switch back to 'Proxied'."
+        echo "    B) Use Cloudflare's own SSL (Full or Full Strict mode) — no certbot needed."
+        echo "    C) Use certbot DNS-01 challenge with CF API token (advanced)."
+        echo ""
+        echo "  Certbot NOT called. Resolve the Cloudflare proxy conflict first."
+        print_warn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        log_warn "_dns_check_before_ssl: CF proxy detected for ${domain} (resolved=${resolved_ip}, server=${server_ip})"
+        return 1
+    fi
+
+    # Step 5: Different IP, not CF proxy — DNS is simply not pointed at this server.
+    echo ""
+    print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_error "F-07: DNS for '${domain}' does NOT point to this server."
+    echo "  Domain resolves to : ${resolved_ip}"
+    echo "  This server IP is  : ${server_ip}"
+    echo ""
+    echo "  Let's Encrypt ACME HTTP-01 will FAIL if domain doesn't reach this server."
+    echo "  Each failure burns 1 of your 5 allowed authorization attempts per hour."
+    echo ""
+    echo "  Fix: Update your DNS A record for '${domain}' to point to ${server_ip}."
+    echo "  Then wait for propagation (check: dig +short A ${domain} @8.8.8.8)"
+    echo "  After propagation confirmed, re-run SSL issuance."
+    echo ""
+    echo "  Certbot NOT called. Fix DNS first."
+    print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    log_error "_dns_check_before_ssl: ${domain} resolved to ${resolved_ip} != server ${server_ip} — aborted certbot"
+    return 1
+}
+
 # issue_ssl <domain>
 issue_ssl() {
     local domain="${1:-}"
@@ -1159,6 +1270,12 @@ issue_ssl() {
         fi
         print_ok "Let's Encrypt account registered: ${certbot_email}"
         log_info "issue_ssl: certbot account registered for ${certbot_email}"
+    fi
+
+    # F-07: DNS readiness check — abort before certbot if DNS not pointed at this server.
+    # Prevents burning Let's Encrypt rate-limit slots on predictable DNS failures.
+    if ! _dns_check_before_ssl "$domain"; then
+        return 1
     fi
 
     certbot --nginx -d "$domain" --non-interactive --agree-tos

@@ -1061,13 +1061,22 @@ security_manage_ssh_keys() {
             3)
                 print_warn "WARNING: Enabling PasswordAuthentication allows password-based SSH login."
                 if prompt_confirm "Enable PasswordAuthentication?"; then
-                    local pw_port ssh_svc
+                    local pw_port ssh_svc _pw_transition_port
                     pw_port="$(security_get_locked_ssh_port)"
                     ssh_svc="$(security_detect_ssh_service)"
-                    security_write_sshd_hardening_include "$pw_port" "yes"
-                    systemctl reload "$ssh_svc" >/dev/null 2>&1 || true
-                    ops_conf_set "ops.conf" "OPS_SSH_PASSWORD_AUTH" "yes"
-                    print_ok "PasswordAuthentication enabled. SSH reloaded."
+                    _pw_transition_port="$(security_get_transition_port)"
+                    security_write_sshd_hardening_include "$pw_port" "yes" "$_pw_transition_port"
+                    if sshd -t >/dev/null 2>&1; then
+                        systemctl reload "$ssh_svc" >/dev/null 2>&1 || true
+                        ops_conf_set "ops.conf" "OPS_SSH_PASSWORD_AUTH" "yes"
+                        print_ok "PasswordAuthentication enabled. SSH reloaded."
+                    else
+                        print_error "sshd -t validation failed. Reverting include file."
+                        local _prev_pw
+                        _prev_pw="$(ops_conf_get "ops.conf" "OPS_SSH_PASSWORD_AUTH" 2>/dev/null || true)"
+                        _prev_pw="${_prev_pw:-yes}"
+                        security_write_sshd_hardening_include "$pw_port" "$_prev_pw" "$_pw_transition_port"
+                    fi
                 fi
                 ;;
             4)
@@ -1077,13 +1086,22 @@ security_manage_ssh_keys() {
                 else
                     print_warn "WARNING: Only SSH key logins will work after this change."
                     if prompt_confirm "Disable PasswordAuthentication?"; then
-                        local lock_port ssh_svc
+                        local lock_port ssh_svc _lock_transition_port
                         lock_port="$(security_get_locked_ssh_port)"
                         ssh_svc="$(security_detect_ssh_service)"
-                        security_write_sshd_hardening_include "$lock_port" "no"
-                        systemctl reload "$ssh_svc" >/dev/null 2>&1 || true
-                        ops_conf_set "ops.conf" "OPS_SSH_PASSWORD_AUTH" "no"
-                        print_ok "PasswordAuthentication disabled. SSH key-only mode active."
+                        _lock_transition_port="$(security_get_transition_port)"
+                        security_write_sshd_hardening_include "$lock_port" "no" "$_lock_transition_port"
+                        if sshd -t >/dev/null 2>&1; then
+                            systemctl reload "$ssh_svc" >/dev/null 2>&1 || true
+                            ops_conf_set "ops.conf" "OPS_SSH_PASSWORD_AUTH" "no"
+                            print_ok "PasswordAuthentication disabled. SSH key-only mode active."
+                        else
+                            print_error "sshd -t validation failed. Reverting include file."
+                            local _prev_lock_pw
+                            _prev_lock_pw="$(ops_conf_get "ops.conf" "OPS_SSH_PASSWORD_AUTH" 2>/dev/null || true)"
+                            _prev_lock_pw="${_prev_lock_pw:-yes}"
+                            security_write_sshd_hardening_include "$lock_port" "$_prev_lock_pw" "$_lock_transition_port"
+                        fi
                     fi
                 fi
                 ;;
