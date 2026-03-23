@@ -114,6 +114,23 @@ php_ini_tuning_for_tier() {
     echo "disable_functions=exec,passthru,shell_exec,system,proc_open,popen,proc_terminate,proc_get_status,pcntl_exec,parse_ini_file,show_source"
 }
 
+# php_set_ini_key <file> <key> <value>
+#
+# Sets (or adds) a key=value pair in a PHP ini-style file.
+#
+# INTENTIONAL BEHAVIOR — F-17: The grep/sed patterns below match BOTH active
+# keys (key = value) AND commented-out keys (; key = value).  This is by
+# design: many distributions ship security-relevant settings commented out
+# (e.g. "; display_errors = On") and OPS must activate and override them.
+#
+# This is safe because OPS only ever calls this function with values that are
+# already security-correct (expose_php=Off, display_errors=Off, etc.).  Even
+# if a sysadmin left a commented line like "; expose_php = On", OPS will turn
+# it into "expose_php = Off" — still the correct direction.
+#
+# DO NOT change the ";?" part of the regex without understanding this contract.
+# If you need to preserve a deliberately commented-out key, remove it from
+# php_ini_tuning_for_tier / php_pool_tuning_for_tier instead.
 php_set_ini_key() {
     local file="$1"
     local key="$2"
@@ -126,6 +143,7 @@ php_set_ini_key() {
 
     key_regex=$(printf '%s' "$key" | sed 's/[][(){}.^$*+?|\\/]/\\&/g')
 
+    # ;? intentionally matches both active and commented-out keys — see above.
     if grep -Eq "^[[:space:]]*;?[[:space:]]*${key_regex}[[:space:]]*=" "$file"; then
         sed -i -E "s|^[[:space:]]*;?[[:space:]]*${key_regex}[[:space:]]*=.*|${key} = ${value}|" "$file"
     else
