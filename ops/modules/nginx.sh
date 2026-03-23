@@ -1841,18 +1841,25 @@ ssl_set_cf_token() {
     fi
 
     # Validate token via CF API
+    # Note: no -f flag so we always capture the response body even on HTTP 4xx
     print_warn "Validating token with Cloudflare API..."
-    local verify_result status_ok
-    verify_result=$(curl -sf --max-time 10 \
+    local verify_result status_ok cf_error
+    verify_result=$(curl -s --max-time 10 \
         -H "Authorization: Bearer ${new_token}" \
         -H "Content-Type: application/json" \
         https://api.cloudflare.com/client/v4/user/tokens/verify 2>/dev/null || true)
     status_ok=$(printf '%s' "$verify_result" | grep -o '"status":"active"' || true)
+    cf_error=$(printf '%s' "$verify_result" | grep -o '"message":"[^"]*"' | head -1 | sed 's/"message"://;s/"//g' || true)
 
     if [[ -z "$status_ok" ]]; then
-        print_error "Token validation FAILED. CF API response: ${verify_result:-<no response>}"
-        print_error "Check token value and permissions, then retry."
-        log_error "ssl_set_cf_token: CF token validation failed"
+        print_error "Token validation FAILED."
+        if [[ -n "$cf_error" ]]; then
+            print_error "  CF error: ${cf_error}"
+        else
+            print_error "  CF API response: ${verify_result:-<no response — check internet connectivity>}"
+        fi
+        print_error "  Ensure token has Zone → DNS → Edit permission and is not expired."
+        log_error "ssl_set_cf_token: CF token validation failed — ${cf_error:-no response}"
         return 1
     fi
 
