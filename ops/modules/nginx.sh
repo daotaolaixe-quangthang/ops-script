@@ -1068,7 +1068,7 @@ menu_nginx() {
 menu_ssl() {
     while true; do
         print_section "SSL Management"
-        echo "  1) Issue SSL certificate for a domain"
+        echo "  1) Issue SSL certificate for a domain       (Let's Encrypt — auto-renew)"
         echo "  2) Renew all certificates"
         echo "  3) Show certificate status"
         echo "  4) Install / repair Certbot (snap)"
@@ -1078,6 +1078,8 @@ menu_ssl() {
         else
             echo "  6) Set Cloudflare API Token  (enables auto DNS-01 for CF-proxied domains)"
         fi
+        echo "  7) Issue Cloudflare Origin Certificate      (15 years — no renewal)"
+        echo "  8) List Cloudflare Origin Certificates"
         echo "  0) Back"
         echo ""
         read -r -p "Select: " choice
@@ -1903,6 +1905,236 @@ ssl_set_cf_token() {
     print_ok "DNS-01 challenge will now be used automatically for Cloudflare-proxied domains."
     log_info "ssl_set_cf_token: CF API token saved and validated successfully"
 }
+
+# ── Cloudflare Origin Certificate (15 years) ─────────────────────────────────
+
+# ssl_prompt_cf_origin_cert
+# Interactive wrapper: prompt for domain then call ssl_issue_cf_origin_cert.
+ssl_prompt_cf_origin_cert() {
+    print_section "Issue Cloudflare Origin Certificate (15 years)"
+    require_root || return 1
+    if [[ -z "${CF_API_TOKEN:-}" ]]; then
+        print_error "Cloudflare API token not configured. Run option 6 first."
+        print_error "Token needs permissions: Zone:DNS:Edit + Zone:SSL and Certificates:Edit"
+        return 1
+    fi
+    prompt_input "Enter domain (e.g. ducnv.email)"
+    ssl_issue_cf_origin_cert "$REPLY"
+}
+
+# ssl_issue_cf_origin_cert <domain>
+# Issue a Cloudflare Origin Certificate (15-year) for <domain>.
+# Flow:
+#   1. Validate CF_API_TOKEN + get zone_id
+#   2. Generate RSA-2048 key + CSR on server
+#   3. POST /v4/certificates with CSR → receive signed cert
+#   4. Save cert + key to /etc/nginx/ssl/<domain>/
+#   5. Update nginx vhost SSL block to use CF origin cert
+#   6. Set Cloudflare SSL mode to Full (Strict)
+#   7. nginx -t && reload
+#
+# Required CF API token permissions:
+#   Zone:DNS:Edit  +  Zone:SSL and Certificates:Edit
+ssl_issue_cf_origin_cert() {
+    local domain="${1:-}"
+    require_root || return 1
+
+    if [[ -z "$domain" ]] || ! _domain_is_valid "$domain"; then
+        print_error "Usage: ssl_issue_cf_origin_cert <domain>"
+        return 1
+    fi
+    if [[ -z "${CF_API_TOKEN:-}" ]]; then
+        print_error "CF_API_TOKEN not set. Run 'Set Cloudflare API Token' (option 6) first."
+        return 1
+    fi
+
+    local cert_dir="/etc/nginx/ssl/${domain}"
+    local key_file="${cert_dir}/cf-origin.key"
+    local csr_file="${cert_dir}/cf-origin.csr"
+    local cert_file="${cert_dir}/cf-origin.pem"
+
+    # ── Step 1: Get zone_id ───────────────────────────────────────────────────
+    print_warn "Looking up Cloudflare zone for ${domain}..."
+    # Strip to apex (last two labels) for zone lookup
+    local apex
+    apex=$(printf '%s' "$domain" | awk -F. '{if(NF>=2){print $(NF-1)"."$NF}else{print $0}}')
+    local zone_resp zone_id
+    zone_resp=$(curl -s --max-time 10 \
+        -H "Authorization: Bearer ${CF_API_TOKEN}" \
+        -H "Content-Type: application/json" \
+        "https://api.cloudflare.com/client/v4/zones?name=${apex}&status=active" 2>/dev/null || true)
+    zone_id=$(printf '%s' "$zone_resp" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    if [[ -z "$zone_id" ]]; then
+        local cf_err
+        cf_err=$(printf '%s' "$zone_resp" | grep -o '"message":"[^"]*"' | head -1 | sed 's/"message"://;s/"//g' || true)
+        print_error "Could not find Cloudflare zone for '${apex}'."
+        [[ -n "$cf_err" ]] && print_error "  CF error: ${cf_err}"
+        print_error "  Ensure token has Zone:SSL and Certificates:Edit permission and zone is active."
+        log_error "ssl_issue_cf_origin_cert: zone lookup failed for ${apex}"
+        return 1
+    fi
+    print_ok "  Zone ID: ${zone_id}"
+
+    # ── Step 2: Generate private key + CSR ───────────────────────────────────
+    ensure_dir "$cert_dir"
+    chmod 750 "$cert_dir"
+    print_warn "Generating RSA-2048 private key and CSR..."
+    openssl req -new -newkey rsa:2048 -nodes \
+        -keyout "$key_file" \
+        -out "$csr_file" \
+        -subj "/CN=${domain}" 2>/dev/null
+    chmod 600 "$key_file"
+    log_info "ssl_issue_cf_origin_cert: key + CSR generated at ${cert_dir}"
+
+    # ── Step 3: POST CSR to CF Origin CA API ─────────────────────────────────
+    print_warn "Requesting CF Origin Certificate from Cloudflare API..."
+    local csr_content hostnames_json cert_resp cert_pem cf_err
+    csr_content=$(cat "$csr_file")
+    # Include both apex and wildcard for coverage
+    hostnames_json="[\"${domain}\",\"*.${apex}\"]"
+
+    cert_resp=$(curl -s --max-time 30 \
+        -X POST \
+        -H "Authorization: Bearer ${CF_API_TOKEN}" \
+        -H "Content-Type: application/json" \
+        --data "{
+            \"hostnames\": ${hostnames_json},
+            \"requested_validity\": 5475,
+            \"request_type\": \"origin-rsa\",
+            \"csr\": $(printf '%s' "$csr_content" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+        }" \
+        "https://api.cloudflare.com/client/v4/certificates" 2>/dev/null || true)
+
+    cert_pem=$(printf '%s' "$cert_resp" | python3 -c \
+        'import json,sys; d=json.load(sys.stdin); print(d["result"]["certificate"])' 2>/dev/null || true)
+    cf_err=$(printf '%s' "$cert_resp" | grep -o '"message":"[^"]*"' | head -1 \
+        | sed 's/"message"://;s/"//g' || true)
+
+    if [[ -z "$cert_pem" ]]; then
+        print_error "Cloudflare Origin Certificate issuance FAILED."
+        [[ -n "$cf_err" ]] && print_error "  CF error: ${cf_err}"
+        print_error "  Ensure API token has 'Zone:SSL and Certificates:Edit' permission."
+        rm -f "$csr_file"
+        log_error "ssl_issue_cf_origin_cert: CF API returned no cert for ${domain}"
+        return 1
+    fi
+
+    # ── Step 4: Save certificate ──────────────────────────────────────────────
+    printf '%s\n' "$cert_pem" > "$cert_file"
+    chmod 644 "$cert_file"
+    rm -f "$csr_file"   # CSR no longer needed
+    print_ok "  Certificate saved: ${cert_file}"
+    print_ok "  Private key saved: ${key_file}"
+    log_info "ssl_issue_cf_origin_cert: cert saved to ${cert_file}"
+
+    # ── Step 5: Update nginx vhost to use CF origin cert ─────────────────────
+    local vhost_avail="${NGINX_SITES_AVAILABLE}/${domain}"
+    local nine_router_vhost="/etc/nginx/sites-available/nine-router.${domain}"
+
+    # Determine which vhost file to patch (ops-managed or nine-router)
+    local vhost_to_patch=""
+    [[ -f "$vhost_avail" ]]      && vhost_to_patch="$vhost_avail"
+    [[ -f "$nine_router_vhost" ]] && vhost_to_patch="$nine_router_vhost"
+
+    if [[ -n "$vhost_to_patch" ]]; then
+        backup_file "$vhost_to_patch" >/dev/null || true
+        # Replace ssl_certificate and ssl_certificate_key lines
+        sed -i \
+            -e "s|ssl_certificate\b[^;]*;|ssl_certificate     ${cert_file};|g" \
+            -e "s|ssl_certificate_key\b[^;]*;|ssl_certificate_key ${key_file};|g" \
+            "$vhost_to_patch"
+        # Remove certbot-specific includes that don't apply to CF origin certs
+        sed -i \
+            -e '/include.*options-ssl-nginx\.conf/d' \
+            -e '/ssl_dhparam.*ssl-dhparams\.pem/d' \
+            "$vhost_to_patch"
+        # Add basic TLS settings in their place if not already present
+        if ! grep -q 'ssl_protocols' "$vhost_to_patch"; then
+            sed -i "/ssl_certificate_key/a\\    ssl_protocols TLSv1.2 TLSv1.3;" "$vhost_to_patch"
+        fi
+        print_ok "  Nginx vhost updated: ${vhost_to_patch}"
+        log_info "ssl_issue_cf_origin_cert: vhost patched at ${vhost_to_patch}"
+    else
+        print_warn "  No managed vhost found for ${domain} — vhost not patched."
+        print_warn "  Add manually: ssl_certificate ${cert_file}; ssl_certificate_key ${key_file};"
+    fi
+
+    # ── Step 6: Set Cloudflare SSL mode to Full (Strict) ─────────────────────
+    print_warn "Setting Cloudflare SSL mode to Full (Strict) for zone ${zone_id}..."
+    local ssl_resp ssl_ok
+    ssl_resp=$(curl -s --max-time 10 \
+        -X PATCH \
+        -H "Authorization: Bearer ${CF_API_TOKEN}" \
+        -H "Content-Type: application/json" \
+        --data '{"value":"strict"}' \
+        "https://api.cloudflare.com/client/v4/zones/${zone_id}/settings/ssl" 2>/dev/null || true)
+    ssl_ok=$(printf '%s' "$ssl_resp" | grep -o '"success":true' || true)
+    if [[ -n "$ssl_ok" ]]; then
+        print_ok "  Cloudflare SSL mode set to Full (Strict)."
+        log_info "ssl_issue_cf_origin_cert: CF SSL mode set to strict for zone ${zone_id}"
+    else
+        print_warn "  Could not set CF SSL mode automatically."
+        print_warn "  Set manually: Cloudflare Dashboard → SSL/TLS → Full (Strict)"
+    fi
+
+    # ── Step 7: nginx -t && reload ────────────────────────────────────────────
+    if ! _nginx_test_and_reload; then
+        print_error "Nginx reload failed. Cert installed but nginx may not be serving it."
+        print_error "Run 'nginx -t' to diagnose."
+        return 1
+    fi
+
+    echo ""
+    print_ok "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_ok "Cloudflare Origin Certificate issued for: ${domain}"
+    print_ok "  Cert : ${cert_file}"
+    print_ok "  Key  : ${key_file}"
+    print_ok "  Valid: 15 years (no renewal needed)"
+    print_ok "  Mode : Cloudflare Full (Strict)"
+    print_ok "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    log_info "ssl_issue_cf_origin_cert: completed successfully for ${domain}"
+}
+
+# ssl_show_cf_origin_certs
+# List all Cloudflare Origin Certificates on the account via API.
+ssl_show_cf_origin_certs() {
+    print_section "Cloudflare Origin Certificates"
+    require_root || return 1
+    if [[ -z "${CF_API_TOKEN:-}" ]]; then
+        print_error "CF_API_TOKEN not set. Run option 6 first."
+        return 1
+    fi
+
+    local resp
+    resp=$(curl -s --max-time 15 \
+        -H "Authorization: Bearer ${CF_API_TOKEN}" \
+        -H "Content-Type: application/json" \
+        "https://api.cloudflare.com/client/v4/certificates?status=active" 2>/dev/null || true)
+
+    local count
+    count=$(printf '%s' "$resp" | python3 -c \
+        'import json,sys; d=json.load(sys.stdin); certs=d.get("result",[]) or []; [print(f"  Domain: {c[\"hostnames\"]}  Expires: {c[\"expires_on\"]}  ID: {c[\"id\"]}") for c in certs]; print(f"\nTotal: {len(certs)} certificate(s)")' \
+        2>/dev/null || true)
+
+    if [[ -z "$count" ]]; then
+        local cf_err
+        cf_err=$(printf '%s' "$resp" | grep -o '"message":"[^"]*"' | head -1 | sed 's/"message"://;s/"//g' || true)
+        print_warn "Could not fetch certificates."
+        [[ -n "$cf_err" ]] && print_warn "  CF: ${cf_err}"
+        return 1
+    fi
+    echo "$count"
+
+    echo ""
+    echo "  Local cert files:"
+    ls /etc/nginx/ssl/*/cf-origin.pem 2>/dev/null | while read -r f; do
+        local exp
+        exp=$(openssl x509 -in "$f" -noout -enddate 2>/dev/null | cut -d= -f2 || echo "unknown")
+        printf '  %s  (expires: %s)\n' "$f" "$exp"
+    done || echo "  No local CF origin certs found."
+}
+
 ssl_renew_all() {
     require_root || return 1
     # F-21: guard — only install certbot if not already present.
