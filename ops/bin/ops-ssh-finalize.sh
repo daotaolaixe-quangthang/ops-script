@@ -160,13 +160,23 @@ EOF
     fi
 
     # ── 4. Reload sshd ────────────────────────────────────────
+    # F-09 fix: do NOT exit on reload failure. sshd -t already validated the config
+    # (step 3), so the config is known-good. A reload failure is a transient system
+    # issue; exiting here would leave OPS_SSH_TRANSITION_PORT set in ops.conf, causing
+    # the login hook to re-trigger sudo on every subsequent SSH session (retry loop).
+    # Log the error prominently so the operator can manually reload; do not block finalize.
     local ssh_service
     ssh_service=$(detect_ssh_service)
     if systemctl reload "$ssh_service" > /dev/null 2>&1; then
         _log "sshd reloaded — now listening only on port ${locked_port}."
     else
-        _err "Failed to reload sshd. Manual reload required: systemctl reload ${ssh_service}"
-        exit 1
+        _err "Failed to reload sshd — config is valid but reload did not apply."
+        _err "ACTION REQUIRED: run 'systemctl reload ${ssh_service}' manually to close port ${transition_port}."
+        echo ""
+        echo "  [OPS] ⚠ sshd reload failed — port ${transition_port} may still be open."
+        echo "  [OPS] ⚠ Run: sudo systemctl reload ${ssh_service}"
+        echo ""
+        # Continue to clear ops.conf so the login hook does not loop on future sessions.
     fi
 
     # ── 5. Update UFW: remove transition port rule ─────────────
