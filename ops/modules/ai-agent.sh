@@ -47,6 +47,42 @@ install_claude_cli() {
     _claude_set_state "CLAUDE_INSTALL_DATE" "$(date +%Y-%m-%d)"
 }
 
+# ── Vietnamese Fix ────────────────────────────────────────────
+
+install_claude_vietnamese_fix() {
+    print_section "Install Vietnamese Fix for Claude Code CLI"
+    echo ""
+
+    local repo_url="https://github.com/daotaolaixe-quangthang/claude-code-vietnamese-fix"
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+
+    log_info "Cloning Vietnamese fix repo..."
+    if ! git clone --depth=1 "$repo_url" "$tmp_dir" 2>&1; then
+        log_error "Failed to clone repo: $repo_url"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    # Run installer if available
+    if [[ -f "$tmp_dir/install.sh" ]]; then
+        log_info "Running install.sh ..."
+        bash "$tmp_dir/install.sh"
+    elif [[ -f "$tmp_dir/setup.sh" ]]; then
+        log_info "Running setup.sh ..."
+        bash "$tmp_dir/setup.sh"
+    else
+        log_warn "No install.sh / setup.sh found — listing repo contents:"
+        ls -la "$tmp_dir"
+    fi
+
+    rm -rf "$tmp_dir"
+    log_info "Vietnamese fix installation complete."
+    _claude_set_state "CLAUDE_VIETNAMESE_FIX" "yes"
+    _claude_set_state "CLAUDE_VIETNAMESE_FIX_DATE" "$(date +%Y-%m-%d)"
+    echo ""
+}
+
 # ── Configure ─────────────────────────────────────────────────
 
 configure_claude_cli() {
@@ -167,13 +203,15 @@ menu_claude_cli() {
         echo "  1) Install Claude Code CLI"
         echo "  2) Configure environment Claude for this server"
         echo "  3) Test Claude Code CLI"
+        echo "  4) Install Vietnamese fix for Claude Code CLI"
         echo "  0) Back"
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) install_claude_cli   || true ;;
-            2) configure_claude_cli || true ;;
-            3) test_claude_cli      || true ;;
+            1) install_claude_cli           || true ;;
+            2) configure_claude_cli         || true ;;
+            3) test_claude_cli              || true ;;
+            4) install_claude_vietnamese_fix || true ;;
             0) return ;;
             *) print_warn "Invalid option" ;;
         esac
