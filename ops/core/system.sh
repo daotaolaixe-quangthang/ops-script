@@ -31,23 +31,46 @@ apt_remove() {
 
 service_enable()  { systemctl enable  "$1" && log_info "Enabled:  $1"; }
 service_start()   { systemctl start   "$1" && log_info "Started:  $1"; }
-# P3-5 fix: service_restart now verifies the service is actually active after
-# restart. systemctl restart exit 0 only means the restart command was accepted,
-# not that the service is running. Poll is-active up to 3 times (6s total).
+# F-27 fix: service_restart verifies the service is actually active after
+# restart with exponential backoff and a configurable timeout.
+#   systemctl restart exits 0 only when the restart *command* was accepted,
+#   not when the service is actually running. Slow services like MariaDB can
+#   take 10-15 s on a cold InnoDB buffer-pool init on a low-RAM VPS.
+#
+# Usage: service_restart <svc> [timeout_seconds]
+#   timeout_seconds defaults to 30 for mariadb/mysql, 15 for everything else.
+#   Callers that need a custom window can pass an explicit timeout:
+#     service_restart netdata 45
 service_restart() {
     local svc="$1"
+    # Determine timeout: caller-supplied > slow-service default > general default
+    local _timeout
+    if [[ -n "${2:-}" ]]; then
+        _timeout="$2"
+    elif [[ "$svc" =~ ^(mariadb|mysql)$ ]]; then
+        _timeout=30   # InnoDB buffer-pool init on low-RAM VPS can take 10-15 s
+    else
+        _timeout=15
+    fi
+
     systemctl restart "$svc" && log_info "Restarted: $svc"
+
+    local _elapsed=0
+    local _interval=1   # start with 1 s; doubles each miss (1,2,4,8,…)
     local _attempt=0
-    while (( _attempt < 3 )); do
-        sleep 2
+    while (( _elapsed < _timeout )); do
+        sleep "$_interval"
+        (( _elapsed += _interval ))
+        (( _attempt++ ))
         if systemctl is-active --quiet "$svc"; then
-            log_info "Health check OK: $svc is active after restart."
+            log_info "Health check OK: $svc is active after restart (${_elapsed}s elapsed)."
             return 0
         fi
-        (( _attempt++ ))
-        log_warn "Health check attempt ${_attempt}/3: $svc not yet active after restart..."
+        log_warn "Health check attempt ${_attempt}: $svc not yet active after ${_elapsed}s / ${_timeout}s..."
+        # Double the interval up to a max of 8 s to avoid hammering systemd
+        (( _interval = _interval * 2 < 8 ? _interval * 2 : 8 ))
     done
-    log_error "Health check FAILED: $svc is not active after restart. Check: journalctl -u ${svc} -n 30"
+    log_error "Health check FAILED: $svc is not active after ${_timeout}s. Check: journalctl -u ${svc} -n 30"
     return 1
 }
 service_reload()  { systemctl reload  "$1" && log_info "Reloaded: $1"; }

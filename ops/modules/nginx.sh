@@ -777,8 +777,10 @@ _ensure_certbot() {
 # nginx_apply_security_baseline
 # Public function — applies global security tuning to nginx.conf.
 # Idempotent: safe to run on a live server without disrupting sites.
-# Applies: server_tokens off, ssl_protocols TLSv1.2+, HSTS, X-Frame-Options,
-#          X-Content-Type-Options, Referrer-Policy.
+# Applies: server_tokens off, ssl_protocols TLSv1.2+, X-Frame-Options,
+#          X-Content-Type-Options, Referrer-Policy, CSP, and other global headers.
+# NOTE: HSTS (Strict-Transport-Security) is NOT applied globally here — it is
+#       applied per-SSL-vhost only (RFC 6797 §7.2: ignored over plain HTTP).
 nginx_apply_security_baseline() {
     print_section "Apply Nginx Security Baseline"
     require_root || return 1
@@ -886,8 +888,8 @@ LOGROTATE_EOF
 # service_reload — which silently succeeds if nginx is already running, but returns an
 # error if it is not. By enabling + service_restart AFTER all config is written we:
 #   1. Guarantee config is correct before nginx first starts.
-#   2. Use service_restart (has 3x2s health-check polling) instead of service_start
-#      (bare systemctl start, no liveness check) for post-install verification.
+#   2. Use service_restart (exponential-backoff health-check, 15s default) instead of
+#      service_start (bare systemctl start, no liveness check) for post-install verification.
 #   3. Remain idempotent: service_restart works whether nginx is stopped or running.
 #   4. Drop the now-redundant _nginx_test_and_reload at the end (service_restart
 #      already verifies liveness; nginx -t is still called inside create_default_deny).
@@ -910,7 +912,7 @@ install_nginx() {
         return 1
     fi
 
-    # Now enable + restart with health-check polling (service_restart polls 3x2s).
+    # Now enable + restart with health-check polling (service_restart: exponential backoff, 15s).
     service_enable nginx
     service_restart nginx
     print_ok "Nginx installed, tuned, and running."
