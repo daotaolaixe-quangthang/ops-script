@@ -703,6 +703,7 @@ menu_security() {
         echo "  7) Apply host baseline (sysctl/swap/firewall/fail2ban)"
         echo "  8) Manage SSH keys"
         echo "  9) TCP Forwarding (VSCode Remote SSH)"
+        echo "  10) Auto Security Updates (unattended-upgrades)"
         echo "  0) Back"
         echo ""
         read -r -p "Select: " choice
@@ -716,6 +717,7 @@ menu_security() {
             7) security_apply_host_baseline   ;;
             8) security_manage_ssh_keys       ;;
             9) security_manage_tcp_forwarding ;;
+            10) security_manage_unattended_upgrades ;;
             0) return                         ;;
             *) print_warn "Invalid option"    ;;
         esac
@@ -1200,4 +1202,119 @@ security_manage_tcp_forwarding() {
         0) return ;;
         *) print_warn "Invalid option" ;;
     esac
+}
+
+# ── Auto Security Updates (unattended-upgrades) ───────────────────────────────
+# Manages automatic security package updates via unattended-upgrades.
+# Persists enabled/disabled state in ops.conf (OPS_UNATTENDED_UPGRADES).
+security_uu_is_installed() {
+    dpkg -l unattended-upgrades 2>/dev/null | grep -q '^ii'
+}
+
+security_uu_is_active() {
+    systemctl is-active apt-daily-upgrade.timer >/dev/null 2>&1
+}
+
+security_uu_get_status_line() {
+    if security_uu_is_installed; then
+        if security_uu_is_active; then
+            echo "enabled (timer active)"
+        else
+            echo "installed but timer inactive"
+        fi
+    else
+        echo "not installed"
+    fi
+}
+
+security_manage_unattended_upgrades() {
+    print_section "Auto Security Updates (unattended-upgrades)"
+    security_require_root || return 1
+
+    while true; do
+        local status_line
+        status_line="$(security_uu_get_status_line)"
+
+        echo ""
+        echo "  Status : ${status_line}"
+        echo ""
+        echo "  1) Enable  — install & activate automatic security updates"
+        echo "  2) Disable — stop timer (keep package installed)"
+        echo "  3) Run now — apply all pending security updates immediately"
+        echo "  4) Show status & recent log"
+        echo "  0) Back"
+        echo ""
+        read -r -p "  Select: " subchoice
+
+        case "$subchoice" in
+            1)
+                print_section "Enable Auto Security Updates"
+                if ! security_uu_is_installed; then
+                    print_warn "Installing unattended-upgrades..."
+                    apt_install unattended-upgrades
+                fi
+                # Configure with debconf non-interactively to enable security updates
+                echo 'unattended-upgrades unattended-upgrades/enable_auto_updates boolean true' \
+                    | debconf-set-selections 2>/dev/null || true
+                dpkg-reconfigure -f noninteractive unattended-upgrades 2>/dev/null || true
+                systemctl enable --now apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
+                ops_conf_set "ops.conf" "OPS_UNATTENDED_UPGRADES" "enabled"
+                print_ok "unattended-upgrades enabled. Security updates will be applied automatically."
+                systemctl status apt-daily-upgrade.timer --no-pager -l 2>/dev/null | head -10 || true
+                ;;
+            2)
+                print_section "Disable Auto Security Updates"
+                if ! security_uu_is_installed; then
+                    print_warn "unattended-upgrades is not installed — nothing to disable."
+                    continue
+                fi
+                print_warn "This will stop the automatic update timer. The package remains installed."
+                if ! prompt_confirm "Disable automatic security updates?"; then
+                    print_warn "Cancelled."
+                    continue
+                fi
+                systemctl disable --now apt-daily-upgrade.timer >/dev/null 2>&1 || true
+                ops_conf_set "ops.conf" "OPS_UNATTENDED_UPGRADES" "disabled"
+                print_ok "Auto security updates disabled. Run option 1 to re-enable."
+                ;;
+            3)
+                print_section "Run Security Updates Now"
+                if ! security_uu_is_installed; then
+                    print_warn "unattended-upgrades is not installed."
+                    if prompt_confirm "Install and run now?"; then
+                        apt_install unattended-upgrades
+                    else
+                        continue
+                    fi
+                fi
+                print_warn "Running apt-get update first..."
+                apt-get update -qq
+                print_warn "Applying unattended-upgrades (this may take a while)..."
+                unattended-upgrade --verbose
+                print_ok "Unattended-upgrades run complete."
+                ;;
+            4)
+                print_section "Auto Security Updates Status"
+                echo "  Package : $(security_uu_get_status_line)"
+                echo ""
+                if systemctl list-timers apt-daily-upgrade.timer --no-pager 2>/dev/null | grep -q apt-daily-upgrade; then
+                    systemctl list-timers apt-daily-upgrade.timer --no-pager 2>/dev/null || true
+                else
+                    print_warn "Timer apt-daily-upgrade.timer not found."
+                fi
+                echo ""
+                local logfile
+                logfile=$(ls -t /var/log/unattended-upgrades/unattended-upgrades.log* 2>/dev/null | head -1 || true)
+                if [[ -n "$logfile" && -f "$logfile" ]]; then
+                    echo "  Last 20 lines of ${logfile}:"
+                    echo ""
+                    tail -20 "$logfile" || true
+                else
+                    print_warn "No unattended-upgrades log found (has it run yet?)."
+                fi
+                ;;
+            0) return ;;
+            *) print_warn "Invalid option" ;;
+        esac
+    done
 }
