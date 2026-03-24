@@ -152,6 +152,44 @@ _nine_router_sync_cookie_secure() {
     log_info "9router AUTH_COOKIE_SECURE=${secure_value}"
 }
 
+# S3-2 fix: NEXT_PUBLIC_* vars are baked into the Next.js JS bundle at build
+# time — they are NOT read from .env at runtime. If the .env contains
+# http://localhost:PORT when the app is served over HTTPS the browser will
+# block every API call (Mixed Content). This function:
+#   1. Patches NEXT_PUBLIC_BASE_URL in .env to the correct public URL.
+#   2. Rebuilds the app so the new value is baked into .next/standalone.
+#   3. Re-creates the standalone symlinks (build output wipes them).
+# Called from link_nine_router_domain (always) and, if needed, from
+# update_nine_router (the URL is patched before the single build pass there).
+_nine_router_sync_base_url() {
+    local domain="$1"
+    local ssl_enabled="$2"
+    local scheme="http"
+    [[ "$ssl_enabled" == "yes" ]] && scheme="https"
+    local new_url="${scheme}://${domain}"
+
+    if [[ ! -f "$NINE_ROUTER_ENV_FILE" ]]; then
+        log_warn "Missing ${NINE_ROUTER_ENV_FILE}; cannot sync NEXT_PUBLIC_BASE_URL"
+        return 0
+    fi
+
+    if grep -q '^NEXT_PUBLIC_BASE_URL=' "$NINE_ROUTER_ENV_FILE"; then
+        sed -i "s|^NEXT_PUBLIC_BASE_URL=.*|NEXT_PUBLIC_BASE_URL=${new_url}|" "$NINE_ROUTER_ENV_FILE"
+    else
+        printf '\nNEXT_PUBLIC_BASE_URL=%s\n' "$new_url" >> "$NINE_ROUTER_ENV_FILE"
+    fi
+    log_info "NEXT_PUBLIC_BASE_URL set to ${new_url} in .env"
+
+    # Must rebuild — NEXT_PUBLIC_* vars are baked at build time.
+    log_info "Rebuilding 9router with updated NEXT_PUBLIC_BASE_URL (may take 1–2 min)..."
+    _nine_router_run_as_runtime_user npm run build --prefix "$NINE_ROUTER_DIR"
+
+    # Re-create standalone symlinks (build output wipes them).
+    ln -sfn "${NINE_ROUTER_DIR}/.next/static" "${NINE_ROUTER_DIR}/.next/standalone/.next/static"
+    ln -sfn "${NINE_ROUTER_DIR}/public"       "${NINE_ROUTER_DIR}/.next/standalone/public"
+    log_info "Standalone symlinks re-created after rebuild"
+}
+
 _nine_router_install_logrotate() {
     write_file "$NINE_ROUTER_LOGROTATE_FILE" <<'EOF'
 /opt/9router/logs/*.log {
@@ -447,6 +485,15 @@ link_nine_router_domain() {
 
     _nine_router_sync_cookie_secure "$ssl_enabled"
 
+    # S3-2: update NEXT_PUBLIC_BASE_URL to the correct scheme+domain and rebuild
+    # so the new URL is baked into the Next.js bundle (NEXT_PUBLIC_* are build-time).
+    _nine_router_sync_base_url "$domain" "$ssl_enabled"
+
+    # Reload PM2 to pick up the rebuilt standalone server.
+    if _nine_router_run_as_runtime_user pm2 describe "$NINE_ROUTER_PM2_NAME" > /dev/null 2>&1; then
+        _nine_router_run_as_runtime_user pm2 reload "$NINE_ROUTER_PM2_NAME" --update-env
+    fi
+
     _nine_router_set_state "NINE_ROUTER_DOMAIN" "$domain"
     _nine_router_set_state "NINE_ROUTER_SSL" "$ssl_enabled"
 
@@ -610,6 +657,24 @@ update_nine_router() {
 
     cd "$NINE_ROUTER_DIR"
     _nine_router_run_as_runtime_user npm install --prefix "$NINE_ROUTER_DIR"
+
+    # S3-2: patch NEXT_PUBLIC_BASE_URL in .env BEFORE the build so the correct
+    # URL is baked into the bundle in a single pass (Option B — no double build).
+    local _linked_domain _linked_ssl _linked_scheme
+    _linked_domain="$(ops_conf_get "nine-router.conf" "NINE_ROUTER_DOMAIN" 2>/dev/null || true)"
+    _linked_ssl="$(ops_conf_get    "nine-router.conf" "NINE_ROUTER_SSL"    2>/dev/null || true)"
+    if [[ -n "$_linked_domain" ]] && [[ -f "$NINE_ROUTER_ENV_FILE" ]]; then
+        _linked_scheme="http"
+        [[ "${_linked_ssl:-no}" == "yes" ]] && _linked_scheme="https"
+        local _new_url="${_linked_scheme}://${_linked_domain}"
+        if grep -q '^NEXT_PUBLIC_BASE_URL=' "$NINE_ROUTER_ENV_FILE"; then
+            sed -i "s|^NEXT_PUBLIC_BASE_URL=.*|NEXT_PUBLIC_BASE_URL=${_new_url}|" "$NINE_ROUTER_ENV_FILE"
+        else
+            printf '\nNEXT_PUBLIC_BASE_URL=%s\n' "$_new_url" >> "$NINE_ROUTER_ENV_FILE"
+        fi
+        log_info "S3-2: NEXT_PUBLIC_BASE_URL set to ${_new_url} before build"
+    fi
+
     _nine_router_run_as_runtime_user npm run build --prefix "$NINE_ROUTER_DIR"
 
     # Re-create standalone symlinks after every update
