@@ -17,6 +17,7 @@ NINE_ROUTER_ENV_FILE="${NINE_ROUTER_DIR}/.env"
 NINE_ROUTER_PASSWORD_FILE="${OPS_CONFIG_DIR}/.nine-router-password"
 NINE_ROUTER_STATE_FILE="${OPS_CONFIG_DIR}/nine-router.conf"
 NINE_ROUTER_PM2_CONFIG="${NINE_ROUTER_DIR}/nine-router.ecosystem.config.js"
+NINE_ROUTER_LOGROTATE_FILE="/etc/logrotate.d/nine-router"
 
 _nine_router_tpl_dir() {
     echo "${OPS_ROOT}/modules/templates"
@@ -149,6 +150,28 @@ _nine_router_sync_cookie_secure() {
     fi
 
     log_info "9router AUTH_COOKIE_SECURE=${secure_value}"
+}
+
+_nine_router_install_logrotate() {
+    write_file "$NINE_ROUTER_LOGROTATE_FILE" <<'EOF'
+/opt/9router/logs/*.log {
+    daily
+    rotate 14
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF
+    chmod 644 "$NINE_ROUTER_LOGROTATE_FILE"
+    log_info "logrotate config installed: ${NINE_ROUTER_LOGROTATE_FILE}"
+}
+
+_nine_router_remove_logrotate() {
+    if [[ -f "$NINE_ROUTER_LOGROTATE_FILE" ]]; then
+        rm -f "$NINE_ROUTER_LOGROTATE_FILE"
+        log_info "logrotate config removed: ${NINE_ROUTER_LOGROTATE_FILE}"
+    fi
 }
 
 _nine_router_render_vhost() {
@@ -391,6 +414,7 @@ EOF
     _nine_router_set_state "NINE_ROUTER_DOMAIN" ""
     _nine_router_set_state "NINE_ROUTER_SSL" "no"
     _nine_router_set_state "NINE_ROUTER_REQUIRE_API_KEY" "no"
+    _nine_router_set_state "NINE_ROUTER_REQUEST_LOGS" "no"
     _nine_router_set_state "NINE_ROUTER_INSTALL_DATE" "$(date +%F)"
 
     _nine_router_assert_ufw_closed
@@ -467,6 +491,53 @@ toggle_require_api_key() {
 
     _nine_router_assert_ufw_closed
     print_ok "REQUIRE_API_KEY=${require_api_key} applied"
+}
+
+toggle_request_logs() {
+    require_root || return 1
+    local mode="${1:-}"
+    local enable_logs
+    local state_value
+
+    case "$mode" in
+        on)
+            enable_logs="true"
+            state_value="yes"
+            ;;
+        off)
+            enable_logs="false"
+            state_value="no"
+            ;;
+        *)
+            print_error "Usage: toggle_request_logs <on|off>"
+            return 1
+            ;;
+    esac
+
+    if [[ ! -f "$NINE_ROUTER_ENV_FILE" ]]; then
+        log_error "Missing ${NINE_ROUTER_ENV_FILE}. Install 9router first."
+        return 1
+    fi
+
+    if grep -q '^ENABLE_REQUEST_LOGS=' "$NINE_ROUTER_ENV_FILE"; then
+        sed -i "s/^ENABLE_REQUEST_LOGS=.*/ENABLE_REQUEST_LOGS=${enable_logs}/" "$NINE_ROUTER_ENV_FILE"
+    else
+        printf '\nENABLE_REQUEST_LOGS=%s\n' "$enable_logs" >> "$NINE_ROUTER_ENV_FILE"
+    fi
+
+    if [[ "$mode" == "on" ]]; then
+        mkdir -p "${NINE_ROUTER_DIR}/logs"
+        chown "$(_nine_router_runtime_user):$(_nine_router_runtime_user)" "${NINE_ROUTER_DIR}/logs"
+        _nine_router_install_logrotate
+    else
+        _nine_router_remove_logrotate
+    fi
+
+    _nine_router_run_as_runtime_user pm2 restart "$NINE_ROUTER_PM2_NAME"
+    _nine_router_set_state "NINE_ROUTER_REQUEST_LOGS" "$state_value"
+
+    _nine_router_assert_ufw_closed
+    print_ok "ENABLE_REQUEST_LOGS=${enable_logs} applied"
 }
 
 verify_nine_router() {
@@ -671,7 +742,18 @@ _nine_router_show_status() {
         api_key="${BLD}—${RST}"
     fi
 
-    # ── Log line count ────────────────────────────────────────────
+    # ── Request logs status ───────────────────────────────────────
+    local req_logs_raw req_logs_label
+    req_logs_raw="$(ops_conf_get "nine-router.conf" "NINE_ROUTER_REQUEST_LOGS" 2>/dev/null || true)"
+    if [[ "$req_logs_raw" == "yes" ]]; then
+        req_logs_label="${GRN}enabled${RST}  (logrotate: daily/14d)"
+    elif [[ "$req_logs_raw" == "no" ]]; then
+        req_logs_label="${YLW}disabled${RST}"
+    else
+        req_logs_label="${BLD}—${RST}"
+    fi
+
+    # ── Log line count ────────────────────────────────────────────────────────
     # Log paths are set by the PM2 ecosystem config (error_file / out_file)
     local out_log err_log total_lines
     out_log="/var/log/ops/${NINE_ROUTER_PM2_NAME}.out.log"
@@ -691,6 +773,7 @@ _nine_router_show_status() {
     echo -e "  ${BLD}🚦 PM2 Status     :${RST} ${pm2_status_label}"
     echo -e "  ${BLD}🔄 Restarts       :${RST} ${restarts}"
     echo -e "  ${BLD}🔑 API Key        :${RST} ${api_key}"
+    echo -e "  ${BLD}📝 Request logs   :${RST} ${req_logs_label}"
     echo -e "  ${BLD}📋 Log lines      :${RST} ${total_lines}"
     echo ""
 }
@@ -708,7 +791,9 @@ menu_nine_router() {
         echo "  7) View 9router logs"
         echo "  8) Enable API key requirement"
         echo "  9) Disable API key requirement"
-        echo "  10) Verify 9router"
+        echo "  10) Enable request logging"
+        echo "  11) Disable request logging"
+        echo "  12) Verify 9router"
         echo "  0) Back"
         echo ""
         read -r -p "Select: " choice
@@ -722,7 +807,9 @@ menu_nine_router() {
             7) nine_router_logs ;;
             8) toggle_require_api_key on ;;
             9) toggle_require_api_key off ;;
-            10) verify_nine_router ;;
+            10) toggle_request_logs on ;;
+            11) toggle_request_logs off ;;
+            12) verify_nine_router ;;
             0) return ;;
             *) print_warn "Invalid option" ;;
         esac
