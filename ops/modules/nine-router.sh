@@ -377,6 +377,13 @@ install_nine_router() {
     rm -f "$_archive"
     log_info "Archive removed"
 
+    # Fix ownership BEFORE running npm as runtime user — tar extracts as root,
+    # so the runtime user cannot write node_modules without this chown.
+    local _rt_user
+    _rt_user="$(_nine_router_runtime_user)"
+    chown -R "${_rt_user}:${_rt_user}" "$NINE_ROUTER_DIR"
+    log_info "Set ${NINE_ROUTER_DIR} ownership to ${_rt_user} before npm install"
+
     cd "$NINE_ROUTER_DIR"
     # Run as runtime user so node_modules is not root-owned
     # (prevents permission errors during future updates/restarts)
@@ -654,6 +661,12 @@ update_nine_router() {
 
     rm -f "$_archive"
     log_info "Archive removed"
+
+    # Re-apply ownership after extracting new archive (tar overwrites as root).
+    local _rt_user2
+    _rt_user2="$(_nine_router_runtime_user)"
+    chown -R "${_rt_user2}:${_rt_user2}" "$NINE_ROUTER_DIR"
+    log_info "Set ${NINE_ROUTER_DIR} ownership to ${_rt_user2} before npm install"
 
     cd "$NINE_ROUTER_DIR"
     _nine_router_run_as_runtime_user npm install --prefix "$NINE_ROUTER_DIR"
