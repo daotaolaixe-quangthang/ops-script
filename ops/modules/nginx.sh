@@ -25,6 +25,19 @@ _nginx_disable_packaged_default_site() {
     local packaged_enabled="${NGINX_SITES_ENABLED}/default"
     local packaged_available="${NGINX_SITES_AVAILABLE}/default"
 
+    # S2-1 fix: nginx.org mainline package ships /etc/nginx/conf.d/default.conf
+    # (a stock HTTP server on port 80). conf.d/ is included BEFORE sites-enabled/
+    # by the mainline nginx.conf, so this file loads before our 00-default-deny
+    # catch-all, causing unknown hostnames to be served by the stock default instead
+    # of our deny vhost. Remove it unconditionally — OPS always supplies its own
+    # default deny via sites-enabled/00-default-deny.
+    local confd_default="/etc/nginx/conf.d/default.conf"
+    if [[ -f "$confd_default" ]]; then
+        backup_file "$confd_default" >/dev/null || true
+        rm -f "$confd_default"
+        log_info "S2-1: Removed nginx.org stock conf.d/default.conf (superseded by OPS 00-default-deny)."
+    fi
+
     if [[ -L "$packaged_enabled" ]]; then
         rm -f "$packaged_enabled"
         log_info "Disabled packaged nginx default site symlink: ${packaged_enabled}"
