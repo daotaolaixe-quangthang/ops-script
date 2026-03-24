@@ -175,6 +175,7 @@ _nine_router_render_vhost() {
         ssl_https_block=$(cat <<EOF
 server {
     listen 443 ssl;
+    http2 on;
     server_name ${domain};
 
     access_log /var/log/nginx/nine-router.access.log;

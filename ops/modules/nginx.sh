@@ -481,8 +481,9 @@ _render_node_vhost() {
         cat >> "$available" <<NGINX_SSL_EOF
 
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
     server_name ${domain};
 
     # ── Security headers (vhost-level) ───────────────────────────────────────
@@ -575,8 +576,9 @@ _render_php_vhost() {
         cat >> "$available" <<NGINX_SSL_EOF
 
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
     server_name ${domain};
 
     # ── Security headers (vhost-level) ───────────────────────────────────────
@@ -674,8 +676,9 @@ _render_static_vhost() {
         cat >> "$available" <<NGINX_SSL_EOF
 
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
     server_name ${domain};
 
     # ── Security headers (vhost-level) ───────────────────────────────────────
