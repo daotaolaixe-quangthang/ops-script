@@ -502,7 +502,7 @@ server {
     # ── Security headers (vhost-level) ───────────────────────────────────────
     # NOTE: when add_header appears in a server{} block, Nginx does NOT inherit
     # headers from the parent http{} block. Re-declare all security headers here.
-    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header Content-Security-Policy   "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data: https:; connect-src 'self' https:; frame-ancestors 'none'" always;
     add_header X-Frame-Options           "SAMEORIGIN" always;
     add_header X-Content-Type-Options    "nosniff" always;
@@ -597,7 +597,7 @@ server {
     # ── Security headers (vhost-level) ───────────────────────────────────────
     # NOTE: when add_header appears in a server{} block, Nginx does NOT inherit
     # headers from the parent http{} block. Re-declare all security headers here.
-    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header Content-Security-Policy   "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data: https:; connect-src 'self' https:; frame-ancestors 'none'" always;
     add_header X-Frame-Options           "SAMEORIGIN" always;
     add_header X-Content-Type-Options    "nosniff" always;
@@ -697,7 +697,7 @@ server {
     # ── Security headers (vhost-level) ───────────────────────────────────────
     # NOTE: when add_header appears in a server{} block, Nginx does NOT inherit
     # headers from the parent http{} block. Re-declare all security headers here.
-    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header Content-Security-Policy   "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data: https:; connect-src 'self' https:; frame-ancestors 'none'" always;
     add_header X-Frame-Options           "SAMEORIGIN" always;
     add_header X-Content-Type-Options    "nosniff" always;

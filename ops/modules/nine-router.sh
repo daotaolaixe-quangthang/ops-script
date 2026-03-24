@@ -219,7 +219,7 @@ server {
     add_header Referrer-Policy           "strict-origin-when-cross-origin" always;
     add_header X-Content-Type-Options    "nosniff" always;
     add_header X-Frame-Options           "SAMEORIGIN" always;
-    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
     location / {
         proxy_pass         http://127.0.0.1:${NINE_ROUTER_PORT};

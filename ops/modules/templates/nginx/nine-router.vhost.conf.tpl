@@ -14,13 +14,15 @@ server {
     # the parent http{} block are NOT inherited. We must re-declare all security
     # headers here + relax style-src / font-src for Google Fonts used by the
     # 9router dashboard UI.
+    # S3-1 fix: HSTS is NOT set here (plain-HTTP server block). Per RFC 6797
+    # §7.2 browsers ignore HSTS headers sent over HTTP. HSTS is emitted only
+    # by the SSL server block generated at vhost-render time (listen 443).
     add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https:; frame-ancestors 'none'" always;
     add_header Permissions-Policy        "geolocation=(), microphone=(), camera=(), payment=(), usb=()" always;
     add_header X-XSS-Protection          "1; mode=block" always;
     add_header Referrer-Policy           "strict-origin-when-cross-origin" always;
     add_header X-Content-Type-Options    "nosniff" always;
     add_header X-Frame-Options           "SAMEORIGIN" always;
-    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
 
 {{SSL_HTTP_BLOCK}}
     location / {
