@@ -3,14 +3,20 @@
 module.exports = {
   apps: [{
     name:       'nine-router',
-    script:     'node_modules/.bin/next',
-    args:       'start -H 127.0.0.1',
+    // 9router is built with `output: standalone` — use the self-contained server
+    // directly instead of `next start` (which does NOT work with standalone builds
+    // and emits a warning, causing repeated PM2 restarts in older versions).
+    // The standalone server reads PORT and HOSTNAME from the environment.
+    script:     'node',
+    args:       '.next/standalone/server.js',
     cwd:        '{{NINE_ROUTER_DIR}}',
     instances:  1,
     exec_mode:  'fork',
     // Cap V8 heap at ~90% of max_memory_restart (512M) so GC runs aggressively
     // before PM2's RSS limit triggers a hard restart. Prevents 93%+ heap usage.
-    node_args:  '--max-old-space-size=460',
+    // --expose-gc allows Node to run incremental GC passes on idle, reducing
+    // peak RSS on a memory-constrained VPS.
+    node_args:  '--max-old-space-size=460 --expose-gc',
     // S3-4: filter_env [] means PM2 will NOT copy shell-inherited env vars
     // into this process beyond what the `env` block and `env_file` declare.
     // Combined with `env -i` in the shell launcher, SSH_CONNECTION / ADMIN_USER

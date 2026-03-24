@@ -317,8 +317,16 @@ install_nine_router() {
     log_info "Archive removed"
 
     cd "$NINE_ROUTER_DIR"
-    npm install
-    npm run build
+    # Run as runtime user so node_modules is not root-owned
+    # (prevents permission errors during future updates/restarts)
+    _nine_router_run_as_runtime_user npm install --prefix "$NINE_ROUTER_DIR"
+    _nine_router_run_as_runtime_user npm run build --prefix "$NINE_ROUTER_DIR"
+
+    # Next.js standalone output requires static assets and public/ to be
+    # symlinked into the standalone directory — they are NOT copied by the build.
+    ln -sfn "${NINE_ROUTER_DIR}/.next/static" "${NINE_ROUTER_DIR}/.next/standalone/.next/static"
+    ln -sfn "${NINE_ROUTER_DIR}/public"       "${NINE_ROUTER_DIR}/.next/standalone/public"
+    log_info "Symlinked .next/static and public/ into standalone output"
 
     prompt_secret "Enter 9router dashboard initial password"
     local init_password="${SECRET:-}"
@@ -530,9 +538,23 @@ update_nine_router() {
     log_info "Archive removed"
 
     cd "$NINE_ROUTER_DIR"
-    npm install
-    npm run build
-    _nine_router_run_as_runtime_user pm2 start "$NINE_ROUTER_PM2_NAME"
+    _nine_router_run_as_runtime_user npm install --prefix "$NINE_ROUTER_DIR"
+    _nine_router_run_as_runtime_user npm run build --prefix "$NINE_ROUTER_DIR"
+
+    # Re-create standalone symlinks after every update
+    ln -sfn "${NINE_ROUTER_DIR}/.next/static" "${NINE_ROUTER_DIR}/.next/standalone/.next/static"
+    ln -sfn "${NINE_ROUTER_DIR}/public"       "${NINE_ROUTER_DIR}/.next/standalone/public"
+    log_info "Symlinked .next/static and public/ into standalone output"
+
+    # Re-render PM2 ecosystem config (picks up any template changes in the update)
+    _nine_router_render_pm2_config
+
+    # Graceful reload: replaces workers one at a time (zero-downtime where possible)
+    if _nine_router_run_as_runtime_user pm2 describe "$NINE_ROUTER_PM2_NAME" >/dev/null 2>&1; then
+        _nine_router_run_as_runtime_user pm2 reload "$NINE_ROUTER_PM2_NAME" --update-env
+    else
+        _nine_router_run_as_runtime_user pm2 start "$NINE_ROUTER_PM2_CONFIG"
+    fi
     _nine_router_run_as_runtime_user pm2 save
 
     _nine_router_assert_ufw_closed
