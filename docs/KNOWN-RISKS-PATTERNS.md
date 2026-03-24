@@ -257,3 +257,29 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
 **Detection:** `nginx -T | grep "443 ssl" | grep -v http2` returns matches **or** `_vs_check_nginx` WARN on http2.
 
 **Fix:** Rebuild vhost via OPS after running `Apply security baseline`. All inline vhost renders now emit `listen 443 ssl http2;`.
+
+---
+
+## 23) `read -p` prompt bị nuốt khi `< /dev/tty` + `2>/dev/null` — FIXED (3 lần)
+
+- **Pattern**:
+  - Dùng `read -r -t N -p "Label: " var < /dev/tty 2>/dev/null` để đọc input từ TTY
+  - `-p` ghi prompt ra **stderr**; `2>/dev/null` redirect stderr vào /dev/null → prompt biến mất
+- **Risk**: Menu chính hoặc submenu hiển thị trống, không có nhãn `Select:` / `Confirm [y/N]:` → user mất orientation
+- **Root cause**: Bash `read -p` viết prompt ra fd 2 (stderr). Redirecting `2>/dev/null` ẩn hoàn toàn.
+- **Lịch sử**: Đã xảy ra và fix **3 lần** trong project. Lần cuối fix tại `bin/ops` dòng 79 (2026-03-24).
+- **Safe action — LUÔN dùng pattern này**:
+  ```bash
+  # ✅ ĐÚNG
+  printf "Select: " > /dev/tty
+  read -r -t 300 choice < /dev/tty
+
+  printf "Confirm [y/N]: " > /dev/tty
+  read -r answer < /dev/tty
+  ```
+  ```bash
+  # ❌ SAI — prompt bị nuốt bởi 2>/dev/null
+  read -r -p "Select: " choice < /dev/tty 2>/dev/null
+  ```
+- **Áp dụng cho**: mọi main menu, submenu, confirm prompt (y/n), password prompt khi stdin bị redirect
+

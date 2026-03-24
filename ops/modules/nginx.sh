@@ -1903,7 +1903,8 @@ ssl_issue_cert() {
         echo ""
         echo "  0) Cancel"
         echo ""
-        read -r -p "  Select domain [1-${#domains[@]}]: " _sel < /dev/tty
+        printf "  Select domain [1-%d]: " "${#domains[@]}" > /dev/tty
+        read -r _sel < /dev/tty
 
         if [[ "$_sel" == "0" || -z "$_sel" ]]; then
             print_warn "Cancelled."
@@ -2100,7 +2101,8 @@ ssl_prompt_cf_origin_cert() {
         echo ""
         echo "  0) Cancel"
         echo ""
-        read -r -p "  Select domain [1-${#domains[@]}]: " _sel < /dev/tty
+        printf "  Select domain [1-%d]: " "${#domains[@]}" > /dev/tty
+        read -r _sel < /dev/tty
 
         if [[ "$_sel" == "0" || -z "$_sel" ]]; then
             print_warn "Cancelled."

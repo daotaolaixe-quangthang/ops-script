@@ -87,3 +87,29 @@ This guide defines how Bash scripts in OPS should be written so that they are pr
   - Keep style consistent with existing functions in the same file.
   - Prefer adding new small functions instead of inlining complex logic.
 
+
+### 11. TTY prompt anti-pattern — `read -p` bị nuốt khi redirect stdin
+
+> **QUAN TRỌNG — lỗi này đã xảy ra 3 lần trong project.**
+
+Khi dùng `read < /dev/tty` để đọc input từ TTY (vì stdin đã bị redirect), option `-p` của `read` ghi prompt ra **stderr** — và nếu có `2>/dev/null` thì prompt bị **nuốt hoàn toàn**, không hiển thị với người dùng.
+
+#### ❌ SAI (prompt bị mất):
+
+```bash
+read -r -p "Select: " choice < /dev/tty 2>/dev/null
+read -r -p "Confirm [y/N]: " answer < /dev/tty 2>/dev/null
+```
+
+#### ✅ ĐÚNG (in prompt ra tty trước, rồi mới read):
+
+```bash
+printf "Select: " > /dev/tty
+read -r choice < /dev/tty
+
+printf "Confirm [y/N]: " > /dev/tty
+read -r answer < /dev/tty
+```
+
+**Áp dụng cho:** mọi menu chính, mọi submenu, mọi confirm yes/no prompt khi stdin có thể bị redirect.
+

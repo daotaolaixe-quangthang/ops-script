@@ -38,10 +38,12 @@ prompt_input() {
     local label="$1"
     local default="${2:-}"
     if [[ -n "$default" ]]; then
-        read -r -p "${label} [${default}]: " REPLY </dev/tty
+        printf "%s [%s]: " "$label" "$default" > /dev/tty
+        read -r REPLY </dev/tty
         REPLY="${REPLY:-$default}"
     else
-        read -r -p "${label}: " REPLY </dev/tty
+        printf "%s: " "$label" > /dev/tty
+        read -r REPLY </dev/tty
     fi
 }
 
@@ -53,7 +55,8 @@ prompt_text() {
 # Returns 0 (yes) or 1 (no). Treats anything other than y/Y as no.
 prompt_confirm() {
     local label="${1:-Are you sure?}"
-    read -r -p "${label} [y/N]: " ans </dev/tty
+    printf "%s [y/N]: " "$label" > /dev/tty
+    read -r ans </dev/tty
     [[ "${ans,,}" == "y" ]]
 }
 
@@ -65,7 +68,8 @@ confirm() {
 # Reads a secret without echoing; stores result in SECRET.
 prompt_secret() {
     local label="${1:-Enter secret}"
-    read -r -s -p "${label}: " SECRET </dev/tty
+    printf "%s: " "$label" > /dev/tty
+    read -r -s SECRET < /dev/tty
     echo
 }
 
@@ -74,7 +78,8 @@ prompt_secret() {
 # Use after any non-interactive action so output stays visible.
 press_enter() {
     echo ""
-    read -r -p "  Press Enter to return to menu..." _press_enter_dummy </dev/tty || true
+    printf "  Press Enter to return to menu..." > /dev/tty
+    read -r _press_enter_dummy </dev/tty || true
 }
 
 # ── Generic menu helper ───────────────────────────────────────
@@ -91,5 +96,6 @@ show_menu() {
     done
     echo -e "  ${BLD}0)${RST} Back / Exit"
     echo ""
-    read -r -p "Select option: " MENU_CHOICE < /dev/tty
+    printf "Select option: " > /dev/tty
+    read -r MENU_CHOICE < /dev/tty
 }

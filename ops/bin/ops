@@ -76,7 +76,8 @@ main_menu() {
         echo ""
         # F-SPIN: read with 5-min timeout — exits cleanly if tty dies mid-session
         # (prevents 100% CPU spin loop when SSH disconnects with ops open)
-        if ! read -r -t 300 -p "Select: " choice < /dev/tty 2>/dev/null; then
+        printf "Select: " > /dev/tty
+        if ! read -r -t 300 choice < /dev/tty; then
             echo "" >&2
             exit 0
         fi
