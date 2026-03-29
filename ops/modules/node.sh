@@ -49,7 +49,20 @@ _node_runtime_user() {
         runtime_user="$(ops_conf_get "ops.conf" "OPS_ADMIN_USER" 2>/dev/null || true)"
     fi
     if [[ -z "$runtime_user" ]]; then
-        runtime_user="${ADMIN_USER:-${SUDO_USER:-$(whoami)}}"
+        # FIX-03: Do NOT silently default to "root" as PM2 runtime user.
+        # Prefer ADMIN_USER / SUDO_USER only when they are set and non-root.
+        if [[ -n "${ADMIN_USER:-}" && "${ADMIN_USER}" != "root" ]]; then
+            runtime_user="$ADMIN_USER"
+        elif [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+            runtime_user="$SUDO_USER"
+        else
+            # Last resort — keep whoami for non-root contexts (CI, test, etc.)
+            # but emit a warning so the operator is aware when it's root.
+            runtime_user="$(whoami)"
+            if [[ "$runtime_user" == "root" ]]; then
+                log_warn "_node_runtime_user: resolved to 'root' — PM2 will run as root. Set ADMIN_USER or OPS_RUNTIME_USER in ops.conf."
+            fi
+        fi
     fi
     echo "$runtime_user"
 }

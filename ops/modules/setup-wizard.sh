@@ -261,6 +261,32 @@ wizard_step_node() {
         fi
     fi
 
+    # FIX-03: Verify the runtime user written to ops.conf by node_install_pm2().
+    # node_install_pm2() always calls:
+    #   ops_conf_set "ops.conf" "OPS_RUNTIME_USER" "$runtime_user"
+    # at the end of its execution — this is the authoritative source of truth.
+    #
+    # We intentionally do NOT use "ps -eo comm=" to find the PM2 process because:
+    #   - PM2's God Daemon comm= is "node" on most Ubuntu systems (not "PM2"),
+    #     the process title in /proc/PID/comm depends on the Node.js/PM2 version.
+    #   - The daemon may not have started yet (systemd service starts on next boot).
+    #   - Parsing ps output is fragile and breaks across PM2 versions.
+    local saved_runtime_user
+    saved_runtime_user="$(ops_conf_get "ops.conf" "OPS_RUNTIME_USER" 2>/dev/null || true)"
+    if [[ "$saved_runtime_user" == "root" ]]; then
+        print_warn "WARNING: OPS_RUNTIME_USER is set to 'root' in ops.conf."
+        print_warn "PM2 and all managed apps will run as root — this is a security risk."
+        print_warn "Steps to fix:"
+        print_warn "  1. Ensure a non-root admin user exists on the VPS."
+        print_warn "  2. Set OPS_RUNTIME_USER in /etc/ops/ops.conf to that user."
+        print_warn "  3. Re-run: Setup Wizard → Node.js LTS & PM2 (or bin/ops → Node.js → Install/Update PM2)"
+        log_warn "wizard_step_node: OPS_RUNTIME_USER=root in ops.conf after node_install_pm2"
+        # Non-fatal: step is marked done so the operator can re-run only the
+        # PM2 sub-step without repeating the full Node.js install.
+    elif [[ -n "$saved_runtime_user" ]]; then
+        print_ok "PM2 runtime user: ${saved_runtime_user} (non-root ✓)"
+    fi
+
     _wizard_mark_done "NODE"
     print_ok "Node.js & PM2 step done."
 }
