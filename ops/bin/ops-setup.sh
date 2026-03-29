@@ -134,7 +134,7 @@ if [[ $- == *i* ]] && [[ -n "${SSH_CONNECTION:-}" ]]; then
     fi
     unset _ops_trans _ops_locked _ops_srv_port
     if command -v ops-dashboard &>/dev/null; then
-        ops-dashboard
+        ops-dashboard || true
     fi
 fi
 HOOK

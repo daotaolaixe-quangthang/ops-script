@@ -68,10 +68,12 @@ php_pool_tuning_for_tier() {
             ;;
         *)
             echo "pm=dynamic"
-            echo "pm.max_children=50"
-            echo "pm.start_servers=10"
-            echo "pm.min_spare_servers=5"
-            echo "pm.max_spare_servers=20"
+            # S2-4: Tier L — conservative 30 workers (7.8 GB VPS, ~40MB/worker).
+            # Leaves headroom for MariaDB + Nginx; prevents OOM under burst.
+            echo "pm.max_children=30"
+            echo "pm.start_servers=5"
+            echo "pm.min_spare_servers=3"
+            echo "pm.max_spare_servers=10"
             echo "pm.max_requests=2000"
             ;;
     esac
@@ -114,6 +116,23 @@ php_ini_tuning_for_tier() {
     echo "disable_functions=exec,passthru,shell_exec,system,proc_open,popen,proc_terminate,proc_get_status,pcntl_exec,parse_ini_file,show_source"
 }
 
+# php_set_ini_key <file> <key> <value>
+#
+# Sets (or adds) a key=value pair in a PHP ini-style file.
+#
+# INTENTIONAL BEHAVIOR — F-17: The grep/sed patterns below match BOTH active
+# keys (key = value) AND commented-out keys (; key = value).  This is by
+# design: many distributions ship security-relevant settings commented out
+# (e.g. "; display_errors = On") and OPS must activate and override them.
+#
+# This is safe because OPS only ever calls this function with values that are
+# already security-correct (expose_php=Off, display_errors=Off, etc.).  Even
+# if a sysadmin left a commented line like "; expose_php = On", OPS will turn
+# it into "expose_php = Off" — still the correct direction.
+#
+# DO NOT change the ";?" part of the regex without understanding this contract.
+# If you need to preserve a deliberately commented-out key, remove it from
+# php_ini_tuning_for_tier / php_pool_tuning_for_tier instead.
 php_set_ini_key() {
     local file="$1"
     local key="$2"
@@ -126,6 +145,7 @@ php_set_ini_key() {
 
     key_regex=$(printf '%s' "$key" | sed 's/[][(){}.^$*+?|\\/]/\\&/g')
 
+    # ;? intentionally matches both active and commented-out keys — see above.
     if grep -Eq "^[[:space:]]*;?[[:space:]]*${key_regex}[[:space:]]*=" "$file"; then
         sed -i -E "s|^[[:space:]]*;?[[:space:]]*${key_regex}[[:space:]]*=.*|${key} = ${value}|" "$file"
     else
@@ -141,6 +161,24 @@ php_ensure_ondrej_ppa() {
         add-apt-repository ppa:ondrej/php -y
     fi
     apt_update
+}
+
+# php_disable_default_www_pool <ver>
+#
+# S2-4: The distro ships /etc/php/{ver}/fpm/pool.d/www.conf with pm.max_children=5
+# (a hard-coded default that ignores server tier/RAM completely).  OPS manages all
+# pools via named site pools; the www pool is redundant and wastes worker slots
+# under concurrent load, causing 502s on servers with enough RAM.
+# Disable it by renaming to .disabled so php-fpm ignores it, but it can be
+# manually re-enabled if needed.
+php_disable_default_www_pool() {
+    local ver="$1"
+    local www_pool="/etc/php/${ver}/fpm/pool.d/www.conf"
+    if [[ -f "$www_pool" ]]; then
+        mv "$www_pool" "${www_pool}.disabled"
+        log_info "php_disable_default_www_pool: disabled ${www_pool} (S2-4: prevents 5-worker bottleneck)"
+        print_ok "Disabled default www pool for PHP ${ver} (prevents pm.max_children=5 bottleneck)."
+    fi
 }
 
 # install_php_version <ver>
@@ -164,8 +202,12 @@ install_php_version() {
     apt_install "${packages[@]}"
     service_enable "php${ver}-fpm"
     service_start "php${ver}-fpm"
+    # S2-4: Disable the distro default www pool before tuning so it never
+    # competes with OPS-managed site pools at pm.max_children=5.
+    php_disable_default_www_pool "$ver"
     tune_php "$ver"
     print_ok "Installed PHP ${ver} with common extensions."
+    log_info "install_php_version: PHP ${ver} installed"
 }
 
 # configure_php_pool <site> <ver>
@@ -188,6 +230,24 @@ configure_php_pool() {
     socket="$(php_get_socket_path "$site" "$ver")"
     pool_file="$(php_get_pool_file "$site" "$ver")"
 
+    # P-02: idempotency guard — pool file already exists.
+    # configure_php_pool previously overwrote silently; now we prompt, consistent
+    # with add_domain (F-03) and node_add_app.
+    # FORCE_OVERWRITE=1 bypasses the prompt for scripted/unattended callers.
+    if [[ -f "$pool_file" ]]; then
+        if [[ "${FORCE_OVERWRITE:-0}" != "1" ]]; then
+            print_warn "PHP-FPM pool '${site}' (PHP ${ver}) already exists: $pool_file"
+            print_warn "Re-running will overwrite any manual customisations (env vars, memory limits, security settings, etc)."
+            local _pool_ow_ans
+            read -r -p "Overwrite existing pool config for '${site}'? [y/N]: " _pool_ow_ans
+            if [[ "${_pool_ow_ans,,}" != "y" ]]; then
+                print_warn "Aborted. Existing pool config for '${site}' was NOT changed."
+                return 0
+            fi
+        fi
+        log_info "P-02: Overwriting existing PHP-FPM pool for '${site}' (FORCE_OVERWRITE=${FORCE_OVERWRITE:-0})."
+    fi
+
     backup_file "$pool_file" >/dev/null 2>&1 || true
     write_file "$pool_file" <<EOF_POOL
 [${site}]
@@ -197,8 +257,9 @@ listen = ${socket}
 listen.owner = www-data
 listen.group = www-data
 listen.mode = 0660
-pm.status_path = /fpm-status
-ping.path = /fpm-ping
+; F-06: pm.status_path and ping.path intentionally omitted.
+; If you re-enable them, the Nginx vhost MUST include a location block
+; that restricts access to 127.0.0.1 only. See nginx.sh _render_php_vhost.
 chdir = /
 ; P3-B: clear_env=yes prevents FPM workers inheriting parent env secrets.
 ; If your app needs specific env vars, add explicit lines below this pool config, e.g.:
@@ -233,6 +294,7 @@ EOF_SITE
 
     service_restart "php${ver}-fpm"
     print_ok "Configured PHP-FPM pool '${site}' for PHP ${ver}."
+    log_info "configure_php_pool: pool '${site}' configured for PHP ${ver}"
 
     # F-08: Sync domain state file + rebuild Nginx vhost when the PHP version changes.
     # Without this, the Nginx vhost continues pointing to the OLD php socket path
@@ -317,6 +379,7 @@ tune_php() {
     print_ok "Applied PHP tuning for version ${ver} (Tier: ${OPS_TIER:-S})."
     print_warn "SECURITY: allow_url_fopen=Off is now enforced. PHP apps using file_get_contents() for remote URLs must use cURL instead."
     print_warn "SECURITY: disable_functions blocks exec/shell_exec/system. Add php_admin_value overrides per-pool if your app requires them."
+    log_info "tune_php: PHP ${ver} tuned (tier=${OPS_TIER:-S})"
 }
 
 php_verify_version() {
@@ -382,6 +445,7 @@ php_manage_version() {
                 "php${ver}-mbstring" "php${ver}-opcache" "php${ver}-xml" "php${ver}-zip" \
                 "php${ver}-soap" "php${ver}-bcmath" || true
             print_ok "Requested removal for PHP ${ver} packages."
+            log_info "php_manage_version: PHP ${ver} removed"
             ;;
         *)
             print_error "Invalid action: ${action}. Use install or remove."

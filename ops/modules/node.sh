@@ -97,6 +97,10 @@ _node_list_conf_names() {
 }
 
 # _node_write_app_conf <appname> key=value ...
+# F-18 fix: write to a temp file then mv (atomic rename) so the conf is never
+# left in a partial/truncated state if the process is killed mid-write.
+# The caller (node_add_app) runs backup_file before calling here, so the
+# original conf stays intact until the rename succeeds.
 _node_write_app_conf() {
     local appname="$1"
     shift
@@ -104,15 +108,17 @@ _node_write_app_conf() {
     apps_dir=$(_node_apps_dir)
     ensure_dir "$apps_dir"
     local conf="$apps_dir/${appname}.conf"
-    # Write fresh conf (clobber if re-added — caller handles backup)
+    local tmp_conf
+    tmp_conf="$(mktemp "${conf}.tmp.XXXXXX")"
     {
         echo "APP_NAME=\"${appname}\""
         for kv in "$@"; do
             echo "${kv%%=*}=\"${kv#*=}\""
         done
         echo "APP_RUNTIME_USER=\"$(_node_runtime_user)\""
-    } > "$conf"
-    chmod 640 "$conf"
+    } > "$tmp_conf"
+    chmod 640 "$tmp_conf"
+    mv -f "$tmp_conf" "$conf"
     log_info "Wrote app conf: $conf"
 }
 
@@ -444,30 +450,54 @@ node_add_app() {
     # Render ecosystem.config.js from template if available
     local tpl="${OPS_ROOT:-/opt/ops}/modules/templates/pm2/ecosystem.config.js.tpl"
     local eco_dest="${app_dir}/ecosystem.config.js"
-    if [[ -f "$tpl" ]]; then
-        local app_path="${app_dir%/}/${app_entry}"
-        render_template "$tpl" \
-            "APP_NAME=${pm2_name}" \
-            "APP_PATH=${app_path}" \
-            "APP_PORT=${app_port}" \
-            "INSTANCES=1" \
-            "EXEC_MODE=fork" \
-            "NODE_ENV=${app_env}" \
-            "MAX_MEMORY_RESTART=${max_mem}" \
-            > "$eco_dest"
-        print_ok "Rendered: $eco_dest"
-    else
-        # Inline fallback ecosystem.config.js
-        # P4-B: kill_timeout 5000 (>=5s per SECURITY-RULES §8), merge_logs,
-        # node_args --max-old-space-size derived from max_memory_restart ceiling.
-        local _max_mem_mb
-        case "${OPS_TIER:-M}" in
-            S) _max_mem_mb=256 ;;
-            M) _max_mem_mb=460 ;;
-            L) _max_mem_mb=740 ;;
-            *) _max_mem_mb=460 ;;
-        esac
-        cat > "$eco_dest" <<EOF
+
+    # P-02: idempotency guard — ecosystem.config.js already exists.
+    # Previously always overwritten silently; now prompt to preserve manual customisations
+    # (cluster mode, cron_restart, custom env vars, etc).
+    local _write_eco=1
+    if [[ -f "$eco_dest" ]]; then
+        if [[ "${FORCE_OVERWRITE:-0}" != "1" ]]; then
+            print_warn "ecosystem.config.js already exists: $eco_dest"
+            print_warn "Overwriting will replace any manual PM2 customisations (cluster mode, env, cron_restart, etc)."
+            local _eco_ow_ans
+            read -r -p "Overwrite existing ecosystem.config.js? [y/N]: " _eco_ow_ans
+            if [[ "${_eco_ow_ans,,}" != "y" ]]; then
+                print_warn "Kept existing ecosystem.config.js — PM2 will use it as-is."
+                log_info "P-02: ecosystem.config.js kept unchanged for app '${app_name}'."
+                _write_eco=0
+            fi
+        fi
+        if [[ "$_write_eco" -eq 1 ]]; then
+            backup_file "$eco_dest" >/dev/null || true
+            log_info "P-02: Overwriting ecosystem.config.js for '${app_name}' (FORCE_OVERWRITE=${FORCE_OVERWRITE:-0})."
+        fi
+    fi
+
+    if [[ "$_write_eco" -eq 1 ]]; then
+        if [[ -f "$tpl" ]]; then
+            local app_path="${app_dir%/}/${app_entry}"
+            render_template "$tpl" \
+                "APP_NAME=${pm2_name}" \
+                "APP_PATH=${app_path}" \
+                "APP_PORT=${app_port}" \
+                "INSTANCES=1" \
+                "EXEC_MODE=fork" \
+                "NODE_ENV=${app_env}" \
+                "MAX_MEMORY_RESTART=${max_mem}" \
+                > "$eco_dest"
+            print_ok "Rendered: $eco_dest"
+        else
+            # Inline fallback ecosystem.config.js
+            # P4-B: kill_timeout 5000 (>=5s per SECURITY-RULES §8), merge_logs,
+            # node_args --max-old-space-size derived from max_memory_restart ceiling.
+            local _max_mem_mb
+            case "${OPS_TIER:-M}" in
+                S) _max_mem_mb=256 ;;
+                M) _max_mem_mb=460 ;;
+                L) _max_mem_mb=740 ;;
+                *) _max_mem_mb=460 ;;
+            esac
+            cat > "$eco_dest" <<EOF
 module.exports = {
   apps: [{
     name:         '${pm2_name}',
@@ -485,8 +515,9 @@ module.exports = {
   }]
 };
 EOF
-        print_ok "Created minimal ecosystem.config.js (template not found)"
-    fi
+            print_ok "Created minimal ecosystem.config.js (template not found)"
+        fi
+    fi # _write_eco
 
     _node_reconcile_app_ownership "$app_dir"
 
@@ -568,6 +599,36 @@ node_remove_app() {
             else
                 print_warn "Nginx vhost kept. Domain '${app_domain}' will serve 502 until vhost is removed manually."
             fi
+        fi
+    fi
+
+    # F-10 fix: remove OPS-generated ecosystem.config.js from the app directory.
+    # The file is OPS-managed (written by node_add_app) and must be OPS-removed.
+    # Default: prompt + backup to avoid breaking CI/CD pipelines that own the dir.
+    local eco_file="${APP_DIR}/ecosystem.config.js"
+    if [[ -f "$eco_file" ]]; then
+        echo ""
+        print_warn "Found OPS-generated ecosystem.config.js: $eco_file"
+        if prompt_confirm "Remove ecosystem.config.js? (a timestamped backup will be kept)"; then
+            local eco_bak="${eco_file}.bak.$(date +%Y%m%d%H%M%S)"
+            # File is owned by runtime user — prefer removing as that user.
+            if _node_run_as_runtime_user cp "$eco_file" "$eco_bak" 2>/dev/null && \
+               _node_run_as_runtime_user rm -f "$eco_file" 2>/dev/null; then
+                print_ok "ecosystem.config.js removed (backup: $eco_bak)"
+                log_info "node_remove_app: ecosystem.config.js removed backup=$eco_bak"
+            else
+                # Fallback: root may own the parent dir in some deployment setups.
+                if cp "$eco_file" "$eco_bak" 2>/dev/null && rm -f "$eco_file" 2>/dev/null; then
+                    print_ok "ecosystem.config.js removed via root (backup: $eco_bak)"
+                    log_info "node_remove_app: ecosystem.config.js removed (root fallback) backup=$eco_bak"
+                else
+                    print_warn "Could not remove $eco_file — please remove manually."
+                    log_warn "node_remove_app: failed to remove ecosystem.config.js at $eco_file"
+                fi
+            fi
+        else
+            print_warn "ecosystem.config.js kept at: $eco_file"
+            print_warn "Re-registering to the same path will overwrite it via node_add_app."
         fi
     fi
 

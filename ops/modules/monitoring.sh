@@ -66,13 +66,24 @@ menu_monitoring() {
 }
 
 # monitoring_refresh_capacity — re-detect resources and rewrite capacity.conf
-# F-20: Without this, OPS_TIER stays stale after a VPS RAM upgrade until reinstall.
+# F-16/F-20: Without this, OPS_TIER stays stale after a VPS RAM upgrade until reinstall.
 monitoring_refresh_capacity() {
     print_section "Refresh Capacity Profile"
     require_root || return 1
 
     print_warn "Re-detecting VPS resources and rewriting capacity profile..."
     detect_tier   # re-reads /proc/meminfo, nproc → sets RAM_MB, CPU_CORES, OPS_TIER
+
+    # F-16: Also refresh disk and derive TIER_SITES/TIER_USERS so capacity.conf
+    # stays complete (same fields as the installer writes).
+    DISK_GB=$(df -BG / | awk 'NR==2 { gsub("G","",$4); print $4 }')
+    local tier_sites tier_users
+    case "$OPS_TIER" in
+        S) tier_sites="1-2";  tier_users="10-50"  ;;
+        M) tier_sites="3-6";  tier_users="50-200"  ;;
+        L) tier_sites="6+";   tier_users="200+"   ;;
+        *) tier_sites="?";    tier_users="?"      ;;
+    esac
 
     local conf="${OPS_CONFIG_DIR}/capacity.conf"
     mkdir -p "$OPS_CONFIG_DIR"
@@ -83,16 +94,72 @@ monitoring_refresh_capacity() {
 
 RAM_MB="${RAM_MB}"
 CPU_CORES="${CPU_CORES}"
-DISK_GB="${DISK_GB:-}"
+DISK_GB="${DISK_GB}"
 OPS_TIER="${OPS_TIER}"
+TIER_SITES="${tier_sites}"
+TIER_USERS="${tier_users}"
 EOF
     chmod 644 "$conf"
 
     print_ok "Capacity profile updated:"
-    printf "  RAM:  %s MB\n"   "$RAM_MB"
-    printf "  CPUs: %s core(s)\n" "$CPU_CORES"
-    printf "  Tier: %s\n"      "$OPS_TIER"
-    log_info "monitoring_refresh_capacity: RAM=${RAM_MB}MB CPU=${CPU_CORES} Tier=${OPS_TIER}"
+    printf "  RAM:        %s MB\n"        "$RAM_MB"
+    printf "  CPUs:       %s core(s)\n"   "$CPU_CORES"
+    printf "  Disk avail: %s GB\n"        "$DISK_GB"
+    printf "  Tier:       %s  (sites: %s, users/site: ~%s)\n" \
+        "$OPS_TIER" "$tier_sites" "$tier_users"
+    log_info "monitoring_refresh_capacity: RAM=${RAM_MB}MB CPU=${CPU_CORES} Disk=${DISK_GB}GB Tier=${OPS_TIER}"
+
+    # F-16: Prompt to re-apply per-service tuning so the new tier takes effect
+    # immediately — not just on the next reinstall.
+    echo ""
+    print_warn "OPS_TIER is now '${OPS_TIER}'. Services tuned at install time may still use old values."
+    if prompt_confirm "Apply tier-appropriate tuning to all installed services now?"; then
+        local applied=0
+
+        # Nginx
+        if command -v nginx >/dev/null 2>&1 && declare -f nginx_apply_tuning >/dev/null 2>&1; then
+            print_warn "Applying Nginx tuning..."
+            nginx_apply_tuning && print_ok "Nginx tuning applied." || print_warn "Nginx tuning returned non-zero — check config manually."
+            (( applied++ )) || true
+        fi
+
+        # MariaDB
+        if { systemctl is-active mariadb >/dev/null 2>&1 || systemctl is-active mysql >/dev/null 2>&1; } \
+           && declare -f tune_mariadb >/dev/null 2>&1; then
+            print_warn "Applying MariaDB tuning..."
+            tune_mariadb && print_ok "MariaDB tuning applied." || print_warn "MariaDB tuning returned non-zero — check config manually."
+            (( applied++ )) || true
+        fi
+
+        # PHP-FPM (all active versions)
+        if declare -f php_apply_tuning >/dev/null 2>&1; then
+            local php_ver
+            for php_ver in 7.4 8.1 8.2 8.3; do
+                if systemctl list-unit-files 2>/dev/null | grep -q "^php${php_ver}-fpm\\.service"; then
+                    print_warn "Applying PHP ${php_ver}-FPM tuning..."
+                    php_apply_tuning "$php_ver" \
+                        && print_ok "PHP ${php_ver}-FPM tuning applied." \
+                        || print_warn "PHP ${php_ver}-FPM tuning returned non-zero."
+                    (( applied++ )) || true
+                fi
+            done
+        fi
+
+        if (( applied == 0 )); then
+            print_warn "No tunable services detected (nginx/mariadb/php-fpm not active or modules not loaded)."
+            print_warn "Re-run individual tuning from each service menu."
+        else
+            print_ok "Tuning applied to ${applied} service group(s). Tier is now active."
+        fi
+        log_info "monitoring_refresh_capacity: tuning applied to ${applied} service group(s)"
+    else
+        echo ""
+        print_warn "Tuning NOT applied. To activate the new tier manually:"
+        print_warn "  • Nginx:   Domains & Nginx → Apply Nginx tuning"
+        print_warn "  • MariaDB: Database → Apply tuning"
+        print_warn "  • PHP-FPM: PHP / PHP-FPM → Apply PHP-FPM tuning"
+        log_info "monitoring_refresh_capacity: operator declined tuning re-apply"
+    fi
 }
 
 # ── Task 1: System overview ───────────────────────────────────
@@ -812,6 +879,16 @@ ops_self_update() {
     else
         print_ok "Update complete. All syntax checks passed."
         print_warn "Restart OPS (exit and re-run) to load the new version."
+    fi
+
+    # Bug-4 fix: sync OPS_VERSION in ops.conf to match the actual deployed VERSION file.
+    # Self-update replaces bin/modules/VERSION but never updated ops.conf, causing
+    # OPS_VERSION to remain at the install-time value indefinitely after updates.
+    local _new_ver
+    _new_ver=$(cat "${ops_root}/VERSION" 2>/dev/null | tr -d '[:space:]' || true)
+    if [[ -n "$_new_ver" ]]; then
+        ops_conf_set "ops.conf" "OPS_VERSION" "$_new_ver" 2>/dev/null || true
+        log_info "ops_self_update: synced OPS_VERSION=${_new_ver} to ops.conf"
     fi
 
     log_info "ops_self_update: applied from ${tarball_url} any_fail=${any_fail}"

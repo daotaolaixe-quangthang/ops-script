@@ -51,6 +51,8 @@ source "$OPS_ROOT/modules/checks.sh"
 source "$OPS_ROOT/modules/backup.sh"
 # shellcheck source=modules/codex-cli.sh
 source "$OPS_ROOT/modules/codex-cli.sh"
+# shellcheck source=modules/ai-agent.sh
+source "$OPS_ROOT/modules/ai-agent.sh"
 
 # ── Main menu loop ────────────────────────────────────────────
 main_menu() {
@@ -67,11 +69,18 @@ main_menu() {
         echo "  5) 9router Management"
         echo "  6) PHP / PHP-FPM Management"
         echo "  7) Database Management"
-        echo "  8) Codex CLI Integration"
+        echo "  8) AI Agent Integration"
         echo "  9) System & Monitoring"
+        echo "  s) Security Management"
         echo "  0) Exit"
         echo ""
-        read -r -p "Select: " choice
+        # F-SPIN: read with 5-min timeout — exits cleanly if tty dies mid-session
+        # (prevents 100% CPU spin loop when SSH disconnects with ops open)
+        printf "Select: " > /dev/tty
+        if ! read -r -t 300 choice < /dev/tty; then
+            echo "" >&2
+            exit 0
+        fi
         case "$choice" in
             # F-02: Each arm guarded with || true so that any non-zero return from a
             # sub-function (e.g. stopped service, pm2 not found, sshd -T on container)
@@ -84,22 +93,56 @@ main_menu() {
             5) menu_nine_router    || true ;;
             6) menu_php            || true ;;
             7) menu_database       || true ;;
-            8) menu_codex_cli      || true ;;
+            8) menu_ai_agent       || true ;;
             9) menu_monitoring     || true ;;
+            s|S) menu_security     || true ;;
             0) exit 0              ;;
-            *) print_warn "Invalid option — choose 0..9" ;;
+            *) print_warn "Invalid option — choose 0..9 or s"; sleep 0.5 ;;
         esac
     done
 }
 
-# ── P4-D: Session lock ───────────────────────────────────────
+# ── F-13: Session lock ───────────────────────────────────────
 # Prevents two concurrent 'ops' sessions from corrupting shared state
 # (config files, service restarts, PM2 saves, UFW rules, etc.).
-# The lock is released automatically when the process exits.
-exec 9>/var/lock/ops.lock
-if ! flock -n 9; then
-    echo "[ERROR] Another ops session is already running." >&2
+#
+# Uses flock(1) on a file descriptor opened against /run/lock/ops-menu.lock:
+#   • /run/lock has sticky-bit (1777) — world-writable but each user can
+#     only delete their own files, so no unprivileged tampering.
+#   • flock is atomic — no TOCTOU window between check and acquire.
+#   • Works for both 'ops' (opsuser) and 'sudo ops' (root): flock operates
+#     on the fd, not the file owner, so no AppArmor/ownership conflict.
+OPS_LOCK_FILE="/run/lock/ops-menu.lock"
+OPS_LOCK_FD=9
+
+# Open/create the lock file on fd 9.
+exec 9>"$OPS_LOCK_FILE" || {
+    echo "[ERROR] Cannot open lock file $OPS_LOCK_FILE" >&2
+    exit 1
+}
+
+# Attempt a non-blocking exclusive lock.
+if ! flock -n 9 2>/dev/null; then
+    _ops_old_pid=$(cat "$OPS_LOCK_FILE" 2>/dev/null || true)
+    echo "[ERROR] Another ops session is already running${_ops_old_pid:+ (PID $_ops_old_pid)}." >&2
     echo "        Exit that session first, then run 'ops' again." >&2
+    exec 9>&-
+    exit 1
+fi
+
+# Write our PID into the locked file (informational — shown on conflict above).
+echo "$$" >&9
+
+# Lock is released automatically when fd 9 is closed (process exits).
+# The trap also removes the file to keep /run/lock tidy.
+trap 'flock -u 9; exec 9>&-; rm -f "$OPS_LOCK_FILE" 2>/dev/null || true' EXIT INT TERM HUP
+
+# F-SPIN: Guard — require an interactive terminal before entering the menu loop.
+# If stdin/stdout are not a TTY (e.g. piped, or tty already deleted), exit cleanly
+# rather than spinning the while-true loop at 100% CPU forever.
+if ! { [ -t 0 ] || [ -t 1 ]; }; then
+    echo "[ERROR] 'ops' requires an interactive terminal. Run: sudo ops" >&2
+    exec 9>&-
     exit 1
 fi
 

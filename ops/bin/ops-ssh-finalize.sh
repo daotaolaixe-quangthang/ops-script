@@ -30,7 +30,9 @@ conf_clear() {
     local key="$1"
     local tmp
     tmp=$(mktemp)
-    sed "s|^${key}=.*|${key}=\"\"|" "$OPS_CONF" > "$tmp"
+    # Use awk to avoid sed delimiter conflicts: safe regardless of key/value content.
+    awk -v k="$key" 'BEGIN{pat="^"k"="} $0 ~ pat {print k"=\"\""; next} {print}' \
+        "$OPS_CONF" > "$tmp"
     mv "$tmp" "$OPS_CONF"
 }
 
@@ -148,22 +150,52 @@ EOF
         if [[ -n "$inc_bak" && -f "$inc_bak" ]]; then
             cp "$inc_bak" "$SSHD_OPS_INCLUDE"
             _warn "Restored ${SSHD_OPS_INCLUDE} from ${inc_bak}."
+        else
+            # inc_bak is empty → file was freshly created this run (did not exist before).
+            # Remove it so the restored sshd_config has no broken include to load.
+            if [[ -f "$SSHD_OPS_INCLUDE" ]]; then
+                rm -f "$SSHD_OPS_INCLUDE"
+                _warn "Removed freshly-created (possibly corrupt) ${SSHD_OPS_INCLUDE} during rollback."
+            fi
         fi
         exit 1
     fi
 
     # ── 4. Reload sshd ────────────────────────────────────────
+    # F-09 fix: do NOT exit on reload failure. sshd -t already validated the config
+    # (step 3), so the config is known-good. A reload failure is a transient system
+    # issue; exiting here would leave OPS_SSH_TRANSITION_PORT set in ops.conf, causing
+    # the login hook to re-trigger sudo on every subsequent SSH session (retry loop).
+    # Log the error prominently so the operator can manually reload; do not block finalize.
     local ssh_service
     ssh_service=$(detect_ssh_service)
     if systemctl reload "$ssh_service" > /dev/null 2>&1; then
         _log "sshd reloaded — now listening only on port ${locked_port}."
     else
-        _err "Failed to reload sshd. Manual reload required: systemctl reload ${ssh_service}"
-        exit 1
+        _err "Failed to reload sshd — config is valid but reload did not apply."
+        _err "ACTION REQUIRED: run 'systemctl reload ${ssh_service}' manually to close port ${transition_port}."
+        echo ""
+        echo "  [OPS] ⚠ sshd reload failed — port ${transition_port} may still be open."
+        echo "  [OPS] ⚠ Run: sudo systemctl reload ${ssh_service}"
+        echo ""
+        # Continue to clear ops.conf so the login hook does not loop on future sessions.
     fi
 
-    # ── 5. Update UFW: remove transition port rule ─────────────
+    # ── 5. Update UFW: ensure locked port is allowed and UFW is enabled ──
+    # Bug fix (S0-2): previously only removed the transition port rule without
+    # enabling UFW or adding the locked port rule. This created a security window
+    # where the server had zero firewall enforcement between ops-ssh-finalize
+    # running and the wizard security step completing.
     if command -v ufw > /dev/null 2>&1; then
+        # Always apply baseline rules before enabling — safe even if already enabled
+        ufw default deny incoming  > /dev/null 2>&1 || true
+        ufw default allow outgoing > /dev/null 2>&1 || true
+        ufw allow "${locked_port}/tcp" comment "ops: SSH managed" > /dev/null 2>&1 || true
+        ufw allow 80/tcp            comment "ops: HTTP"           > /dev/null 2>&1 || true
+        ufw allow 443/tcp           comment "ops: HTTPS"          > /dev/null 2>&1 || true
+        ufw --force enable          > /dev/null 2>&1 || true
+        _log "UFW: enabled with locked port ${locked_port}/tcp, HTTP 80, HTTPS 443."
+        # Now safe to remove the transition port rule
         if ufw status 2>/dev/null | grep -qE "^${transition_port}/tcp"; then
             ufw delete allow "${transition_port}/tcp" > /dev/null 2>&1 || true
             ufw reload > /dev/null 2>&1 || true

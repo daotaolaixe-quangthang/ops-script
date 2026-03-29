@@ -83,11 +83,16 @@ Approximate guidelines (per pool):
   - `pm.max_requests = 1000`
 - **Tier L**
   - `pm = dynamic`
-  - `pm.max_children = 50`
-  - `pm.start_servers = 10`
-  - `pm.min_spare_servers = 5`
-  - `pm.max_spare_servers = 20`
+  - `pm.max_children = 30` *(conservative — ~40MB/worker on 7.8GB VPS; leaves headroom for MariaDB + Nginx)*
+  - `pm.start_servers = 5`
+  - `pm.min_spare_servers = 3`
+  - `pm.max_spare_servers = 10`
   - `pm.max_requests = 2000`
+
+> **Note (S2-4):** On install, OPS renames `/etc/php/{ver}/fpm/pool.d/www.conf` to `www.conf.disabled`.
+> The distro default `www` pool sets `pm.max_children=5` regardless of server RAM, causing 502s
+> under concurrent load. OPS manages all pools via named site pools; the `www` pool is redundant.
+> To re-enable it manually, simply rename it back to `www.conf` and restart php-fpm.
 
 `php.ini` / opcache suggested defaults:
 

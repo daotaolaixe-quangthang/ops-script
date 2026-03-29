@@ -78,6 +78,7 @@ write_file() {
         return 0
     fi
     mv "$tmp" "$dest"
+    chmod 644 "$dest"
     log_info "Wrote: $dest"
 }
 

@@ -130,10 +130,16 @@ wizard_step_security() {
     # These are idempotent and safe for running production systems.
 
     # 1. Kernel hardening (sysctl): send_redirects, rp_filter, suid_dumpable
+    # OPTIONAL — warn on failure (OpenVZ containers restrict sysctl).
     if declare -f security_apply_sysctl_baseline >/dev/null 2>&1; then
         log_info "Wizard: applying sysctl security baseline..."
-        security_apply_sysctl_baseline
-        print_ok "Kernel sysctl hardening applied."
+        if security_apply_sysctl_baseline; then
+            print_ok "Kernel sysctl hardening applied."
+        else
+            print_warn "Kernel sysctl hardening partially failed (restricted by container / hypervisor)."
+            print_warn "Manual sysctl settings may not have been written. Check logs and apply manually if required."
+            log_warn "Wizard: security_apply_sysctl_baseline returned non-zero — sysctl hardening may be incomplete"
+        fi
     fi
 
     # 2. Strip cloud-init SSH overrides.
@@ -155,10 +161,16 @@ wizard_step_security() {
 
     # 3. Swap: always provision swap unconditionally, regardless of SSH port outcome.
     # On VPS with no swap, OOM killer can kill Nginx/MariaDB arbitrarily on memory spikes.
+    # OPTIONAL — warn on failure (e.g. read-only filesystem, low disk space).
     if declare -f security_ensure_swap >/dev/null 2>&1; then
         log_info "Wizard: provisioning swap file if not present..."
-        security_ensure_swap
-        print_ok "Swap provisioned (2GB default, vm.swappiness=10)."
+        if security_ensure_swap; then
+            print_ok "Swap provisioned (2GB default, vm.swappiness=10)."
+        else
+            print_warn "Swap provisioning failed — OOM risk on low-memory VPS."
+            print_warn "Check available disk space and permissions, then run: Security → Ensure swap."
+            log_warn "Wizard: security_ensure_swap returned non-zero — swap may not be active"
+        fi
     fi
 
     _wizard_mark_done "SECURITY"
@@ -204,8 +216,21 @@ wizard_step_nginx() {
         if declare -f _nginx_apply_global_tuning >/dev/null 2>&1; then
             log_info "Wizard: applying nginx security tuning baseline..."
             _nginx_apply_global_tuning
-            nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
-            print_ok "Nginx security baseline applied (server_tokens off, TLSv1.2+, security headers)."
+            # P-03 fix: explicit guard — if nginx -t fails after tuning, abort step
+            # so WIZARD_DONE_NGINX is NOT written and operator sees the real error.
+            if nginx -t >/dev/null 2>&1; then
+                if systemctl reload nginx >/dev/null 2>&1; then
+                    log_info "Nginx reloaded after global tuning."
+                else
+                    print_warn "Nginx reload returned non-zero after tuning — check 'systemctl status nginx'."
+                fi
+                print_ok "Nginx security baseline applied (server_tokens off, TLSv1.2+, security headers)."
+            else
+                print_error "Nginx config test failed after global tuning — NOT reloading."
+                print_warn "Check /etc/nginx/nginx.conf before re-running this step."
+                log_error "wizard_step_nginx: nginx -t failed after _nginx_apply_global_tuning"
+                return 1
+            fi
         fi
     fi
 

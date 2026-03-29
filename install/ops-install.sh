@@ -149,8 +149,31 @@ detect_ssh_state() {
         # Primary path: parse sshd -T output (field: "port <N>")
         port_source=$(printf '%s\n' "$sshd_t_out" | awk '/^port / {print $2}')
     elif [[ -f "$sshd_conf" ]]; then
-        # Fallback: grep main sshd_config file (misses sshd_config.d/)
+        # Fallback 1: grep main sshd_config (misses sshd_config.d/ includes)
         port_source=$(grep -E '^[[:space:]]*Port[[:space:]]+[0-9]+' "$sshd_conf" | awk '{print $2}')
+    fi
+
+    # F-01b fix: if still empty, try live socket detection via ss.
+    # Covers restricted containers (OpenVZ/LXC) where sshd -T returns nothing.
+    if [[ -z "$port_source" ]] && command -v ss > /dev/null 2>&1; then
+        local _live_ports
+        _live_ports=$(ss -tlnp 2>/dev/null \
+            | awk '/sshd/{match($4,/[0-9]+$/); if(RSTART) print substr($4,RSTART,RLENGTH)}' \
+            | sort -un | head -5 || true)
+        if [[ -n "$_live_ports" ]]; then
+            warn "sshd -T returned no output — using live ss port detection."
+            port_source="$_live_ports"
+        fi
+    fi
+
+    # Safety guard: if sshd is running but we still cannot detect any port,
+    # skip reconfiguration to avoid an unexpected port change / lockout.
+    if [[ -z "$port_source" ]] && pgrep -x sshd > /dev/null 2>&1; then
+        warn "Cannot determine active SSH port(s) — skipping automatic SSH reconfiguration."
+        warn "Check 'ss -tlnp' manually, then re-run: bash ops-install.sh"
+        SSH_ALREADY_CONFIGURED="yes"
+        export SSH_ALREADY_CONFIGURED
+        return 0
     fi
 
     local port
@@ -246,8 +269,13 @@ _configure_sshd_fresh() {
 }
 
 # _strip_cloud_init_ssh_overrides
-# Removes PasswordAuthentication, PermitRootLogin, X11Forwarding directives
-# from all sshd_config.d/ files EXCEPT 99-ops-hardening.conf.
+# Removes Port, PasswordAuthentication, PermitRootLogin, X11Forwarding and other
+# directives from all sshd_config.d/ files EXCEPT 99-ops-hardening.conf.
+# Port is included because _configure_sshd_fresh writes the authoritative Port
+# lines to the main sshd_config; any Port directive left in sshd_config.d/ would
+# cause sshd to listen on a stale cloud-init port in addition to the OPS-managed
+# ports (e.g. cloud-init sets Port 5022 → after fresh‑configure sshd would listen
+# on 22, NEW_PORT, AND 5022 if this strip were not applied).
 # Idempotent: safe to call multiple times.
 _strip_cloud_init_ssh_overrides() {
     local sshd_inc_dir="/etc/ssh/sshd_config.d"
@@ -258,11 +286,11 @@ _strip_cloud_init_ssh_overrides() {
         [[ -f "$f" ]] || continue
         [[ "$(basename "$f")" == "99-ops-hardening.conf" ]] && continue
         if grep -Eq \
-            '^[[:space:]]*(PasswordAuthentication|PermitRootLogin|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|PermitTunnel)[[:space:]]+' \
+            '^[[:space:]]*(Port|PasswordAuthentication|PermitRootLogin|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|PermitTunnel)[[:space:]]+' \
             "$f" 2>/dev/null; then
             cp "$f" "${f}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
             sed -i -E \
-                '/^[[:space:]]*(PasswordAuthentication|PermitRootLogin|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|PermitTunnel)[[:space:]]+/d' \
+                '/^[[:space:]]*(Port|PasswordAuthentication|PermitRootLogin|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|PermitTunnel)[[:space:]]+/d' \
                 "$f"
             ok "Stripped conflicting SSH directives from: $(basename "$f")"
         fi
@@ -671,7 +699,28 @@ install_ops_core() {
 
     # ── Step 6: Cleanup + ownership
     rm -rf "$tmp_dir"
-    chown -R "${ADMIN_USER}:${ADMIN_USER}" "$OPS_INSTALL_DIR"
+
+    # F-05 fix: executable scripts (bin/, modules/, core/, install/) must be
+    # owned root:root so a compromised or malicious ADMIN_USER cannot modify
+    # files that subsequently execute as root (re-install, sudo paths).
+    # Only non-executable content dirs (docs/, agents/) are admin-user writable.
+    # SECURITY-RULES §1: non-root user must not own files that execute as root.
+    chown root:root "$OPS_INSTALL_DIR"
+    chmod 755 "$OPS_INSTALL_DIR"
+
+    for _exec_dir in bin modules core install; do
+        if [[ -d "${OPS_INSTALL_DIR}/${_exec_dir}" ]]; then
+            chown -R root:root "${OPS_INSTALL_DIR}/${_exec_dir}"
+        fi
+    done
+
+    # Non-executable content: admin user may read/write (docs, agents)
+    for _data_dir in docs agents; do
+        if [[ -d "${OPS_INSTALL_DIR}/${_data_dir}" ]]; then
+            chown -R "${ADMIN_USER}:${ADMIN_USER}" "${OPS_INSTALL_DIR}/${_data_dir}"
+        fi
+    done
+    unset _data_dir _exec_dir
 
     ok "OPS core installed at ${OPS_INSTALL_DIR} (from tarball — no git required)."
 }

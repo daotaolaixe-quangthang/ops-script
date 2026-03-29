@@ -48,6 +48,7 @@ These rules define how this project should evolve. Human contributors and AI age
   - Avoid jargon when possible.
   - Explain side effects before making impactful changes (reboot, port changes, firewall rules).
 - Default options should be **safe** and production‑friendly.
+- **[CRITICAL]** Khi dùng `read < /dev/tty`, KHÔNG dùng `read -p` vì prompt bị nuốt bởi stderr redirect. Luôn dùng: `printf "Prompt: " > /dev/tty` trước, rồi `read -r var < /dev/tty`.
 - Always show the **SSH port and username** when changing SSH configuration.
 
 ### 6. Logging and diagnostics

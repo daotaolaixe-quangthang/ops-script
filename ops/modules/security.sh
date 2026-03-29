@@ -309,8 +309,15 @@ security_reconcile_sshd_main_config() {
     fi
 
     # Strip conflicting directives from OTHER include files (not our managed file).
+    # Bug-1 fix: skip .bak.* backup files — same guard as security_strip_cloud_init_overrides.
+    # Without this, backup_file() would be called on the backups themselves, creating
+    # ever-growing chains like 99-ops-hardening.conf.bak.TIMESTAMP.bak.TIMESTAMP2 on
+    # every wizard re-run.
     if [[ -d "$SECURITY_SSHD_INCLUDE_DIR" ]]; then
         find "$SECURITY_SSHD_INCLUDE_DIR" -maxdepth 1 -type f ! -name '99-ops-hardening.conf' -print0 2>/dev/null | while IFS= read -r -d '' include_file; do
+            local _bname_r
+            _bname_r="$(basename "$include_file")"
+            [[ "$_bname_r" == *".bak."* ]] && continue
             if grep -Eq '^[[:space:]]*(PasswordAuthentication|PermitRootLogin|Port|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|AllowStreamLocalForwarding|PermitTunnel)[[:space:]]+' "$include_file"; then
                 backup_file "$include_file" > /dev/null 2>&1 || true
                 sed -i -E '/^[[:space:]]*(PasswordAuthentication|PermitRootLogin|Port|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|AllowStreamLocalForwarding|PermitTunnel)[[:space:]]+/d' "$include_file"
@@ -332,8 +339,17 @@ security_strip_cloud_init_overrides() {
     local stripped=0
     local include_file
     while IFS= read -r -d '' include_file; do
+        local _bname
+        _bname="$(basename "$include_file")"
         # Skip our own managed file
-        [[ "$(basename "$include_file")" == "99-ops-hardening.conf" ]] && continue
+        [[ "$_bname" == "99-ops-hardening.conf" ]] && continue
+        # Bug-1 fix: skip accumulated backup files (*.bak.*) — they are NOT config
+        # files despite ending in .conf after chained suffixes, but more importantly
+        # sshd's Include glob (*.conf) will NOT match them since .bak.* is appended
+        # AFTER .conf. However backup_file() was re-backing-up the backups on every
+        # wizard re-run, creating an ever-growing chain of filenames. Skip any file
+        # whose name contains ".bak." to prevent this accumulation.
+        [[ "$_bname" == *".bak."* ]] && continue
         if grep -Eq '^[[:space:]]*(PasswordAuthentication|PermitRootLogin|Port|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|AllowStreamLocalForwarding|PermitTunnel)[[:space:]]+' "$include_file" 2>/dev/null; then
             backup_file "$include_file" >/dev/null 2>&1 || true
             sed -i -E '/^[[:space:]]*(PasswordAuthentication|PermitRootLogin|Port|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|AllowStreamLocalForwarding|PermitTunnel)[[:space:]]+/d' "$include_file"
@@ -578,13 +594,22 @@ security_ensure_swap() {
     # P5-A: Check existing swap SIZE before returning early.
     # If swapfile exists but is smaller than desired, remove and recreate.
     if swapon --show 2>/dev/null | grep -q "${SECURITY_SWAP_FILE}"; then
-        local existing_mb
-        existing_mb=$(swapon --show --bytes 2>/dev/null \
-            | awk -v f="${SECURITY_SWAP_FILE}" '$1==f {printf "%d", $3/1048576; exit}')
-        if [[ -n "$existing_mb" && "$existing_mb" -ge "$desired_size_mb" ]]; then
-            return 0   # correct size already active
+        # Bug-2 fix: compare at byte level with a 1 MB tolerance.
+        # fallocate -l 2048M allocates exactly (N*1024*1024 - 4096) bytes because
+        # ext4/xfs reserve one block for the file header.  Integer MB truncation made
+        # 2047.996 MB → 2047, which always triggered recreation.  byte-level compare
+        # with a -1 MB slack (i.e. accept anything >= (desired-1)*1048576) is resilient
+        # to this filesystem overhead without allowing genuinely undersized swap.
+        local _desired_bytes _existing_bytes _threshold_bytes
+        _desired_bytes=$(( desired_size_mb * 1048576 ))
+        _threshold_bytes=$(( (_desired_bytes) - 1048576 ))   # accept down to -1 MB
+        _existing_bytes=$(swapon --show --bytes 2>/dev/null \
+            | awk -v f="${SECURITY_SWAP_FILE}" '$1==f {print $3; exit}')
+        if [[ -n "$_existing_bytes" && "$_existing_bytes" -ge "$_threshold_bytes" ]]; then
+            return 0   # close enough — no recreate needed
         fi
-        log_info "security_ensure_swap: existing swap ${existing_mb}MB < desired ${desired_size_mb}MB — recreating."
+        local _existing_mb=$(( ${_existing_bytes:-0} / 1048576 ))
+        log_info "security_ensure_swap: existing swap ${_existing_mb}MB (${_existing_bytes:-0}B) < desired ${desired_size_mb}MB — recreating."
         swapoff "$SECURITY_SWAP_FILE" 2>/dev/null || true
         rm -f "$SECURITY_SWAP_FILE"
     fi
@@ -693,6 +718,7 @@ menu_security() {
         echo "  7) Apply host baseline (sysctl/swap/firewall/fail2ban)"
         echo "  8) Manage SSH keys"
         echo "  9) TCP Forwarding (VSCode Remote SSH)"
+        echo "  10) Auto Security Updates (unattended-upgrades)"
         echo "  0) Back"
         echo ""
         read -r -p "Select: " choice
@@ -706,6 +732,7 @@ menu_security() {
             7) security_apply_host_baseline   ;;
             8) security_manage_ssh_keys       ;;
             9) security_manage_tcp_forwarding ;;
+            10) security_manage_unattended_upgrades ;;
             0) return                         ;;
             *) print_warn "Invalid option"    ;;
         esac
@@ -1058,13 +1085,22 @@ security_manage_ssh_keys() {
             3)
                 print_warn "WARNING: Enabling PasswordAuthentication allows password-based SSH login."
                 if prompt_confirm "Enable PasswordAuthentication?"; then
-                    local pw_port ssh_svc
+                    local pw_port ssh_svc _pw_transition_port
                     pw_port="$(security_get_locked_ssh_port)"
                     ssh_svc="$(security_detect_ssh_service)"
-                    security_write_sshd_hardening_include "$pw_port" "yes"
-                    systemctl reload "$ssh_svc" >/dev/null 2>&1 || true
-                    ops_conf_set "ops.conf" "OPS_SSH_PASSWORD_AUTH" "yes"
-                    print_ok "PasswordAuthentication enabled. SSH reloaded."
+                    _pw_transition_port="$(security_get_transition_port)"
+                    security_write_sshd_hardening_include "$pw_port" "yes" "$_pw_transition_port"
+                    if sshd -t >/dev/null 2>&1; then
+                        systemctl reload "$ssh_svc" >/dev/null 2>&1 || true
+                        ops_conf_set "ops.conf" "OPS_SSH_PASSWORD_AUTH" "yes"
+                        print_ok "PasswordAuthentication enabled. SSH reloaded."
+                    else
+                        print_error "sshd -t validation failed. Reverting include file."
+                        local _prev_pw
+                        _prev_pw="$(ops_conf_get "ops.conf" "OPS_SSH_PASSWORD_AUTH" 2>/dev/null || true)"
+                        _prev_pw="${_prev_pw:-yes}"
+                        security_write_sshd_hardening_include "$pw_port" "$_prev_pw" "$_pw_transition_port"
+                    fi
                 fi
                 ;;
             4)
@@ -1074,13 +1110,22 @@ security_manage_ssh_keys() {
                 else
                     print_warn "WARNING: Only SSH key logins will work after this change."
                     if prompt_confirm "Disable PasswordAuthentication?"; then
-                        local lock_port ssh_svc
+                        local lock_port ssh_svc _lock_transition_port
                         lock_port="$(security_get_locked_ssh_port)"
                         ssh_svc="$(security_detect_ssh_service)"
-                        security_write_sshd_hardening_include "$lock_port" "no"
-                        systemctl reload "$ssh_svc" >/dev/null 2>&1 || true
-                        ops_conf_set "ops.conf" "OPS_SSH_PASSWORD_AUTH" "no"
-                        print_ok "PasswordAuthentication disabled. SSH key-only mode active."
+                        _lock_transition_port="$(security_get_transition_port)"
+                        security_write_sshd_hardening_include "$lock_port" "no" "$_lock_transition_port"
+                        if sshd -t >/dev/null 2>&1; then
+                            systemctl reload "$ssh_svc" >/dev/null 2>&1 || true
+                            ops_conf_set "ops.conf" "OPS_SSH_PASSWORD_AUTH" "no"
+                            print_ok "PasswordAuthentication disabled. SSH key-only mode active."
+                        else
+                            print_error "sshd -t validation failed. Reverting include file."
+                            local _prev_lock_pw
+                            _prev_lock_pw="$(ops_conf_get "ops.conf" "OPS_SSH_PASSWORD_AUTH" 2>/dev/null || true)"
+                            _prev_lock_pw="${_prev_lock_pw:-yes}"
+                            security_write_sshd_hardening_include "$lock_port" "$_prev_lock_pw" "$_lock_transition_port"
+                        fi
                     fi
                 fi
                 ;;
@@ -1172,4 +1217,119 @@ security_manage_tcp_forwarding() {
         0) return ;;
         *) print_warn "Invalid option" ;;
     esac
+}
+
+# ── Auto Security Updates (unattended-upgrades) ───────────────────────────────
+# Manages automatic security package updates via unattended-upgrades.
+# Persists enabled/disabled state in ops.conf (OPS_UNATTENDED_UPGRADES).
+security_uu_is_installed() {
+    dpkg -l unattended-upgrades 2>/dev/null | grep -q '^ii'
+}
+
+security_uu_is_active() {
+    systemctl is-active apt-daily-upgrade.timer >/dev/null 2>&1
+}
+
+security_uu_get_status_line() {
+    if security_uu_is_installed; then
+        if security_uu_is_active; then
+            echo "enabled (timer active)"
+        else
+            echo "installed but timer inactive"
+        fi
+    else
+        echo "not installed"
+    fi
+}
+
+security_manage_unattended_upgrades() {
+    print_section "Auto Security Updates (unattended-upgrades)"
+    security_require_root || return 1
+
+    while true; do
+        local status_line
+        status_line="$(security_uu_get_status_line)"
+
+        echo ""
+        echo "  Status : ${status_line}"
+        echo ""
+        echo "  1) Enable  — install & activate automatic security updates"
+        echo "  2) Disable — stop timer (keep package installed)"
+        echo "  3) Run now — apply all pending security updates immediately"
+        echo "  4) Show status & recent log"
+        echo "  0) Back"
+        echo ""
+        read -r -p "  Select: " subchoice
+
+        case "$subchoice" in
+            1)
+                print_section "Enable Auto Security Updates"
+                if ! security_uu_is_installed; then
+                    print_warn "Installing unattended-upgrades..."
+                    apt_install unattended-upgrades
+                fi
+                # Configure with debconf non-interactively to enable security updates
+                echo 'unattended-upgrades unattended-upgrades/enable_auto_updates boolean true' \
+                    | debconf-set-selections 2>/dev/null || true
+                dpkg-reconfigure -f noninteractive unattended-upgrades 2>/dev/null || true
+                systemctl enable --now apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
+                ops_conf_set "ops.conf" "OPS_UNATTENDED_UPGRADES" "enabled"
+                print_ok "unattended-upgrades enabled. Security updates will be applied automatically."
+                systemctl status apt-daily-upgrade.timer --no-pager -l 2>/dev/null | head -10 || true
+                ;;
+            2)
+                print_section "Disable Auto Security Updates"
+                if ! security_uu_is_installed; then
+                    print_warn "unattended-upgrades is not installed — nothing to disable."
+                    continue
+                fi
+                print_warn "This will stop the automatic update timer. The package remains installed."
+                if ! prompt_confirm "Disable automatic security updates?"; then
+                    print_warn "Cancelled."
+                    continue
+                fi
+                systemctl disable --now apt-daily-upgrade.timer >/dev/null 2>&1 || true
+                ops_conf_set "ops.conf" "OPS_UNATTENDED_UPGRADES" "disabled"
+                print_ok "Auto security updates disabled. Run option 1 to re-enable."
+                ;;
+            3)
+                print_section "Run Security Updates Now"
+                if ! security_uu_is_installed; then
+                    print_warn "unattended-upgrades is not installed."
+                    if prompt_confirm "Install and run now?"; then
+                        apt_install unattended-upgrades
+                    else
+                        continue
+                    fi
+                fi
+                print_warn "Running apt-get update first..."
+                apt-get update -qq
+                print_warn "Applying unattended-upgrades (this may take a while)..."
+                unattended-upgrade --verbose
+                print_ok "Unattended-upgrades run complete."
+                ;;
+            4)
+                print_section "Auto Security Updates Status"
+                echo "  Package : $(security_uu_get_status_line)"
+                echo ""
+                if systemctl list-timers apt-daily-upgrade.timer --no-pager 2>/dev/null | grep -q apt-daily-upgrade; then
+                    systemctl list-timers apt-daily-upgrade.timer --no-pager 2>/dev/null || true
+                else
+                    print_warn "Timer apt-daily-upgrade.timer not found."
+                fi
+                echo ""
+                local logfile
+                logfile=$(ls -t /var/log/unattended-upgrades/unattended-upgrades.log* 2>/dev/null | head -1 || true)
+                if [[ -n "$logfile" && -f "$logfile" ]]; then
+                    echo "  Last 20 lines of ${logfile}:"
+                    echo ""
+                    tail -20 "$logfile" || true
+                else
+                    print_warn "No unattended-upgrades log found (has it run yet?)."
+                fi
+                ;;
+            0) return ;;
+            *) print_warn "Invalid option" ;;
+        esac
+    done
 }
