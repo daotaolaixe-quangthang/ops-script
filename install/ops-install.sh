@@ -269,6 +269,157 @@ _strip_cloud_init_ssh_overrides() {
     done
 }
 
+# _apply_minimum_ssh_hardening
+# FIX-05: Write /etc/ssh/sshd_config.d/99-ops-hardening.conf right after
+# ops-install.sh runs, so PermitRootLogin=no is enforced even before the
+# user launches the Setup Wizard.
+#
+# Safety guards (multi-layer):
+#   1. ADMIN_USER must exist and != root (lockout guard)
+#   2. File already present → return 0 (idempotent guard)
+#   3. Ensure Include directive is FIRST in sshd_config (first-match-wins)
+#   4. Write to /tmp first, validate with `sshd -t`, then atomic mv
+#   5. If sshd -t fails → warn + delete tmpfile (never apply bad config)
+#   6. If reload fails → warn (SSH keeps running on old config — no lockout)
+#
+# PasswordAuthentication is set by SSH_KEY_CONFIGURED:
+#   yes → "no"  (key available — password auth can be disabled safely)
+#   no  → "yes" (no key yet — keep password auth so user isn't locked out)
+#
+# Note: Wizard security_write_sshd_hardening_include() always OVERWRITES
+# this file with a fuller config later — no conflict.
+_apply_minimum_ssh_hardening() {
+    local hardening_conf="/etc/ssh/sshd_config.d/99-ops-hardening.conf"
+    local sshd_conf="/etc/ssh/sshd_config"
+
+    # ── Guard 1: ADMIN_USER safety check
+    if [[ -z "${ADMIN_USER:-}" ]]; then
+        warn "FIX-05: ADMIN_USER not set — skipping minimum SSH hardening."
+        return 0
+    fi
+    if [[ "$ADMIN_USER" == "root" ]]; then
+        warn "FIX-05: ADMIN_USER=root — skipping minimum SSH hardening to avoid lockout."
+        return 0
+    fi
+    if ! id "$ADMIN_USER" &>/dev/null; then
+        warn "FIX-05: User '${ADMIN_USER}' does not exist — skipping minimum SSH hardening."
+        return 0
+    fi
+
+    # ── Guard 2: Idempotent — do not overwrite if already present
+    if [[ -f "$hardening_conf" ]]; then
+        ok "FIX-05: SSH hardening config already present: ${hardening_conf} — skipping."
+        return 0
+    fi
+
+    # ── Guard 3: Ensure Include /etc/ssh/sshd_config.d/*.conf is the FIRST
+    # directive in sshd_config (OpenSSH uses first-match-wins semantics).
+    # If the Include line exists but is not first, move it to the top.
+    if [[ -f "$sshd_conf" ]]; then
+        local include_line="Include /etc/ssh/sshd_config.d/*.conf"
+        local first_directive
+        first_directive=$(grep -m1 -v '^[[:space:]]*#' "$sshd_conf" 2>/dev/null | grep -v '^[[:space:]]*$' || true)
+
+        if ! grep -qF "$include_line" "$sshd_conf" 2>/dev/null; then
+            # Include line missing entirely — prepend it
+            local tmp_main
+            tmp_main=$(mktemp)
+            { echo "$include_line"; cat "$sshd_conf"; } > "$tmp_main"
+            mv "$tmp_main" "$sshd_conf"
+            info "FIX-05: Added '${include_line}' to top of sshd_config."
+        elif [[ "$first_directive" != "$include_line" ]]; then
+            # Include exists but is not first — move it to the top
+            local tmp_main
+            tmp_main=$(mktemp)
+            {
+                echo "$include_line"
+                grep -v "^[[:space:]]*Include[[:space:]]" "$sshd_conf"
+            } > "$tmp_main"
+            mv "$tmp_main" "$sshd_conf"
+            info "FIX-05: Moved '${include_line}' to top of sshd_config (first-match-wins)."
+        fi
+    fi
+
+    # ── Step 4: Determine PasswordAuthentication based on SSH key status
+    local password_auth="yes"
+    if [[ "${SSH_KEY_CONFIGURED:-no}" == "yes" ]]; then
+        password_auth="no"
+        info "FIX-05: SSH key was configured — disabling PasswordAuthentication."
+    else
+        info "FIX-05: No SSH key configured — keeping PasswordAuthentication=yes to prevent lockout."
+    fi
+
+    # ── Step 5: Write to tmp first (never touch the real file until validated)
+    # NOTE: Port directives are intentionally NOT written here.
+    # They are managed by _configure_sshd_fresh() in sshd_config main (installer)
+    # and by security_write_sshd_hardening_include() in 99-ops-hardening.conf (wizard).
+    # Mixing port management between the two files creates finalize/reconcile conflicts.
+    mkdir -p "$(dirname "$hardening_conf")"
+    local tmp_conf
+    tmp_conf=$(mktemp /tmp/ops-ssh-hardening-XXXXXX.conf)
+
+    {
+        echo "# Managed by OPS — written by ops-install.sh (FIX-05 minimum hardening)"
+        echo "# Full hardening applied when wizard runs: Security → Harden SSH config"
+        echo "# DO NOT edit manually — file will be overwritten by the Setup Wizard."
+        echo ""
+        echo "PermitRootLogin no"
+        echo "PubkeyAuthentication yes"           # ← CRITICAL: explicit, cloud-init may have set no
+        echo "PasswordAuthentication ${password_auth}"
+        echo "KbdInteractiveAuthentication no"
+        echo "X11Forwarding no"
+        echo "AllowAgentForwarding no"
+        # NOTE: No Port directive here.
+        # Port is managed by _configure_sshd_fresh() in sshd_config main.
+        # The wizard's security_write_sshd_hardening_include() will own Port
+        # in this file after the full wizard runs. Mixing port management
+        # between the two files causes finalize/reconcile conflicts.
+    } > "$tmp_conf"
+
+    # ── Step 7: Validate with sshd -t BEFORE touching the real path
+    if ! sshd -t -f "$sshd_conf" > /dev/null 2>&1; then
+        # sshd_config itself may already be broken — warn but do not abort
+        warn "FIX-05: sshd_config validation failed before applying hardening. Skipping."
+        rm -f "$tmp_conf"
+        return 0
+    fi
+
+    # Now validate with the new hardening file included (symlink trick)
+    local tmp_include_dir
+    tmp_include_dir=$(mktemp -d /tmp/ops-sshd-test-XXXXXX)
+    ln -sf "$tmp_conf" "${tmp_include_dir}/99-ops-hardening.conf"
+
+    # Build a test sshd_config pointing at our temp dir
+    local tmp_test_conf
+    tmp_test_conf=$(mktemp)
+    sed "s|Include /etc/ssh/sshd_config.d/\*\.conf|Include ${tmp_include_dir}/*.conf|g" \
+        "$sshd_conf" > "$tmp_test_conf"
+
+    if ! sshd -t -f "$tmp_test_conf" > /dev/null 2>&1; then
+        warn "FIX-05: Hardening config validation failed (sshd -t). Not applying to avoid lockout."
+        warn "       Check: sshd -t -f ${tmp_conf}"
+        rm -f "$tmp_conf" "$tmp_test_conf"
+        rm -rf "$tmp_include_dir"
+        return 0
+    fi
+    rm -f "$tmp_test_conf"
+    rm -rf "$tmp_include_dir"
+
+    # ── Step 8: Atomic move into place
+    mv "$tmp_conf" "$hardening_conf"
+    chmod 600 "$hardening_conf"
+
+    # ── Step 9: Reload SSH to apply
+    if systemctl reload ssh > /dev/null 2>&1 || systemctl reload sshd > /dev/null 2>&1; then
+        ok "FIX-05: Minimum SSH hardening applied and SSH reloaded."
+        ok "        PermitRootLogin=no  PasswordAuthentication=${password_auth}"
+        ok "        File: ${hardening_conf}"
+    else
+        warn "FIX-05: Hardening file written but SSH reload failed — SSH still running (config will apply on next restart)."
+        ok "        PermitRootLogin=no  PasswordAuthentication=${password_auth}"
+    fi
+}
+
 configure_ufw() {
     info "Configuring UFW firewall..."
 
@@ -609,6 +760,11 @@ main() {
 
     setup_admin_user
     setup_ssh_key
+
+    # FIX-05: Apply minimum SSH hardening right after we know ADMIN_USER
+    # and SSH_KEY_CONFIGURED — before installing OPS core so even a
+    # partial install leaves the server with PermitRootLogin=no.
+    _apply_minimum_ssh_hardening
 
     write_capacity_conf
     install_ops_core

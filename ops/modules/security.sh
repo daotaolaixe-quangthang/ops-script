@@ -203,11 +203,26 @@ security_wizard_baseline() {
         ops_conf_set "ops.conf" "OPS_SSH_PORT" "$current_port"
         ops_conf_set "ops.conf" "OPS_SSH_TRANSITION_PORT" ""
         ops_conf_set "ops.conf" "OPS_SSH_PASSWORD_AUTH" "$password_auth"
+        # FIX: Port unchanged path -- still need to write full wizard hardening include.
+        # Without this, the minimum FIX-05 file (from installer) is never upgraded to
+        # the full wizard config (PubkeyAuthentication, ChallengeResponseAuthentication,
+        # ClientAliveInterval, AllowTcpForwarding, Port directive, etc.).
+        security_reconcile_sshd_main_config
+        security_strip_cloud_init_overrides
+        security_write_sshd_hardening_include "$current_port" "$password_auth" ""
+        if ! sshd -t > /dev/null 2>&1; then
+            print_error "sshd -t failed after writing hardening config. Manual review required."
+            log_error "security_wizard_baseline: sshd -t failed on port-unchanged path"
+            return 1
+        fi
+        local _ssh_svc
+        _ssh_svc=$(security_detect_ssh_service)
+        service_restart "$_ssh_svc"
         security_reconcile_ufw_rules
         security_write_fail2ban_config
-        service_enable fail2ban >/dev/null 2>&1 || true
-        service_restart fail2ban >/dev/null 2>&1 || true
-        print_ok "SSH port unchanged; managed firewall and fail2ban baseline reconciled."
+        service_enable fail2ban > /dev/null 2>&1 || true
+        service_restart fail2ban > /dev/null 2>&1 || true
+        print_ok "SSH port unchanged; hardening config fully applied, firewall and fail2ban baseline reconciled."
     fi
 
     security_status
