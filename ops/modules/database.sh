@@ -171,23 +171,28 @@ _db_apply_security_hardening() {
 # Disable LOAD DATA LOCAL INFILE (file exfiltration vector)
 local_infile            = OFF
 
-# Restrict file import/export — empty string disables SELECT INTO OUTFILE/INFILE.
-# NOTE: MariaDB 10.6 on Ubuntu 22.04 does NOT accept the literal word NULL here;
-#       it tries to stat it as a directory path and crashes with "Failed to normalize".
-#       Empty string ("") is the correct syntax for disabling secure_file_priv.
-secure_file_priv        = ""
+# Restrict file import/export to a non-existent path = fully disabled.
+# IMPORTANT: Do NOT use empty string "" — that means NO restriction (any path allowed).
+# Do NOT use the word NULL — MariaDB 10.6 tries to stat it and crashes.
+# A non-existent directory path is the correct way to fully disable this feature.
+secure_file_priv        = /var/lib/mysql-files-disabled
 
 # Skip reverse DNS on connections (prevents latency + DNS rebinding)
 skip_name_resolve       = ON
 
-# Block hosts after 10 consecutive failed connections
-max_connect_errors      = 10
+# Block hosts after 100 consecutive failed connections.
+# NOTE: 10 is too aggressive — connection pool restarts after deploy can self-DoS.
+max_connect_errors      = 100
 
 # Idle non-interactive connection timeout: 5 minutes
 wait_timeout            = 300
 
 # Idle interactive connection timeout: 10 minutes
 interactive_timeout     = 600
+
+# Limit packet size to 32MB (prevents large-payload SQL injection attacks)
+# Default is 16MB (old) or 64MB (new MariaDB) — 32MB is a reasonable production limit.
+max_allowed_packet      = 32M
 # --- END OPS SECURITY HARDENING ---
 EOF_SEC
 
@@ -327,17 +332,63 @@ _db_innodb_log_resize_if_needed() {
         return 0   # sizes match — no action needed
     fi
 
-    print_warn "InnoDB log resize required: $(( current_bytes / 1024 / 1024 ))M on disk → ${target_str} in config"
-    print_warn "Stopping MariaDB for a clean InnoDB checkpoint before removing old log files ..."
+    # ── INNODB LOG RESIZE GUARD ─────────────────────────────────────────────
+    # Resizing ib_logfile requires: stop MariaDB → delete log files → restart.
+    # On a production server with active connections this is DISRUPTIVE.
+    # Show the operator exactly what will happen and require confirmation.
+    echo ""
+    print_warn "InnoDB redo log resize can thiet:"
+    print_warn "  Tren disk   : $(( current_bytes / 1024 / 1024 ))M (hien tai)"
+    print_warn "  Trong config: ${target_str} (moi)"
+    print_warn ""
+    print_warn "De resize, InnoDB phai:"
+    print_warn "  [1] STOP MariaDB hoan toan (DROP tat ca active connections)"
+    print_warn "  [2] XOA /var/lib/mysql/ib_logfile0 va ib_logfile1"
+    print_warn "  [3] Khoi dong lai de tao file moi"
+    print_warn ""
+
+    # Show active connection count so operator can make an informed decision
+    local _active_conn="?"
+    if mysql --protocol=socket -u root -e "SELECT 1;" > /dev/null 2>&1; then
+        _active_conn=$(mysql --protocol=socket -u root -sNe \
+            "SHOW STATUS LIKE 'Threads_connected';" 2>/dev/null \
+            | awk '{print $2}' || echo "?")
+    fi
+    print_warn "  So ket noi dang active: ${_active_conn}"
+    print_warn ""
+    print_warn "Neu MariaDB stop khong sach (do I/O cao, locked tables): rui ro data corruption."
+    print_warn "Neu khong chac chan: huy va chon thoi diem maintenance window."
+    echo ""
+
+    if ! prompt_confirm "XAC NHAN stop MariaDB va xoa InnoDB redo log files de resize?"; then
+        print_warn "InnoDB log resize bi huy boi operator."
+        print_warn "Config log size va ib_logfile tren disk hien KHONG KHOP."
+        print_warn "MariaDB co the tu choi khoi dong sau restart neu size khong khop."
+        print_warn "Chay 'Database -> Apply tuning' lai sau khi chon thoi diem phu hop."
+        log_warn "_db_innodb_log_resize_if_needed: resize cancelled by operator (disk=$(( current_bytes/1024/1024 ))M, config=${target_str})"
+        return 0
+    fi
+
+    log_warn "_db_innodb_log_resize_if_needed: operator confirmed resize $(( current_bytes/1024/1024 ))M -> ${target_str} (active_conn=${_active_conn})"
+    print_warn "Stopping MariaDB for a clean InnoDB checkpoint before removing old log files..."
     systemctl stop mariadb 2>/dev/null || true
-    # Wait up to 15 s for clean shutdown
+    # Wait up to 30 s for clean shutdown (increased from 15 for busy servers)
     local _i=0
-    while systemctl is-active mariadb >/dev/null 2>&1 && [[ $_i -lt 15 ]]; do
+    while systemctl is-active mariadb > /dev/null 2>&1 && [[ $_i -lt 30 ]]; do
         sleep 1; (( _i++ )) || true
     done
+    if systemctl is-active mariadb > /dev/null 2>&1; then
+        print_warn "MariaDB van chua stop sau 30s — xoa ib_logfile co the khong an toan."
+        if ! prompt_confirm "Buoc xoa ib_logfile ngay ca khi MariaDB chua stop hoan toan?"; then
+            print_warn "InnoDB log resize aborted — ib_logfile giu nguyen."
+            log_warn "_db_innodb_log_resize_if_needed: aborted — MariaDB still active after 30s stop"
+            return 1
+        fi
+    fi
     rm -f /var/lib/mysql/ib_logfile0 /var/lib/mysql/ib_logfile1
     print_ok "Old InnoDB log files removed — MariaDB will create new ${target_str} files on next start."
-    log_info "_db_innodb_log_resize_if_needed: resized $(( current_bytes/1024/1024 ))M → ${target_str}"
+    log_info "_db_innodb_log_resize_if_needed: resized $(( current_bytes/1024/1024 ))M -> ${target_str}"
+    # ── END INNODB LOG RESIZE GUARD ─────────────────────────────────────────
 }
 
 install_mariadb() {
@@ -346,6 +397,97 @@ install_mariadb() {
 
     _db_assert_not_rescue_mode || return 1
 
+    # ── PRODUCTION GUARD ───────────────────────────────────────────────────────
+    # Detect if MariaDB is already installed with production data.
+    # Re-running install_mariadb on a live server will:
+    #   [1] Upgrade MariaDB package (apt) — possible uncontrolled major version jump
+    #   [2] Reset root authentication to unix_socket (breaks password-based scripts)
+    #   [3] DROP DATABASE test and all test_% named databases
+    #   [4] Unconditionally restart MariaDB (drops all active connections)
+    #   [5] Possibly delete InnoDB redo log files if log size config changed
+    local _db_is_reinstall=0
+    local _was_running=0
+    local _prod_db_names=""
+    local _installed_version=""
+
+    if command -v mysql > /dev/null 2>&1 \
+        && mysql --protocol=socket -u root -e "SELECT 1;" > /dev/null 2>&1; then
+        _was_running=1
+        _installed_version=$(mysql --protocol=socket -u root -sNe \
+            "SELECT VERSION();" 2>/dev/null || echo "unknown")
+        _prod_db_names=$(mysql --protocol=socket -u root -sNe \
+            "SELECT GROUP_CONCAT(SCHEMA_NAME ORDER BY SCHEMA_NAME SEPARATOR ', ')
+             FROM information_schema.SCHEMATA
+             WHERE SCHEMA_NAME NOT IN
+               ('information_schema','performance_schema','mysql','sys');" \
+            2>/dev/null || echo "")
+
+        if [[ -n "$_prod_db_names" ]]; then
+            _db_is_reinstall=1
+
+            echo ""
+            echo "  ╔══════════════════════════════════════════════════════════════╗"
+            echo "  ║       ⚠  CANH BAO: PRODUCTION DATABASE DETECTED  ⚠          ║"
+            echo "  ╚══════════════════════════════════════════════════════════════╝"
+            echo ""
+            print_warn "MariaDB ${_installed_version} da duoc cai dat voi du lieu production."
+            print_warn "Production databases hien tai: ${_prod_db_names}"
+            echo ""
+            print_warn "Chay lai install_mariadb tren server nay SE:"
+            print_warn "  [1] apt upgrade MariaDB len version moi nhat trong repo"
+            print_warn "        -> Co the nang major version (vd 10.6->10.11) khong co ke hoach"
+            print_warn "        -> apt co the tu restart MariaDB trong qua trinh upgrade"
+            print_warn "  [2] Reset root authentication sang unix_socket"
+            print_warn "        -> Neu dang dung password auth: moi script dung -p<pass> se FAIL"
+            print_warn "  [3] DROP DATABASE tat ca DB co ten 'test' hoac bat dau bang 'test_'"
+            print_warn "        -> Neu production DB ten 'test*': MAT DATA HOAN TOAN, KHONG PHUC HOI"
+            print_warn "  [4] Restart MariaDB khong co grace period"
+            print_warn "        -> Toan bo active connections bi kill ngay lap tuc"
+            print_warn "  [5] Co the xoa InnoDB redo log (ib_logfile0/1) neu log size thay doi"
+            print_warn "        -> Rui ro data corruption neu MariaDB stop khong sach"
+            echo ""
+            print_warn "THAY VAO DO, hay dung cac lenh an toan hon:"
+            print_warn "  -> Database -> Secure/re-harden  (co confirm truoc restart)"
+            print_warn "  -> Database -> Apply tuning       (validate config truoc restart)"
+            echo ""
+
+            # Require typed confirmation — not just Y/n
+            local _confirm_text=""
+            read -r -p "  Nhap chinh xac chu 'REINSTALL' de xac nhan: " _confirm_text
+            if [[ "$_confirm_text" != "REINSTALL" ]]; then
+                print_warn "Cancelled. MariaDB reinstall aborted (nhap: '${_confirm_text}')."
+                log_info "install_mariadb: cancelled at production guard (input='${_confirm_text}')"
+                return 0
+            fi
+            echo ""
+            print_warn "Da xac nhan. Tien hanh reinstall — kiem tra log can than."
+            log_warn "install_mariadb: REINSTALL confirmed over production DBs: ${_prod_db_names}"
+        fi
+    fi
+    # ── END PRODUCTION GUARD ────────────────────────────────────────────────────
+
+    # ── PACKAGE UPGRADE WARNING ─────────────────────────────────────────────────
+    # If MariaDB already installed, show current vs apt candidate version before upgrade.
+    if [[ "$_was_running" -eq 1 ]]; then
+        local _apt_candidate
+        _apt_candidate=$(apt-cache policy mariadb-server 2>/dev/null \
+            | awk '/Candidate:/{print $2}' || echo "unknown")
+        echo ""
+        print_warn "Kiem tra phien ban package:"
+        print_warn "  Dang cai      : MariaDB ${_installed_version}"
+        print_warn "  apt candidate : ${_apt_candidate}"
+        if [[ "$_apt_candidate" != "unknown" && "$_apt_candidate" != *"${_installed_version%%.*}"* ]]; then
+            print_warn "  *** Phien ban candidate KHAC phien ban hien tai — se co UPGRADE! ***"
+        fi
+        echo ""
+        if ! prompt_confirm "Tiep tuc chay apt install/upgrade mariadb-server?"; then
+            print_warn "Cancelled tai buoc apt upgrade."
+            log_info "install_mariadb: cancelled at apt upgrade confirmation"
+            return 0
+        fi
+    fi
+    # ── END PACKAGE UPGRADE WARNING ─────────────────────────────────────────────
+
     apt_update
     apt_install mariadb-server mariadb-client
     service_enable mariadb
@@ -353,16 +495,22 @@ install_mariadb() {
 
     _db_set_bind_localhost
 
-    if ! command -v openssl >/dev/null 2>&1; then
+    if ! command -v openssl > /dev/null 2>&1; then
         apt_install openssl
     fi
 
-    # Security baseline equivalent to mysql_secure_installation.
+    # Security baseline — equivalent to mysql_secure_installation (full).
+    # Remove anonymous users (no username = any host can connect without credentials)
     _db_mysql_socket_exec "DELETE FROM mysql.user WHERE User='';"
-    _db_mysql_socket_exec "DELETE FROM mysql.user WHERE User='root' AND Host != 'localhost';"
+    # Remove remote root — root must only connect via local unix socket
+    _db_mysql_socket_exec "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');"
+    # Drop test database AND test_% wildcard databases (mysql_secure_installation removes both)
     _db_mysql_socket_exec "DROP DATABASE IF EXISTS test;"
+    _db_mysql_socket_exec "DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';"
+    # Enforce unix_socket auth for root — no password needed/possible from remote
     _db_mysql_socket_exec "ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket;"
     _db_mysql_socket_exec "FLUSH PRIVILEGES;"
+    print_ok "Security baseline applied: anonymous users removed, test DBs dropped, root restricted to localhost."
 
     _db_remove_secret_file "$DB_ROOT_PASSWORD_FILE"
     _db_save_database_conf "$(_db_detect_mariadb_version)"
@@ -378,8 +526,25 @@ install_mariadb() {
     _db_setup_logging
 
     # Resize ib_logfile* if innodb_log_file_size was changed by tune_mariadb above.
-    # Without this, MariaDB refuses to start when config size ≠ on-disk log file size.
+    # _db_innodb_log_resize_if_needed has its own confirm prompt when server is live.
     _db_innodb_log_resize_if_needed
+
+    # ── FINAL RESTART CONFIRMATION ───────────────────────────────────────────
+    # Fresh install: no active connections — restart unconditionally.
+    # Reinstall over running server: warn and confirm before dropping connections.
+    if [[ "$_db_is_reinstall" -eq 1 ]]; then
+        echo ""
+        print_warn "MariaDB restart se DROP toan bo active connections ngay lap tuc."
+        print_warn "Apps (Node.js, PHP-FPM) se gap loi 'MySQL server has gone away' trong ~5-30s."
+        if ! prompt_confirm "Restart MariaDB ngay bay gio?"; then
+            print_warn "Restart skipped. Config moi se ap dung lan restart tiep theo."
+            log_info "install_mariadb: final restart skipped by operator on reinstall path"
+            print_ok "MariaDB hardened and tuned (restart pending — run: systemctl restart mariadb)."
+            return 0
+        fi
+    fi
+    # ── END FINAL RESTART CONFIRMATION ──────────────────────────────────────
+
     service_restart mariadb
 
     print_ok "MariaDB installed, hardened, and tuned."
@@ -507,7 +672,33 @@ EOF_TUNE
     # Restart only if called standalone (not from install_mariadb which restarts at the end)
     if [[ "${DB_TUNING_NO_RESTART:-0}" != "1" ]]; then
         # Resize ib_logfile* if innodb_log_file_size changed vs what's on disk.
+        # _db_innodb_log_resize_if_needed has its own confirm prompt.
         _db_innodb_log_resize_if_needed
+
+        # ── STANDALONE RESTART CONFIRMATION ─────────────────────────────────
+        # tune_mariadb called standalone (not via install_mariadb) means MariaDB
+        # is potentially serving production traffic. Confirm before restarting.
+        local _tune_active_conn="?"
+        if mysql --protocol=socket -u root -e "SELECT 1;" > /dev/null 2>&1; then
+            _tune_active_conn=$(mysql --protocol=socket -u root -sNe \
+                "SHOW STATUS LIKE 'Threads_connected';" 2>/dev/null \
+                | awk '{print $2}' || echo "?")
+        fi
+        echo ""
+        print_warn "MariaDB restart can thiet de ap dung config tuning moi."
+        print_warn "  So ket noi dang active : ${_tune_active_conn}"
+        print_warn "  Thoi gian downtime uoc tinh: 3-10 giay"
+        print_warn "  Apps se gap loi 'MySQL server has gone away' trong khoang thoi gian nay."
+        echo ""
+        if ! prompt_confirm "Restart MariaDB ngay bay gio de ap dung tuning?"; then
+            print_warn "Restart skipped. Config moi (${MARIADB_TUNING_CNF}) da duoc ghi."
+            print_warn "Chay 'systemctl restart mariadb' vao thoi diem phu hop de ap dung."
+            log_info "tune_mariadb: restart skipped by operator (active_conn=${_tune_active_conn})"
+            return 0
+        fi
+        log_info "tune_mariadb: operator confirmed restart (active_conn=${_tune_active_conn})"
+        # ── END STANDALONE RESTART CONFIRMATION ─────────────────────────────
+
         service_restart mariadb
     fi
 }
@@ -683,11 +874,10 @@ db_audit() {
     _db_audit_check "Network isolation"       "bind_address"          "127\.0\.0\.1"
     _db_audit_check "SSL enabled"             "have_ssl"              "YES"
     _db_audit_check "local_infile disabled"   "local_infile"          "OFF"
-    # secure_file_priv is set to empty string "" in ops-script (not the word NULL).
-    # MariaDB 10.6 Ubuntu 22.04 crashes if given the literal word NULL — it treats it
-    # as a directory path. Empty string ("") is the correct way to disable this setting.
-    # At runtime MariaDB returns an actual empty string for SHOW VARIABLES, so regex is "".
-    _db_audit_check "secure_file_priv disabled" "secure_file_priv"    ""             "WARN"
+    # secure_file_priv must point to a non-existent path to fully disable file I/O.
+    # Empty string "" = NO restriction (any path allowed) — that is INSECURE.
+    # We expect the path /var/lib/mysql-files-disabled which does not exist on disk.
+    _db_audit_check "secure_file_priv disabled" "secure_file_priv"   ".*mysql-files-disabled.*|/nonexistent.*"  "WARN"
     _db_audit_check "skip_name_resolve"       "skip_name_resolve"     "ON"
     _db_audit_check "slow_query_log ON"       "slow_query_log"        "ON"            "WARN"
     # P3-3 fix: old regex [1-9][0-9]?[0-9]? matched values 1-999 -- 600 would
@@ -695,6 +885,30 @@ db_audit() {
     _db_audit_check "wait_timeout<=300"       "wait_timeout"          "[1-9]|[1-9][0-9]|[12][0-9]{2}|300"
     _db_audit_check "innodb_flush_neighbors"  "innodb_flush_neighbors" "0"
     _db_audit_check "key_buffer_size<=16MB"   "key_buffer_size"       "[0-9]{1,7}|1[0-5][0-9]{5}|16777216"
+    # Check max_allowed_packet <= 32MB (33554432 bytes)
+    _db_audit_check "max_allowed_packet<=32MB" "max_allowed_packet"   "[0-9]{1,7}|[12][0-9]{7}|3[0-2][0-9]{6}|3355[0-4][0-9]{3}|33554432"  "WARN"
+
+    # Check no anonymous users remain (counts should be 0)
+    local anon_count
+    anon_count=$(mysql --protocol=socket -u root -sNe "SELECT COUNT(*) FROM mysql.user WHERE User='';" 2>/dev/null || echo "?")
+    if [[ "$anon_count" == "0" ]]; then
+        printf '  [\033[0;32mPASS\033[0m] %-35s %s\n' "anonymous_users" "0 (none)"
+        (( pass++ )) || true
+    else
+        printf '  [\033[0;31mFAIL\033[0m] %-35s got=%s anonymous users remaining\n' "anonymous_users" "$anon_count"
+        (( fail++ )) || true
+    fi
+
+    # Check no test database exists
+    local test_db_count
+    test_db_count=$(mysql --protocol=socket -u root -sNe "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME LIKE 'test%';" 2>/dev/null || echo "?")
+    if [[ "$test_db_count" == "0" ]]; then
+        printf '  [\033[0;32mPASS\033[0m] %-35s %s\n' "test_databases" "0 (none)"
+        (( pass++ )) || true
+    else
+        printf '  [\033[0;33mWARN\033[0m] %-35s found=%s test/test_%% databases\n' "test_databases" "$test_db_count"
+        (( warn++ )) || true
+    fi
 
     unset -f _db_audit_check
 

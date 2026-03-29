@@ -310,11 +310,33 @@ wizard_step_database() {
     if [[ -f "$db_mod" ]]; then
         # shellcheck source=/dev/null
         source "$db_mod"
-        if declare -f db_install >/dev/null 2>&1; then
-            # db_install → install_mariadb() which internally calls:
+        # FIX-02: preinstall rescue-mode check BEFORE attempting install.
+        # MariaDB may be pre-installed by cloud provider in --skip-grant-tables state.
+        # _db_assert_not_rescue_mode is also called inside install_mariadb() but
+        # checking here gives a clearer wizard-level error and prevents mark_done.
+        if declare -f _db_assert_not_rescue_mode > /dev/null 2>&1; then
+            if ! _db_assert_not_rescue_mode; then
+                print_error "MariaDB is in rescue mode (--skip-grant-tables) — aborting DB install."
+                print_warn "Fix steps:"
+                print_warn "  1. Find PID:    ps -eo pid,args | grep '[m]ariadbd.*--skip-grant'"
+                print_warn "  2. Kill it:     kill -9 <PID>"
+                print_warn "  3. Start clean: systemctl start mariadb"
+                print_warn "  4. Re-run:      Setup Wizard -> Install Database"
+                log_error "wizard_step_database: aborted — rescue mode detected before install"
+                return 1
+            fi
+        fi
+
+        if declare -f db_install > /dev/null 2>&1; then
+            # db_install -> install_mariadb() which internally calls:
             #   tune_mariadb + _db_apply_security_hardening + _db_setup_ssl + _db_setup_logging
-            # So one call covers install + performance tuning + full security hardening.
-            db_install
+            # FIX-02: propagate return code so mark_done is NOT written on failure.
+            if ! db_install; then
+                print_error "MariaDB install failed — step will NOT be marked as done."
+                print_warn "Fix the error above then re-run: Setup Wizard -> Install Database"
+                log_error "wizard_step_database: db_install returned non-zero — mark_done skipped"
+                return 1
+            fi
         fi
     else
         log_info "Wizard: inline MariaDB install"
