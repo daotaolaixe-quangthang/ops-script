@@ -87,6 +87,58 @@ svc_stop()      { service_stop "$@"; }
 svc_status()    { service_status "$@"; }
 svc_is_active() { service_active "$@"; }
 
+# ── Runtime-user / PM2 helpers ────────────────────────────────
+
+ops_runtime_user() {
+    local runtime_user=""
+    runtime_user="$(ops_conf_get "ops.conf" "OPS_RUNTIME_USER" 2>/dev/null || true)"
+    if [[ -z "$runtime_user" ]]; then
+        runtime_user="$(ops_conf_get "ops.conf" "OPS_ADMIN_USER" 2>/dev/null || true)"
+    fi
+    if [[ -z "$runtime_user" ]]; then
+        if [[ -n "${ADMIN_USER:-}" && "${ADMIN_USER}" != "root" ]]; then
+            runtime_user="$ADMIN_USER"
+        elif [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+            runtime_user="$SUDO_USER"
+        else
+            runtime_user="$(whoami)"
+            if [[ "$runtime_user" == "root" ]]; then
+                log_warn "ops_runtime_user: resolved to 'root' — set OPS_RUNTIME_USER or OPS_ADMIN_USER in ops.conf."
+            fi
+        fi
+    fi
+    echo "$runtime_user"
+}
+
+ops_runtime_home() {
+    local runtime_user="${1:-$(ops_runtime_user)}"
+    getent passwd "$runtime_user" | cut -d: -f6
+}
+
+ops_require_runtime_user() {
+    local runtime_user="${1:-$(ops_runtime_user)}"
+    if ! id "$runtime_user" >/dev/null 2>&1; then
+        print_error "OPS runtime user does not exist: ${runtime_user}"
+        return 1
+    fi
+}
+
+ops_run_as_user() {
+    local runtime_user home_dir
+    runtime_user="$1"
+    shift
+    home_dir="$(ops_runtime_home "$runtime_user")"
+    runuser -u "$runtime_user" -- env HOME="$home_dir" PM2_HOME="$home_dir/.pm2" PATH="$PATH" "$@"
+}
+
+ops_run_as_runtime_user() {
+    ops_run_as_user "$(ops_runtime_user)" "$@"
+}
+
+ops_pm2_jlist() {
+    ops_run_as_runtime_user pm2 jlist
+}
+
 # ── Nginx helpers ─────────────────────────────────────────────
 
 nginx_validate() {

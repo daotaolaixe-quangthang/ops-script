@@ -43,17 +43,11 @@ _nine_router_remote_version() {
 }
 
 _nine_router_runtime_user() {
-    local runtime_user
-    runtime_user="$(ops_conf_get "ops.conf" "OPS_RUNTIME_USER" 2>/dev/null || true)"
-    if [[ -z "$runtime_user" ]]; then
-        runtime_user="$(ops_conf_get "ops.conf" "OPS_ADMIN_USER" 2>/dev/null || true)"
-    fi
-    echo "${runtime_user:-${ADMIN_USER}}"
+    ops_runtime_user
 }
 
 _nine_router_runtime_home() {
-    local runtime_user="$(_nine_router_runtime_user)"
-    getent passwd "$runtime_user" | cut -d: -f6
+    ops_runtime_home "$(_nine_router_runtime_user)"
 }
 
 _nine_router_run_as_runtime_user() {
@@ -743,7 +737,7 @@ nine_router_status() {
 
 nine_router_logs() {
     print_section "9router Logs"
-    pm2 logs "$NINE_ROUTER_PM2_NAME" --lines 50
+    _nine_router_run_as_runtime_user pm2 logs "$NINE_ROUTER_PM2_NAME" --lines 50
 }
 
 _nine_router_show_status() {

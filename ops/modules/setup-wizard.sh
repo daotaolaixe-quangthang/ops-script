@@ -646,7 +646,7 @@ wizard_status() {
 
     pm2_online_count="0"
     if command -v pm2 >/dev/null 2>&1; then
-        pm2_online_count=$(pm2 jlist 2>/dev/null | python3 -c '
+        pm2_online_count=$(ops_pm2_jlist 2>/dev/null | python3 -c '
 import sys, json
 try:
     procs = json.load(sys.stdin)

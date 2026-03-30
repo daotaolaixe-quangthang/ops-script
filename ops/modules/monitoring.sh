@@ -247,7 +247,7 @@ monitoring_service_status() {
     # Node / PM2
     if command -v pm2 >/dev/null 2>&1; then
         local online_count
-        online_count=$(pm2 jlist 2>/dev/null | python3 -c "
+        online_count=$(ops_pm2_jlist 2>/dev/null | python3 -c "
 import sys,json
 try:
     procs = json.load(sys.stdin)
@@ -364,7 +364,7 @@ monitoring_logs_pm2() {
 
     echo ""
     echo "  ── PM2 combined log (last ${lines} lines) ─────────"
-    pm2 logs --lines "$lines" --nostream 2>/dev/null || \
+    ops_run_as_runtime_user pm2 logs --lines "$lines" --nostream 2>/dev/null || \
         print_warn "No PM2 logs available (no apps running?)"
 
     log_info "monitoring_logs_pm2: done"

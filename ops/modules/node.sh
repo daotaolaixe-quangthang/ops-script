@@ -48,48 +48,19 @@ menu_node() {
 _node_apps_dir() { echo "${OPS_CONFIG_DIR:-/etc/ops}/apps"; }
 
 _node_runtime_user() {
-    local runtime_user
-    runtime_user="$(ops_conf_get "ops.conf" "OPS_RUNTIME_USER" 2>/dev/null || true)"
-    if [[ -z "$runtime_user" ]]; then
-        runtime_user="$(ops_conf_get "ops.conf" "OPS_ADMIN_USER" 2>/dev/null || true)"
-    fi
-    if [[ -z "$runtime_user" ]]; then
-        # FIX-03: Do NOT silently default to "root" as PM2 runtime user.
-        # Prefer ADMIN_USER / SUDO_USER only when they are set and non-root.
-        if [[ -n "${ADMIN_USER:-}" && "${ADMIN_USER}" != "root" ]]; then
-            runtime_user="$ADMIN_USER"
-        elif [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
-            runtime_user="$SUDO_USER"
-        else
-            # Last resort — keep whoami for non-root contexts (CI, test, etc.)
-            # but emit a warning so the operator is aware when it's root.
-            runtime_user="$(whoami)"
-            if [[ "$runtime_user" == "root" ]]; then
-                log_warn "_node_runtime_user: resolved to 'root' — PM2 will run as root. Set ADMIN_USER or OPS_RUNTIME_USER in ops.conf."
-            fi
-        fi
-    fi
-    echo "$runtime_user"
+    ops_runtime_user
 }
 
 _node_runtime_home() {
-    local runtime_user="$(_node_runtime_user)"
-    getent passwd "$runtime_user" | cut -d: -f6
+    ops_runtime_home "$(_node_runtime_user)"
 }
 
 _node_require_runtime_user() {
-    local runtime_user="$(_node_runtime_user)"
-    if ! id "$runtime_user" >/dev/null 2>&1; then
-        print_error "OPS runtime user does not exist: ${runtime_user}"
-        return 1
-    fi
+    ops_require_runtime_user "$(_node_runtime_user)"
 }
 
 _node_run_as_runtime_user() {
-    local runtime_user home_dir
-    runtime_user="$(_node_runtime_user)"
-    home_dir="$(_node_runtime_home)"
-    runuser -u "$runtime_user" -- env HOME="$home_dir" PM2_HOME="$home_dir/.pm2" PATH="$PATH" "$@"
+    ops_run_as_user "$(_node_runtime_user)" "$@"
 }
 
 _node_reconcile_app_ownership() {

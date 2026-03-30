@@ -473,7 +473,7 @@ check_services() {
     if command -v pm2 >/dev/null 2>&1; then
         # Fix-3 (partial): capture pm2 jlist once — reused by restart-loop check below.
         local pm2_json
-        pm2_json=$(pm2 jlist 2>/dev/null || echo '[]')
+        pm2_json=$(ops_pm2_jlist 2>/dev/null || echo '[]')
 
         # Parse with python3: check status and restart counter
         local pm2_issues
@@ -714,7 +714,7 @@ check_health_digest() {
     local pm2_summary="not installed"
     if command -v pm2 >/dev/null 2>&1; then
         local _pm2_json online_count total_count
-        _pm2_json=$(pm2 jlist 2>/dev/null || echo '[]')
+        _pm2_json=$(ops_pm2_jlist 2>/dev/null || echo '[]')
         online_count=$(printf '%s' "$_pm2_json" | python3 -c "
 import sys,json
 try:

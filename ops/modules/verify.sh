@@ -41,25 +41,15 @@ _vs_set_result() {
 # ── Individual check functions ────────────────────────────────
 
 _vs_get_ops_runtime_user() {
-    local runtime_user
-    runtime_user="$(ops_conf_get "ops.conf" "OPS_RUNTIME_USER" 2>/dev/null || true)"
-    if [[ -z "$runtime_user" ]]; then
-        runtime_user="$(ops_conf_get "ops.conf" "OPS_ADMIN_USER" 2>/dev/null || true)"
-    fi
-    echo "${runtime_user:-root}"
+    ops_runtime_user
 }
 
 _vs_get_ops_runtime_home() {
-    local runtime_user
-    runtime_user="$(_vs_get_ops_runtime_user)"
-    getent passwd "$runtime_user" | cut -d: -f6
+    ops_runtime_home "$(_vs_get_ops_runtime_user)"
 }
 
 _vs_run_as_runtime_user() {
-    local runtime_user home_dir
-    runtime_user="$(_vs_get_ops_runtime_user)"
-    home_dir="$(_vs_get_ops_runtime_home)"
-    runuser -u "$runtime_user" -- env HOME="$home_dir" PM2_HOME="$home_dir/.pm2" PATH="$PATH" "$@"
+    ops_run_as_user "$(_vs_get_ops_runtime_user)" "$@"
 }
 
 _vs_check_ssh() {
