@@ -1086,6 +1086,11 @@ nginx_apply_security_baseline() {
 
 # Public menu entry - Domains & Nginx
 menu_nginx() {
+    _nginx_menu_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "Domains & Nginx Management"
         echo "  1) List domains"
@@ -1100,15 +1105,15 @@ menu_nginx() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) list_domains                 ;;
-            2) nginx_prompt_add_domain      ;;
-            3) nginx_prompt_edit_domain      ;;
-            4) nginx_prompt_remove_domain   ;;
-            5) _nginx_test_and_reload       ;;
-            6) install_nginx               ;;
-            7) menu_nginx_web_controls     ;;
-            8) nginx_apply_security_baseline ;;
-            0) return                      ;;
+            1) _nginx_menu_run list_domains ;;
+            2) _nginx_menu_run nginx_prompt_add_domain ;;
+            3) _nginx_menu_run nginx_prompt_edit_domain ;;
+            4) _nginx_menu_run nginx_prompt_remove_domain ;;
+            5) _nginx_menu_run _nginx_test_and_reload ;;
+            6) _nginx_menu_run install_nginx ;;
+            7) _nginx_menu_run menu_nginx_web_controls ;;
+            8) _nginx_menu_run nginx_apply_security_baseline ;;
+            0) return 0                    ;;
             *) print_warn "Invalid option" ;;
         esac
     done
@@ -1116,6 +1121,11 @@ menu_nginx() {
 
 # Public menu entry - SSL Management
 menu_ssl() {
+    _ssl_menu_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "SSL Management"
         echo "  1) Issue SSL certificate for a domain       (Let's Encrypt — auto-renew)"
@@ -1134,15 +1144,15 @@ menu_ssl() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) ssl_issue_cert ;;
-            2) ssl_renew_all ;;
-            3) ssl_list_certs ;;
-            4) ssl_install_certbot ;;
-            5) snap_housekeeping ;;
-            6) ssl_set_cf_token ; press_enter ;;
-            7) ssl_prompt_cf_origin_cert ; press_enter ;;
-            8) ssl_show_cf_origin_certs ; press_enter ;;
-            0) return ;;
+            1) _ssl_menu_run ssl_issue_cert ;;
+            2) _ssl_menu_run ssl_renew_all ;;
+            3) _ssl_menu_run ssl_list_certs ;;
+            4) _ssl_menu_run ssl_install_certbot ;;
+            5) _ssl_menu_run snap_housekeeping ;;
+            6) _ssl_menu_run ssl_set_cf_token; press_enter ;;
+            7) _ssl_menu_run ssl_prompt_cf_origin_cert; press_enter ;;
+            8) _ssl_menu_run ssl_show_cf_origin_certs; press_enter ;;
+            0) return 0 ;;
             *) print_warn "Invalid option" ;;
         esac
     done
@@ -2380,6 +2390,11 @@ ssl_list_certs() {
 NGINX_SNIPPETS_DIR="/etc/nginx/snippets"
 
 menu_nginx_web_controls() {
+    _nginx_web_controls_menu_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "Advanced Web Controls"
         echo "  1) Enable Cloudflare real IP logging"
@@ -2393,14 +2408,14 @@ menu_nginx_web_controls() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) nginx_enable_cloudflare_real_ip      || true; press_enter ;;
-            2) nginx_remove_cloudflare_real_ip      || true; press_enter ;;
-            3) nginx_add_custom_powered_by          || true; press_enter ;;
-            4) nginx_remove_custom_powered_by       || true; press_enter ;;
-            5) nginx_enable_cloudflare_ip_restrict  || true; press_enter ;;
-            6) nginx_refresh_cloudflare_ips         || true; press_enter ;;
-            7) nginx_remove_cloudflare_ip_restrict  || true; press_enter ;;
-            0) return                                       ;;
+            1) _nginx_web_controls_menu_run nginx_enable_cloudflare_real_ip; press_enter ;;
+            2) _nginx_web_controls_menu_run nginx_remove_cloudflare_real_ip; press_enter ;;
+            3) _nginx_web_controls_menu_run nginx_add_custom_powered_by; press_enter ;;
+            4) _nginx_web_controls_menu_run nginx_remove_custom_powered_by; press_enter ;;
+            5) _nginx_web_controls_menu_run nginx_enable_cloudflare_ip_restrict; press_enter ;;
+            6) _nginx_web_controls_menu_run nginx_refresh_cloudflare_ips; press_enter ;;
+            7) _nginx_web_controls_menu_run nginx_remove_cloudflare_ip_restrict; press_enter ;;
+            0) return 0                                     ;;
             *) print_warn "Invalid option"                 ;;
         esac
     done

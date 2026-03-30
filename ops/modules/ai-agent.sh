@@ -440,6 +440,11 @@ status_claude_telegram_bot() {
 }
 
 menu_telegram_bot() {
+    _telegram_bot_menu_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "Claude Code Telegram Bot"
         echo "  1) Install Telegram Bot"
@@ -451,12 +456,12 @@ menu_telegram_bot() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) install_claude_telegram_bot  || true ;;
-            2) configure_claude_telegram_bot || true ;;
-            3) start_claude_telegram_bot    || true ;;
-            4) stop_claude_telegram_bot     || true ;;
-            5) status_claude_telegram_bot   || true ;;
-            0) return ;;
+            1) _telegram_bot_menu_run install_claude_telegram_bot ;;
+            2) _telegram_bot_menu_run configure_claude_telegram_bot ;;
+            3) _telegram_bot_menu_run start_claude_telegram_bot ;;
+            4) _telegram_bot_menu_run stop_claude_telegram_bot ;;
+            5) _telegram_bot_menu_run status_claude_telegram_bot ;;
+            0) return 0 ;;
             *) print_warn "Invalid option" ;;
         esac
     done
@@ -465,6 +470,11 @@ menu_telegram_bot() {
 # ── Menus ─────────────────────────────────────────────────────
 
 menu_claude_cli() {
+    _claude_cli_menu_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "Claude Code CLI Integration"
         echo "  1) Install Claude Code CLI"
@@ -476,18 +486,23 @@ menu_claude_cli() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) install_claude_cli            || true ;;
-            2) configure_claude_cli          || true ;;
-            3) test_claude_cli               || true ;;
-            4) install_claude_vietnamese_fix  || true ;;
-            5) menu_telegram_bot             || true ;;
-            0) return ;;
+            1) _claude_cli_menu_run install_claude_cli ;;
+            2) _claude_cli_menu_run configure_claude_cli ;;
+            3) _claude_cli_menu_run test_claude_cli ;;
+            4) _claude_cli_menu_run install_claude_vietnamese_fix ;;
+            5) _claude_cli_menu_run menu_telegram_bot ;;
+            0) return 0                             ;;
             *) print_warn "Invalid option" ;;
         esac
     done
 }
 
 menu_ai_agent() {
+    _ai_agent_menu_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "AI Agent Integration"
         echo "  1) Codex CLI Integration"
@@ -496,9 +511,9 @@ menu_ai_agent() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) menu_codex_cli  || true ;;
-            2) menu_claude_cli || true ;;
-            0) return ;;
+            1) _ai_agent_menu_run menu_codex_cli ;;
+            2) _ai_agent_menu_run menu_claude_cli ;;
+            0) return 0                ;;
             *) print_warn "Invalid option" ;;
         esac
     done

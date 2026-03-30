@@ -329,7 +329,7 @@ Current implementation (monitoring.sh — đã full Phase 1 + Phase 2):
 9. **Disk usage**
 10. **Setup Telegram notifications**
 11. **Test Telegram notification**
-12. **Verify stack health** — PASS/WARN/FAIL per component, always exit 0
+12. **Verify stack health** — PASS/WARN/FAIL per component, always exit 0; caller menu does not use `|| true`
 13. **Advanced monitoring (Netdata opt-in)** → submenu install/remove/status
 14. **Notifications & scheduled checks** → submenu (checks.sh — P2-03)
 15. **Backup helpers** → submenu (backup.sh — P2-05)
@@ -344,6 +344,12 @@ Current implementation (monitoring.sh — đã full Phase 1 + Phase 2):
 
 
 This reference must be kept in sync with the actual menu layout in `bin/ops`.
+
+**Menu contract note:**
+
+- Moi `menu_*` boundary phai `return 0` khi user back hoac khi action ben trong soft-fail.
+- Action-level non-zero duoc hap thu boi wrapper menu-local (`_foo_menu_run`), khong propagate len menu cha.
+- `bin/ops` goi cac `menu_*` truc tiep; khong con dung `menu_x || true` nhu workaround.
 
 ---
 

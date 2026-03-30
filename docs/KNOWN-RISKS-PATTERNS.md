@@ -165,9 +165,43 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
   - User khong biet menu da thoat, tuong rang verify da pass
 - **Safe action**:
   - Moi verify function PHAI return 0 \u2014 in PASS/WARN/FAIL len screen, KHONG propagate exit code
-  - Caller menu PHAI wrap: `verify_stack || true`
+  - Caller menu KHONG duoc dua vao `verify_stack || true` nhu cach sua tam
   - Contract ro trong `P2-04`: PASS/WARN/FAIL deu exit 0; caller xu ly display, khong xu ly exit code
+  - Dung wrapper menu-local de hap thu action-level non-zero:
+    ```bash
+    _monitoring_menu_run verify_stack; press_enter
+    ```
   - Khi review bat ky verify action nao: kiem tra ro ket qua khi co FAIL co lam menu thoat khong
+
+## 15.1) Menu boundary contract bi drift ve `|| true`
+
+- **Pattern**:
+  - `menu_*` hoac action trong menu tra ve non-zero
+  - menu cha / `bin/ops` them `|| true` de chong thoat TUI
+- **Rui ro**:
+  - Contract bi an trong caller thay vi nam o boundary cua menu
+  - Them menu moi rat de quen guard va tai phat bug menu exit
+  - Code review kho phan biet dau la soft-failure hop le, dau la loi can xu ly that
+- **Safe action**:
+  - Moi `menu_*` PHAI `return 0` tai boundary
+  - Action-level non-zero CHI duoc hap thu boi wrapper menu-local
+  - `bin/ops` chi goi `menu_*` truc tiep, khong dung `menu_x || true`
+  - Khi them menu moi, ap dung pattern:
+    ```bash
+    menu_x() {
+        _menu_x_run() {
+            "$@"
+            return 0
+        }
+
+        while true; do
+            case "$choice" in
+                1) _menu_x_run x_action; press_enter ;;
+                0) return 0 ;;
+            esac
+        done
+    }
+    ```
 
 ## 16) PHP disable_functions breaking existing apps
 
@@ -282,4 +316,3 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
   read -r -p "Select: " choice < /dev/tty 2>/dev/null
   ```
 - **Áp dụng cho**: mọi main menu, submenu, confirm prompt (y/n), password prompt khi stdin bị redirect
-

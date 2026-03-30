@@ -707,6 +707,11 @@ security_apply_sshd_hardening() {
 
 # ── Public menu entry ─────────────────────────────────────────
 menu_security() {
+    _security_menu_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "Security Management"
         echo "  1) Harden SSH config"
@@ -723,17 +728,17 @@ menu_security() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) security_harden_ssh            ;;
-            2) security_configure_ufw         ;;
-            3) security_setup_fail2ban        ;;
-            4) security_status                ;;
-            5) security_change_ssh_port       ;;
-            6) security_finalize_ssh_transition ;;
-            7) security_apply_host_baseline   ;;
-            8) security_manage_ssh_keys       ;;
-            9) security_manage_tcp_forwarding ;;
-            10) security_manage_unattended_upgrades ;;
-            0) return                         ;;
+            1) _security_menu_run security_harden_ssh ;;
+            2) _security_menu_run security_configure_ufw ;;
+            3) _security_menu_run security_setup_fail2ban ;;
+            4) _security_menu_run security_status ;;
+            5) _security_menu_run security_change_ssh_port ;;
+            6) _security_menu_run security_finalize_ssh_transition ;;
+            7) _security_menu_run security_apply_host_baseline ;;
+            8) _security_menu_run security_manage_ssh_keys ;;
+            9) _security_menu_run security_manage_tcp_forwarding ;;
+            10) _security_menu_run security_manage_unattended_upgrades ;;
+            0) return 0                       ;;
             *) print_warn "Invalid option"    ;;
         esac
     done

@@ -367,6 +367,11 @@ main_menu
 
 # ── Public menu entry ─────────────────────────────────────────
 menu_<name>() {
+    _<name>_menu_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "<Module> Management"
         echo "  1) List ..."
@@ -375,9 +380,9 @@ menu_<name>() {
         echo "  0) Back"
         read -r -p "Select: " choice
         case "$choice" in
-            1) <name>_list    ;;
-            2) <name>_create  ;;
-            0) return         ;;
+            1) _<name>_menu_run <name>_list; press_enter ;;
+            2) _<name>_menu_run <name>_create; press_enter ;;
+            0) return 0       ;;
             *) print_warn "Invalid" ;;
         esac
     done
@@ -400,6 +405,14 @@ menu_<name>() {
     # 7. Log
 }
 ```
+
+**Menu review checklist:**
+
+- `menu_*` boundary always ends with `return 0`, never bare `return` when exiting normally.
+- Action entries do not use `|| true` as a menu-level patch.
+- Action functions that may return non-zero are called through a menu-local wrapper like `_<name>_menu_run`.
+- Parent menus and `bin/ops` call `menu_*` directly, without `menu_x || true`.
+- Verify/status actions follow the same rule: render PASS/WARN/FAIL or error text, but the menu boundary still returns `0`.
 
 ---
 

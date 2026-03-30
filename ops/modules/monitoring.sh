@@ -17,6 +17,11 @@
 
 # ── Public menu entry ─────────────────────────────────────────
 menu_monitoring() {
+    _monitoring_menu_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "System & Monitoring"
         echo "  1) System overview"
@@ -40,26 +45,26 @@ menu_monitoring() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1)  monitoring_system_overview  || true; press_enter ;;
-            2)  monitoring_service_status   || true; press_enter ;;
-            3)  monitoring_logs_nginx       || true; press_enter ;;
-            4)  monitoring_logs_php         || true; press_enter ;;
-            5)  monitoring_logs_pm2         || true; press_enter ;;
-            6)  monitoring_logs_db          || true; press_enter ;;
-            7)  monitoring_show_ops_log     || true; press_enter ;;
-            8)  monitoring_login_history    || true; press_enter ;;
-            9)  monitoring_disk_usage       || true; press_enter ;;
-            10) monitoring_setup_telegram   || true; press_enter ;;
-            11) monitoring_test_telegram    || true; press_enter ;;
-            12) verify_stack               || true; press_enter ;;
-            13) menu_monitoring_netdata    || true ;;
-            14) menu_checks               || true ;;
-            15) menu_backup               || true ;;
-            16) ops_self_update           || true; press_enter ;;
+            1)  _monitoring_menu_run monitoring_system_overview; press_enter ;;
+            2)  _monitoring_menu_run monitoring_service_status; press_enter ;;
+            3)  _monitoring_menu_run monitoring_logs_nginx; press_enter ;;
+            4)  _monitoring_menu_run monitoring_logs_php; press_enter ;;
+            5)  _monitoring_menu_run monitoring_logs_pm2; press_enter ;;
+            6)  _monitoring_menu_run monitoring_logs_db; press_enter ;;
+            7)  _monitoring_menu_run monitoring_show_ops_log; press_enter ;;
+            8)  _monitoring_menu_run monitoring_login_history; press_enter ;;
+            9)  _monitoring_menu_run monitoring_disk_usage; press_enter ;;
+            10) _monitoring_menu_run monitoring_setup_telegram; press_enter ;;
+            11) _monitoring_menu_run monitoring_test_telegram; press_enter ;;
+            12) _monitoring_menu_run verify_stack; press_enter ;;
+            13) _monitoring_menu_run menu_monitoring_netdata ;;
+            14) _monitoring_menu_run menu_checks ;;
+            15) _monitoring_menu_run menu_backup ;;
+            16) _monitoring_menu_run ops_self_update; press_enter ;;
             # F-20: Refresh capacity profile — re-reads RAM/CPU and rewrites capacity.conf.
             # Needed when a VPS is resized (RAM upgrade) so the OPS tier (S/M/L) stays accurate.
-            17) monitoring_refresh_capacity || true; press_enter ;;
-            0)  return                           ;;
+            17) _monitoring_menu_run monitoring_refresh_capacity; press_enter ;;
+            0)  return 0                         ;;
             *)  print_warn "Invalid option"      ;;
         esac
     done
@@ -567,6 +572,11 @@ monitoring_test_telegram() {
 # ── P2-02: Netdata opt-in monitoring ─────────────────────────
 
 menu_monitoring_netdata() {
+    _monitoring_netdata_menu_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "Advanced Monitoring (Netdata)"
         echo "  1) Install Netdata"
@@ -576,10 +586,10 @@ menu_monitoring_netdata() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) monitoring_install_netdata  ;;
-            2) monitoring_remove_netdata   ;;
-            3) monitoring_netdata_status   ;;
-            0) return                      ;;
+            1) _monitoring_netdata_menu_run monitoring_install_netdata ;;
+            2) _monitoring_netdata_menu_run monitoring_remove_netdata ;;
+            3) _monitoring_netdata_menu_run monitoring_netdata_status ;;
+            0) return 0                   ;;
             *) print_warn "Invalid option" ;;
         esac
     done
@@ -893,4 +903,3 @@ ops_self_update() {
 
     log_info "ops_self_update: applied from ${tarball_url} any_fail=${any_fail}"
 }
-

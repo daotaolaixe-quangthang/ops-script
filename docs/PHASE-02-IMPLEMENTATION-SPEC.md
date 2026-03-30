@@ -294,12 +294,34 @@ Ly do:
 4. **Exit code contract (bat buoc — tranh bug menu exit):**
    - `PASS` → exit `0`
    - `WARN` → exit `0` (co issue nhung khong fatal — menu KHONG duoc thoat)
-   - `FAIL` → exit `0` (function phai return 0; caller menu phai handle display, KHONG propagate non-zero ra ngoai menu loop)
-   - Moi `verify_stack` hoac submenu verify action PHAI wrap trong subshell hoac trap return code:
+   - `FAIL` → exit `0` (function phai return 0; caller menu chi xu ly display, KHONG propagate non-zero ra ngoai menu loop)
+   - `verify_stack` tu quan ly ket qua PASS/WARN/FAIL bang state noi bo; khong dung exit code `1/2` de tally.
+   - Caller menu KHONG duoc phu thuoc vao `verify_stack || true` nhu mot bien phap va tam. Verify action phai an toan ngay ca khi duoc goi truc tiep:
      ```bash
-     verify_stack || true   # NEVER let verify exit propagate to menu
+     _monitoring_menu_run verify_stack; press_enter
      ```
-   - **Ly do**: exit non-zero tu verify action se lam `set -e` hoac caller shell thoat khoi menu loop. Day la nguon goc bug menu exit da gap o Phase 1.
+   - **Ly do**: exit non-zero tu verify action se lam `set -e` hoac caller shell thoat khoi menu loop. Contract dung la verify tuon semantic result len man hinh, con boundary menu van return `0`.
+
+5. **Menu boundary contract (bo sung de tranh tai phat):**
+   - Moi ham `menu_*` PHAI `return 0` tai boundary cua no, ke ca khi action ben trong bao `WARN`/`FAIL` hoac soft-failure.
+   - Action-level non-zero PHAI duoc hap thu boi wrapper menu-local, khong day len menu cha.
+   - Pattern chuan:
+     ```bash
+     menu_example() {
+         _example_menu_run() {
+             "$@"
+             return 0
+         }
+
+         while true; do
+             case "$choice" in
+                 1) _example_menu_run some_action; press_enter ;;
+                 0) return 0 ;;
+             esac
+         done
+     }
+     ```
+   - `bin/ops` va cac menu cha goi `menu_*` truc tiep, khong dung `|| true` de che non-zero nhu mot workaround kien truc.
 
 **Output**
 

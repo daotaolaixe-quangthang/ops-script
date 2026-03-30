@@ -15,6 +15,11 @@
 
 # ── Public menu entry ─────────────────────────────────────────
 menu_node() {
+    _node_menu_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "Node.js Services"
         echo "  1) List Node.js apps (PM2)"
@@ -26,12 +31,12 @@ menu_node() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) node_list_apps       ;;
-            2) node_add_app         ;;
-            3) node_remove_app      ;;
-            4) node_restart_app     ;;
-            5) node_show_logs       ;;
-            0) return               ;;
+            1) _node_menu_run node_list_apps ;;
+            2) _node_menu_run node_add_app ;;
+            3) _node_menu_run node_remove_app ;;
+            4) _node_menu_run node_restart_app ;;
+            5) _node_menu_run node_show_logs ;;
+            0) return 0             ;;
             *) print_warn "Invalid option" ;;
         esac
     done

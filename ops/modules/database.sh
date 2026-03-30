@@ -744,6 +744,11 @@ DB_PASSWORD=\"${db_password}\""
 
 # ── Public menu entry ─────────────────────────────────────────
 menu_database() {
+    _database_menu_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "Database Management"
         echo "  1) Install MariaDB"
@@ -759,16 +764,16 @@ menu_database() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) db_install      ;;
-            2) db_secure       ;;
-            3) db_apply_tuning ;;
-            4) db_create       ;;
-            5) db_create_user  ;;
-            6) db_drop         ;;
-            7) db_list         ;;
-            8) db_status       ;;
-            9) db_audit        ;;
-            0) return          ;;
+            1) _database_menu_run db_install ;;
+            2) _database_menu_run db_secure ;;
+            3) _database_menu_run db_apply_tuning ;;
+            4) _database_menu_run db_create ;;
+            5) _database_menu_run db_create_user ;;
+            6) _database_menu_run db_drop ;;
+            7) _database_menu_run db_list ;;
+            8) _database_menu_run db_status ;;
+            9) _database_menu_run db_audit ;;
+            0) return 0        ;;
             *) print_warn "Invalid option" ;;
         esac
     done

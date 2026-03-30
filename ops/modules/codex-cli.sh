@@ -186,6 +186,11 @@ api_key  = \"${api_key}\""
 }
 
 configure_codex_cli() {
+    _configure_codex_menu_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "Configure Codex for this server"
         echo "  1) Use 9router endpoint (recommended)"
@@ -197,11 +202,11 @@ configure_codex_cli() {
         read -r -p "Select: " choice
 
         case "$choice" in
-            1) configure_codex_with_9router;    return ;;
-            2) configure_codex_with_openai_api; return ;;
-            3) configure_codex_chatgpt_oauth;   return ;;
-            4) configure_codex_custom;          return ;;
-            0) return ;;
+            1) _configure_codex_menu_run configure_codex_with_9router; return 0 ;;
+            2) _configure_codex_menu_run configure_codex_with_openai_api; return 0 ;;
+            3) _configure_codex_menu_run configure_codex_chatgpt_oauth; return 0 ;;
+            4) _configure_codex_menu_run configure_codex_custom; return 0 ;;
+            0) return 0 ;;
             *) print_warn "Invalid option" ;;
         esac
     done
@@ -249,6 +254,11 @@ disable_codex_auto_env() {
 }
 
 toggle_codex_auto_env() {
+    _toggle_codex_auto_env_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "Enable / disable Codex CLI auto environment"
         echo "  1) Enable auto environment"
@@ -257,9 +267,9 @@ toggle_codex_auto_env() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) enable_codex_auto_env; return ;;
-            2) disable_codex_auto_env; return ;;
-            0) return ;;
+            1) _toggle_codex_auto_env_run enable_codex_auto_env; return 0 ;;
+            2) _toggle_codex_auto_env_run disable_codex_auto_env; return 0 ;;
+            0) return 0 ;;
             *) print_warn "Invalid option" ;;
         esac
     done
@@ -278,6 +288,11 @@ test_codex_cli() {
 }
 
 menu_codex_cli() {
+    _codex_menu_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "Codex CLI Integration"
         echo "  1) Install Codex CLI"
@@ -288,11 +303,11 @@ menu_codex_cli() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) install_codex_cli ;;
-            2) configure_codex_cli ;;
-            3) toggle_codex_auto_env ;;
-            4) test_codex_cli ;;
-            0) return ;;
+            1) _codex_menu_run install_codex_cli ;;
+            2) _codex_menu_run configure_codex_cli ;;
+            3) _codex_menu_run toggle_codex_auto_env ;;
+            4) _codex_menu_run test_codex_cli ;;
+            0) return 0 ;;
             *) print_warn "Invalid option" ;;
         esac
     done

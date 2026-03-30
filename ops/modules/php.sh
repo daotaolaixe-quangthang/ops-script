@@ -396,6 +396,11 @@ php_is_installed_version() {
 }
 
 menu_php() {
+    _php_menu_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "PHP / PHP-FPM Management"
         echo "  1) List installed PHP versions"
@@ -408,13 +413,13 @@ menu_php() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) php_list_versions        || true; press_enter ;;
-            2) php_manage_version       || true; press_enter ;;
-            3) php_configure_pool       || true; press_enter ;;
-            4) php_set_default          || true; press_enter ;;
-            5) php_fpm_status           || true; press_enter ;;
-            6) php_reset_htaccess_menu  || true; press_enter ;;
-            0) return                           ;;
+            1) _php_menu_run php_list_versions; press_enter ;;
+            2) _php_menu_run php_manage_version; press_enter ;;
+            3) _php_menu_run php_configure_pool; press_enter ;;
+            4) _php_menu_run php_set_default; press_enter ;;
+            5) _php_menu_run php_fpm_status; press_enter ;;
+            6) _php_menu_run php_reset_htaccess_menu; press_enter ;;
+            0) return 0                         ;;
             *) print_warn "Invalid option"      ;;
         esac
     done

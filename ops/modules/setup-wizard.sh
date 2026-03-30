@@ -17,6 +17,11 @@
 
 # ── Public menu entry ─────────────────────────────────────────
 menu_setup_wizard() {
+    _setup_wizard_menu_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "Production Setup Wizard"
         echo "  1) Run full production wizard"
@@ -31,15 +36,15 @@ menu_setup_wizard() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) wizard_run_full              ;;
-            2) wizard_step_system_update    ;;
-            3) wizard_step_security         ;;
-            4) wizard_step_nginx            ;;
-            5) wizard_step_node             ;;
-            6) wizard_step_php              ;;
-            7) wizard_step_database         ;;
-            8) wizard_status                ;;
-            0) return                       ;;
+            1) _setup_wizard_menu_run wizard_run_full ;;
+            2) _setup_wizard_menu_run wizard_step_system_update ;;
+            3) _setup_wizard_menu_run wizard_step_security ;;
+            4) _setup_wizard_menu_run wizard_step_nginx ;;
+            5) _setup_wizard_menu_run wizard_step_node ;;
+            6) _setup_wizard_menu_run wizard_step_php ;;
+            7) _setup_wizard_menu_run wizard_step_database ;;
+            8) _setup_wizard_menu_run wizard_status ;;
+            0) return 0                     ;;
             *) print_warn "Invalid option"  ;;
         esac
     done

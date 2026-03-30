@@ -857,6 +857,11 @@ _nine_router_show_status() {
 }
 
 menu_nine_router() {
+    _nine_router_menu_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "9router Management"
         _nine_router_show_status
@@ -876,19 +881,19 @@ menu_nine_router() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) install_nine_router ;;
-            2) update_nine_router ;;
-            3) link_nine_router_domain ;;
-            4) nine_router_start ;;
-            5) nine_router_stop ;;
-            6) nine_router_restart ;;
-            7) nine_router_logs ;;
-            8) toggle_require_api_key on ;;
-            9) toggle_require_api_key off ;;
-            10) toggle_request_logs on ;;
-            11) toggle_request_logs off ;;
-            12) verify_nine_router ;;
-            0) return ;;
+            1) _nine_router_menu_run install_nine_router ;;
+            2) _nine_router_menu_run update_nine_router ;;
+            3) _nine_router_menu_run link_nine_router_domain ;;
+            4) _nine_router_menu_run nine_router_start ;;
+            5) _nine_router_menu_run nine_router_stop ;;
+            6) _nine_router_menu_run nine_router_restart ;;
+            7) _nine_router_menu_run nine_router_logs ;;
+            8) _nine_router_menu_run toggle_require_api_key on ;;
+            9) _nine_router_menu_run toggle_require_api_key off ;;
+            10) _nine_router_menu_run toggle_request_logs on ;;
+            11) _nine_router_menu_run toggle_request_logs off ;;
+            12) _nine_router_menu_run verify_nine_router ;;
+            0) return 0 ;;
             *) print_warn "Invalid option" ;;
         esac
     done

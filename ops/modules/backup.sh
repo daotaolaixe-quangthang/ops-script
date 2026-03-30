@@ -282,6 +282,11 @@ backup_list() {
 # ── Backup menu ───────────────────────────────────────────────
 
 menu_backup() {
+    _backup_menu_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "Backup Helpers"
         echo "  1) Dump single database"
@@ -293,12 +298,12 @@ menu_backup() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1) _backup_menu_dump_one        || true; press_enter ;;
-            2) backup_dump_all_dbs          || true; press_enter ;;
-            3) backup_archive_configs       || true; press_enter ;;
-            4) backup_show_restore_guidance || true; press_enter ;;
-            5) backup_list                  || true; press_enter ;;
-            0) return                               ;;
+            1) _backup_menu_run _backup_menu_dump_one; press_enter ;;
+            2) _backup_menu_run backup_dump_all_dbs; press_enter ;;
+            3) _backup_menu_run backup_archive_configs; press_enter ;;
+            4) _backup_menu_run backup_show_restore_guidance; press_enter ;;
+            5) _backup_menu_run backup_list; press_enter ;;
+            0) return 0                             ;;
             *) print_warn "Invalid option"          ;;
         esac
     done

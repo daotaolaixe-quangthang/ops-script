@@ -968,6 +968,11 @@ DISPATCHER_EOF
 
 # ── Checks menu ───────────────────────────────────────────────
 menu_checks() {
+    _checks_menu_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "Notifications & Scheduled Checks"
         echo "  1) Install scheduled checks (cron)"
@@ -986,19 +991,19 @@ menu_checks() {
         echo ""
         read -r -p "Select: " choice
         case "$choice" in
-            1)  checks_install_cron   || true; press_enter ;;
-            2)  checks_remove_cron    || true; press_enter ;;
-            3)  check_resources       || true; press_enter ;;
-            4)  check_uptime          || true; press_enter ;;
-            5)  check_ssl_expiry      || true; press_enter ;;
-            6)  check_domain_expiry   || true; press_enter ;;
-            7)  check_security_scan   || true; press_enter ;;
-            8)  _checks_show_log      || true; press_enter ;;
-            9)  check_services        || true; press_enter ;;
-            10) check_log_spikes      || true; press_enter ;;
-            11) check_ddos            || true; press_enter ;;
-            12) check_health_digest   || true; press_enter ;;
-            0)  return                        ;;
+            1)  _checks_menu_run checks_install_cron; press_enter ;;
+            2)  _checks_menu_run checks_remove_cron; press_enter ;;
+            3)  _checks_menu_run check_resources; press_enter ;;
+            4)  _checks_menu_run check_uptime; press_enter ;;
+            5)  _checks_menu_run check_ssl_expiry; press_enter ;;
+            6)  _checks_menu_run check_domain_expiry; press_enter ;;
+            7)  _checks_menu_run check_security_scan; press_enter ;;
+            8)  _checks_menu_run _checks_show_log; press_enter ;;
+            9)  _checks_menu_run check_services; press_enter ;;
+            10) _checks_menu_run check_log_spikes; press_enter ;;
+            11) _checks_menu_run check_ddos; press_enter ;;
+            12) _checks_menu_run check_health_digest; press_enter ;;
+            0)  return 0                      ;;
             *)  print_warn "Invalid option"   ;;
         esac
     done

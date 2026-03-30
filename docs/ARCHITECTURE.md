@@ -39,9 +39,36 @@ OPS is split into three layers:
      - `modules/database.sh` – MySQL/MariaDB install, secure setup, tuning, DB/user management.
      - `modules/monitoring.sh` – basic + optional advanced monitoring.
      - `modules/codex-cli.sh` – Codex CLI install and configuration.
-   - Modules should be **stateless** where possible, deriving state from:
-     - System inspection (systemctl, ps, config files).
-     - A small set of config files under `/etc/ops/` (see below).
+    - Modules should be **stateless** where possible, deriving state from:
+      - System inspection (systemctl, ps, config files).
+      - A small set of config files under `/etc/ops/` (see below).
+
+### 1.1 Menu boundary contract
+
+The TUI runs under `set -euo pipefail`, so menu contracts must absorb soft failures explicitly.
+
+- Every public `menu_*` function must `return 0` at its boundary.
+- Action functions may still return non-zero for validation errors, missing prerequisites, or soft operational failures.
+- Those non-zero action returns must be absorbed inside the owning menu via a local wrapper, for example:
+
+```bash
+menu_example() {
+    _example_menu_run() {
+        "$@"
+        return 0
+    }
+
+    while true; do
+        case "$choice" in
+            1) _example_menu_run example_action; press_enter ;;
+            0) return 0 ;;
+        esac
+    done
+}
+```
+
+- Parent menus and `bin/ops` should call `menu_*` directly, not rely on `menu_x || true` as a temporary shield.
+- Verify-style actions are part of the same contract: PASS/WARN/FAIL are rendered on screen, but the menu boundary still returns `0`.
 
 ### 2. Directory layout (in repo)
 
