@@ -34,6 +34,10 @@ _vs_fail() {
     printf '\n'
 }
 
+_vs_set_result() {
+    _VS_LAST_RESULT="$1"
+}
+
 # ── Individual check functions ────────────────────────────────
 
 _vs_get_ops_runtime_user() {
@@ -72,41 +76,49 @@ _vs_check_ssh() {
 
     if ! ss -tln 2>/dev/null | grep -qE ":${ssh_port}\b"; then
         _vs_fail "SSH" "locked port ${ssh_port} not listening" "check ssh service and managed SSH include"
-        return 2
+        _vs_set_result fail
+        return 0
     fi
 
     if [[ "$root_login" != "no" ]]; then
         _vs_fail "SSH" "PermitRootLogin=${root_login:-unknown}" "set PermitRootLogin no"
-        return 2
+        _vs_set_result fail
+        return 0
     fi
 
     if [[ "$x11_forwarding" != "no" || "$tcp_forwarding" != "no" || "$agent_forwarding" != "no" ]]; then
         _vs_fail "SSH" "forwarding still enabled (x11=${x11_forwarding:-?}, tcp=${tcp_forwarding:-?}, agent=${agent_forwarding:-?})" "disable forwarding in managed SSH config"
-        return 2
+        _vs_set_result fail
+        return 0
     fi
 
     if [[ -z "$transition_port" && "$password_auth" != "no" ]]; then
         _vs_fail "SSH" "PasswordAuthentication=${password_auth:-unknown} outside transition window" "disable password auth after key verification"
-        return 2
+        _vs_set_result fail
+        return 0
     fi
 
     if [[ -n "$transition_port" ]]; then
         if ss -tln 2>/dev/null | grep -qE ":${transition_port}\b"; then
             _vs_warn "SSH" "transition active: locked=${ssh_port}, transition=${transition_port}, password_auth=${password_auth:-unknown}" "finalize SSH transition after login test succeeds"
-            return 1
+            _vs_set_result warn
+            return 0
         fi
         _vs_warn "SSH" "transition port ${transition_port} recorded in state but not listening" "clean OPS_SSH_TRANSITION_PORT and reconcile SSH config"
-        return 1
+        _vs_set_result warn
+        return 0
     fi
 
     _vs_pass "SSH" "locked port ${ssh_port} listening, effective ports=${effective_ports:-unknown}, root/password hardening active"
+    _vs_set_result pass
     return 0
 }
 
 _vs_check_ufw() {
     if ! command -v ufw >/dev/null 2>&1; then
         _vs_warn "UFW" "not installed" "install and reconcile firewall baseline"
-        return 1
+        _vs_set_result warn
+        return 0
     fi
 
     local status_output expected_port transition_port found_stale=0 allowed_tcp_ports=() port
@@ -117,22 +129,26 @@ _vs_check_ufw() {
 
     if ! printf '%s\n' "$status_output" | grep -q "Status: active"; then
         _vs_fail "UFW" "firewall inactive" "enable UFW and apply OPS baseline"
-        return 2
+        _vs_set_result fail
+        return 0
     fi
 
     if ! printf '%s\n' "$status_output" | grep -Eq "${expected_port}/tcp[[:space:]]+ALLOW"; then
         _vs_fail "UFW" "locked SSH port ${expected_port}/tcp not allowed" "reconcile UFW baseline"
-        return 2
+        _vs_set_result fail
+        return 0
     fi
 
     if ! printf '%s\n' "$status_output" | grep -Eq "80/tcp[[:space:]]+ALLOW" || ! printf '%s\n' "$status_output" | grep -Eq "443/tcp[[:space:]]+ALLOW"; then
         _vs_warn "UFW" "HTTP/HTTPS baseline not fully present" "reconcile UFW baseline if this host serves public web traffic"
-        return 1
+        _vs_set_result warn
+        return 0
     fi
 
     if printf '%s\n' "$status_output" | grep -Eq "20128/tcp[[:space:]]+ALLOW"; then
         _vs_fail "UFW" "9router port 20128 is publicly allowed" "remove allow rule and keep only nginx public"
-        return 2
+        _vs_set_result fail
+        return 0
     fi
 
     while IFS= read -r port; do
@@ -149,17 +165,20 @@ _vs_check_ufw() {
 
     if [[ "$found_stale" -eq 1 ]]; then
         _vs_warn "UFW" "stale SSH allow rule detected" "reconcile UFW and finalize old SSH transition ports"
-        return 1
+        _vs_set_result warn
+        return 0
     fi
 
     _vs_pass "UFW" "active, managed SSH/http/https rules present, 20128 not exposed"
+    _vs_set_result pass
     return 0
 }
 
 _vs_check_fail2ban() {
     if ! command -v fail2ban-client >/dev/null 2>&1; then
         _vs_warn "fail2ban" "not installed" "install fail2ban baseline"
-        return 1
+        _vs_set_result warn
+        return 0
     fi
 
     local status_all status_sshd expected_ports transition_port
@@ -174,27 +193,32 @@ _vs_check_fail2ban() {
 
     if ! systemctl is-active fail2ban >/dev/null 2>&1; then
         _vs_fail "fail2ban" "service inactive" "systemctl enable --now fail2ban"
-        return 2
+        _vs_set_result fail
+        return 0
     fi
 
     if ! printf '%s\n' "$status_all" | grep -q 'sshd'; then
         _vs_fail "fail2ban" "sshd jail missing" "write OPS fail2ban jail and restart service"
-        return 2
+        _vs_set_result fail
+        return 0
     fi
 
     if ! printf '%s\n' "$status_sshd" | grep -Eq "Port:[[:space:]]*${expected_ports//,/|}"; then
         _vs_warn "fail2ban" "sshd jail ports do not match OPS state (${expected_ports})" "rewrite fail2ban jail from OPS baseline"
-        return 1
+        _vs_set_result warn
+        return 0
     fi
 
     _vs_pass "fail2ban" "active, sshd jail present, expected ports=${expected_ports}"
+    _vs_set_result pass
     return 0
 }
 
 _vs_check_nginx() {
     if ! command -v nginx >/dev/null 2>&1; then
         _vs_warn "Nginx" "not installed" "install via OPS: Domains & Nginx → Install Nginx"
-        return 1
+        _vs_set_result warn
+        return 0
     fi
     local config_ok is_active
     nginx -t >/dev/null 2>&1 && config_ok=1 || config_ok=0
@@ -202,11 +226,13 @@ _vs_check_nginx() {
 
     if [[ "$config_ok" -eq 0 ]]; then
         _vs_fail "Nginx" "config test failed" "run: nginx -t  to see errors"
-        return 2
+        _vs_set_result fail
+        return 0
     fi
     if [[ "$is_active" -eq 0 ]]; then
         _vs_fail "Nginx" "config ok but service inactive" "systemctl start nginx"
-        return 2
+        _vs_set_result fail
+        return 0
     fi
 
     # ── Hardening sub-checks ────────────────────────────────────
@@ -255,10 +281,12 @@ _vs_check_nginx() {
 
     if [[ "$any_warn" -eq 1 ]]; then
         _vs_warn "Nginx" "active but hardening incomplete — see WARNs above" "run OPS: Domains & Nginx → Apply security baseline (option 8)"
-        return 1
+        _vs_set_result warn
+        return 0
     fi
 
     _vs_pass "Nginx" "active, config ok, http2, gzip_types, rate-limit zones, client limits, rlimit all present"
+    _vs_set_result pass
     return 0
 }
 
@@ -266,7 +294,8 @@ _vs_check_nginx() {
 _vs_check_pm2() {
     if ! command -v pm2 >/dev/null 2>&1; then
         _vs_warn "PM2" "not installed" "install via OPS: Node.js Services"
-        return 1
+        _vs_set_result warn
+        return 0
     fi
     local online_count runtime_user pm2_owner
     online_count=$(_vs_run_as_runtime_user pm2 jlist 2>/dev/null | python3 -c "
@@ -283,20 +312,24 @@ except:
 
     if [[ -n "$pm2_owner" && "$pm2_owner" == "root" ]]; then
         _vs_fail "PM2" "daemon running as root" "migrate PM2 to runtime user ${runtime_user}"
-        return 2
+        _vs_set_result fail
+        return 0
     fi
 
     if [[ -n "$pm2_owner" && "$pm2_owner" != "$runtime_user" ]]; then
         _vs_warn "PM2" "daemon owner=${pm2_owner}, expected=${runtime_user}" "reconcile PM2 startup user"
-        return 1
+        _vs_set_result warn
+        return 0
     fi
 
     _vs_pass "PM2" "${online_count} process(es) online, owner=${pm2_owner:-unknown}"
+    _vs_set_result pass
     return 0
 }
 
 _vs_check_nine_router() {
     if ! command -v pm2 >/dev/null 2>&1; then
+        _vs_set_result pass
         return 0
     fi
     local status listening_public
@@ -319,7 +352,8 @@ except:
         online)
             if [[ -n "$listening_public" ]]; then
                 _vs_warn "9router" "PM2 online and binding publicly on 20128 (${listening_public})" "verify UFW deny rule and keep nginx as sole public entrypoint"
-                return 1
+                _vs_set_result warn
+                return 0
             fi
             if curl -sf --max-time 2 "http://127.0.0.1:20128" >/dev/null 2>&1 || \
                curl -sf --max-time 2 "http://127.0.0.1:20128/health" >/dev/null 2>&1; then
@@ -327,21 +361,25 @@ except:
             else
                 _vs_pass "9router" "online (localhost health probe inconclusive)"
             fi
+            _vs_set_result pass
             return 0
             ;;
         not-found)
             _vs_warn "9router" "not registered in PM2" "deploy via OPS: 9router Management"
-            return 1
+            _vs_set_result warn
+            return 0
             ;;
         *)
             _vs_fail "9router" "PM2 status: ${status}" "pm2 logs nine-router to diagnose"
-            return 2
+            _vs_set_result fail
+            return 0
             ;;
     esac
 }
 
 _vs_check_php_fpm() {
     local found=0
+    local any_fail=0
     local ver svc
     for ver in 7.4 8.1 8.2 8.3; do
         svc="php${ver}-fpm"
@@ -351,12 +389,23 @@ _vs_check_php_fpm() {
                 _vs_pass "PHP ${ver}-FPM" "active"
             else
                 _vs_fail "PHP ${ver}-FPM" "inactive" "systemctl start ${svc}"
+                any_fail=1
             fi
         fi
     done
     if [[ "$found" -eq 0 ]]; then
         _vs_warn "PHP-FPM" "no PHP-FPM version installed" "install via OPS: PHP Management"
+        _vs_set_result warn
+        return 0
     fi
+
+    if [[ "$any_fail" -eq 1 ]]; then
+        _vs_set_result fail
+    else
+        _vs_set_result pass
+    fi
+
+    return 0
 }
 
 _vs_check_mariadb() {
@@ -370,17 +419,20 @@ _vs_check_mariadb() {
 
     if [[ -n "$rescue_proc" ]]; then
         _vs_fail "Database" "rescue mode detected: --skip-grant-tables still running" "stop unmanaged DB process and restore managed service mode"
-        return 2
+        _vs_set_result fail
+        return 0
     fi
 
     if [[ -z "$svc" ]]; then
         _vs_warn "Database" "MariaDB/MySQL not installed" "install via OPS: Database Management"
-        return 1
+        _vs_set_result warn
+        return 0
     fi
 
     if ! systemctl is-active "$svc" >/dev/null 2>&1; then
         _vs_fail "Database (${svc})" "inactive" "systemctl start ${svc}"
-        return 2
+        _vs_set_result fail
+        return 0
     fi
 
     # ── Deep security checks (OPS audit requirements) ───────────
@@ -442,27 +494,32 @@ _vs_check_mariadb() {
     unset -f _vs_db_var
 
     if [[ "$any_fail" -eq 1 ]]; then
-        return 2
+        _vs_set_result fail
+        return 0
     fi
     if [[ "$any_warn" -eq 1 ]]; then
         _vs_warn "Database (${svc})" "active, security hardening incomplete" "run OPS: Database → Apply tuning"
-        return 1
+        _vs_set_result warn
+        return 0
     fi
 
     _vs_pass "Database (${svc})" "active, bind=127.0.0.1, SSL=YES, local_infile=OFF, slow_log=ON"
+    _vs_set_result pass
     return 0
 }
 
 _vs_check_ssl() {
     if ! command -v certbot >/dev/null 2>&1; then
         _vs_warn "SSL (certbot)" "certbot not installed" "install via OPS: SSL Management → Install Certbot"
-        return 1
+        _vs_set_result warn
+        return 0
     fi
     local certs_output domain expiry_date days_left
     certs_output=$(certbot certificates 2>/dev/null || true)
     if [[ -z "$certs_output" ]]; then
         _vs_warn "SSL" "no certificates found" "issue cert via OPS: SSL Management"
-        return 1
+        _vs_set_result warn
+        return 0
     fi
 
     local any_warn=0 any_fail=0
@@ -494,8 +551,9 @@ _vs_check_ssl() {
         esac
     done <<< "$certs_output"
 
-    [[ "$any_fail" -eq 1 ]] && return 2
-    [[ "$any_warn" -eq 1 ]] && return 1
+    [[ "$any_fail" -eq 1 ]] && { _vs_set_result fail; return 0; }
+    [[ "$any_warn" -eq 1 ]] && { _vs_set_result warn; return 0; }
+    _vs_set_result pass
     return 0
 }
 
@@ -520,20 +578,24 @@ _vs_check_sysctl_swap() {
 
     if [[ "$send_all" != "0" || "$send_default" != "0" || "$martians_all" != "1" || "$martians_default" != "1" ]]; then
         _vs_fail "Sysctl" "hardening drift detected (send_redirects/log_martians)" "reapply OPS host baseline"
-        return 2
+        _vs_set_result fail
+        return 0
     fi
 
     if [[ -z "$swappiness" || "$swappiness" -gt 20 ]]; then
         _vs_warn "Swappiness" "vm.swappiness=${swappiness:-unknown}" "set low swappiness in OPS sysctl baseline"
-        return 1
+        _vs_set_result warn
+        return 0
     fi
 
     if [[ "$swap_count" -eq 0 ]]; then
         _vs_warn "Swap" "no active swap detected" "apply OPS host baseline to provision swap if policy allows"
-        return 1
+        _vs_set_result warn
+        return 0
     fi
 
     _vs_pass "Host Kernel" "sysctl hardening active, swappiness=${swappiness}, swap devices=${swap_count}"
+    _vs_set_result pass
     return 0
 }
 
@@ -543,19 +605,20 @@ verify_stack() {
     print_section "Stack Health Verification"
 
     local pass_count=0 warn_count=0 fail_count=0
+    local _VS_LAST_RESULT=""
 
-    # Wrapper that tallies return codes without triggering set -e
+    # Wrapper that tallies semantic results while every verify action still returns 0.
     _vs_run() {
         local fn="$1"
-        local rc=0
-        "$fn" || rc=$?
-        case "$rc" in
-            0) pass_count=$(( pass_count + 1 )) ;;
-            1) warn_count=$(( warn_count + 1 )) ;;
-            2) fail_count=$(( fail_count + 1 )) ;;
-            *) warn_count=$(( warn_count + 1 )) ;;
+        _VS_LAST_RESULT=""
+        "$fn"
+        case "${_VS_LAST_RESULT:-warn}" in
+            pass) pass_count=$(( pass_count + 1 )) ;;
+            warn) warn_count=$(( warn_count + 1 )) ;;
+            fail) fail_count=$(( fail_count + 1 )) ;;
+            *)    warn_count=$(( warn_count + 1 )) ;;
         esac
-        return 0   # always return 0 so set -e never triggers
+        return 0
     }
 
     _vs_run _vs_check_ssh
@@ -588,5 +651,5 @@ verify_stack() {
 
     log_info "verify_stack: pass=${pass_count} warn=${warn_count} fail=${fail_count}"
     unset -f _vs_run
-    return 0   # never exit the menu due to FAIL counts
+    return 0   # verify action never exits the menu due to WARN/FAIL counts
 }
