@@ -730,6 +730,13 @@ cliproxyapi_start() {
     print_section "Start CLIProxyAPI"
     require_root || return 1
     service_start "$CLIPROXYAPI_SERVICE_NAME"
+    sleep 2
+    if service_active "$CLIPROXYAPI_SERVICE_NAME"; then
+        print_ok "CLIProxyAPI is active"
+    else
+        log_warn "CLIProxyAPI is not active after start. Last journal entries:"
+        journalctl -u "$CLIPROXYAPI_SERVICE_NAME" -n 20 --no-pager 2>/dev/null || true
+    fi
     _cliproxyapi_assert_ufw_closed
 }
 
@@ -817,18 +824,18 @@ bootstrap_cliproxyapi_auth() {
     case "$provider" in
         claude)
             log_info "Launching Claude provider login as ${runtime_user} ..."
-            _cliproxyapi_run_as_runtime_user "$CLIPROXYAPI_BINARY" --claude-login
+            _cliproxyapi_run_as_runtime_user bash -c "cd '${CLIPROXYAPI_DIR}' && '${CLIPROXYAPI_BINARY}' --claude-login"
             ;;
         codex)
             log_info "Launching Codex provider login as ${runtime_user} ..."
-            _cliproxyapi_run_as_runtime_user "$CLIPROXYAPI_BINARY" --codex-login
+            _cliproxyapi_run_as_runtime_user bash -c "cd '${CLIPROXYAPI_DIR}' && '${CLIPROXYAPI_BINARY}' --codex-login"
             ;;
         all|*)
             log_info "Launching Claude provider login as ${runtime_user} ..."
-            _cliproxyapi_run_as_runtime_user "$CLIPROXYAPI_BINARY" --claude-login || true
+            _cliproxyapi_run_as_runtime_user bash -c "cd '${CLIPROXYAPI_DIR}' && '${CLIPROXYAPI_BINARY}' --claude-login" || true
             echo ""
             log_info "Launching Codex provider login as ${runtime_user} ..."
-            _cliproxyapi_run_as_runtime_user "$CLIPROXYAPI_BINARY" --codex-login || true
+            _cliproxyapi_run_as_runtime_user bash -c "cd '${CLIPROXYAPI_DIR}' && '${CLIPROXYAPI_BINARY}' --codex-login" || true
             ;;
     esac
     echo ""
@@ -863,21 +870,21 @@ menu_cliproxyapi() {
         local choice
         read -r choice < /dev/tty
         case "$choice" in
-            1) _cliproxyapi_menu_run install_cliproxyapi ;;
-            2) _cliproxyapi_menu_run update_cliproxyapi ;;
-            3) _cliproxyapi_menu_run link_cliproxyapi_domain ;;
-            4) _cliproxyapi_menu_run cliproxyapi_start ;;
-            5) _cliproxyapi_menu_run cliproxyapi_stop ;;
-            6) _cliproxyapi_menu_run cliproxyapi_restart ;;
-            7) _cliproxyapi_menu_run cliproxyapi_logs ;;
-            8) _cliproxyapi_menu_run toggle_cliproxyapi_api_key on ;;
-            9) _cliproxyapi_menu_run toggle_cliproxyapi_api_key off ;;
-            10) _cliproxyapi_menu_run toggle_cliproxyapi_request_logs on ;;
-            11) _cliproxyapi_menu_run toggle_cliproxyapi_request_logs off ;;
-            12) _cliproxyapi_menu_run verify_cliproxyapi ;;
-            13) _cliproxyapi_menu_run bootstrap_cliproxyapi_auth all ;;
-            0) return 0 ;;
-            *) print_warn "Invalid option" ;;
+            1)  _cliproxyapi_menu_run install_cliproxyapi; press_enter ;;
+            2)  _cliproxyapi_menu_run update_cliproxyapi; press_enter ;;
+            3)  _cliproxyapi_menu_run link_cliproxyapi_domain; press_enter ;;
+            4)  _cliproxyapi_menu_run cliproxyapi_start; press_enter ;;
+            5)  _cliproxyapi_menu_run cliproxyapi_stop; press_enter ;;
+            6)  _cliproxyapi_menu_run cliproxyapi_restart; press_enter ;;
+            7)  _cliproxyapi_menu_run cliproxyapi_logs; press_enter ;;
+            8)  _cliproxyapi_menu_run toggle_cliproxyapi_api_key on; press_enter ;;
+            9)  _cliproxyapi_menu_run toggle_cliproxyapi_api_key off; press_enter ;;
+            10) _cliproxyapi_menu_run toggle_cliproxyapi_request_logs on; press_enter ;;
+            11) _cliproxyapi_menu_run toggle_cliproxyapi_request_logs off; press_enter ;;
+            12) _cliproxyapi_menu_run verify_cliproxyapi; press_enter ;;
+            13) _cliproxyapi_menu_run bootstrap_cliproxyapi_auth all; press_enter ;;
+            0)  return 0 ;;
+            *)  print_warn "Invalid option" ;;
         esac
     done
 }
