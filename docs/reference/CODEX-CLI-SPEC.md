@@ -54,36 +54,53 @@ OPS manages these configuration paths:
 
 #### 3.1 Using with CLIProxyAPI (recommended on OPS VPS)
 
-When CLIProxyAPI is installed, Codex CLI should point to it as the API endpoint:
+When CLIProxyAPI is installed, Codex CLI should point to it as the API endpoint.
+
+OPS writes `~/.codex/config.toml` with this format:
 
 ```toml
-[model]
-provider = "openai"
-name     = "if/kimi-k2-thinking"
+model = "gpt-5.4"
+model_provider = "cliproxyapi"
+model_reasoning_effort = "medium"
 
-[provider.openai]
+[model_providers.cliproxyapi]
+name = "CLIProxyAPI"
 base_url = "http://127.0.0.1:8317/v1"
-api_key  = "<api-key-from-/etc/ops/.cli-proxy-api-key-or-operator-input>"
+wire_api = "responses"
+env_key = "CLI_PROXY_API_KEY"
+env_key_instructions = "Set CLI_PROXY_API_KEY to your CLIProxyAPI api key"
+
+[profiles.max]
+model = "gpt-5.4"
+model_provider = "cliproxyapi"
+
+[profiles.fast]
+model = "gpt-5.3-codex"
+model_provider = "cliproxyapi"
 ```
 
-OPS state example:
+Key notes:
+- `wire_api = "responses"` - tells Codex CLI to use Responses API format (not Chat Completions)
+- API key is NOT stored in config.toml. OPS exports `CLI_PROXY_API_KEY` in admin `~/.bashrc`
+- `model_provider` references the `[model_providers.cliproxyapi]` block by key name
+
+OPS also appends to `~/.bashrc`:
+
+```bash
+# OPS: codex-cliproxyapi env
+export CLI_PROXY_API_KEY=<value from /etc/ops/.cli-proxy-api-key>
+```
+
+OPS state:
 
 ```bash
 # /etc/ops/codex-cli.conf
 CODEX_INSTALLED="yes"
-CODEX_VERSION="$(codex --version 2>/dev/null)"
+CODEX_VERSION="<version>"
 CODEX_MODE="cliproxyapi"
 CODEX_ENDPOINT="http://127.0.0.1:8317/v1"
-CODEX_API_KEY_FILE="/etc/ops/.codex-api-key"
-CODEX_MODEL="if/kimi-k2-thinking"
+CODEX_MODEL="gpt-5.4"
 CODEX_INSTALL_DATE="2026-04-28"
-```
-
-The actual key must be stored separately:
-
-```bash
-# /etc/ops/.codex-api-key  (0600, owned by admin user)
-sk_local_xxxxxxxxxxxxxxxx
 ```
 
 #### 3.2 Using with OpenAI API key directly
@@ -145,18 +162,14 @@ configure_codex_with_cliproxyapi() {
     cat > "/home/$ADMIN_USER/.codex/config.toml" <<EOF
 [model]
 provider = "openai"
-name     = "if/kimi-k2-thinking"
-
-[provider.openai]
-base_url = "http://127.0.0.1:8317/v1"
-api_key  = "${api_key}"
+name     = "gpt-5.4"
 EOF
     chown -R "$ADMIN_USER:$ADMIN_USER" "/home/$ADMIN_USER/.codex"
     chmod 600 "/home/$ADMIN_USER/.codex/config.toml"
 
     ops_conf_set codex-cli.conf CODEX_MODE "cliproxyapi"
     ops_conf_set codex-cli.conf CODEX_ENDPOINT "http://127.0.0.1:8317/v1"
-    ops_conf_set codex-cli.conf CODEX_MODEL "if/kimi-k2-thinking"
+    ops_conf_set codex-cli.conf CODEX_MODEL "gpt-5.4"
 }
 ```
 

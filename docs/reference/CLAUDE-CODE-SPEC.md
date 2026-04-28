@@ -25,7 +25,7 @@ This spec covers choice 2 only. For Codex CLI see `docs/CODEX-CLI-SPEC.md` (if e
 | Choice | Function | What it does |
 |---|---|---|
 | 1 | `install_claude_cli` | `npm install -g @anthropic-ai/claude-code`; records version + date to state file |
-| 2 | `configure_claude_cli` | Prompts Base URL, API key (hidden), Model; writes export block to admin `~/.bashrc` |
+| 2 | `configure_claude_cli` | Prompts mode (CLIProxyAPI local / Anthropic direct), API key, Model; writes export block to admin `~/.bashrc` |
 | 3 | `test_claude_cli` | Shows version, masked API key, model, endpoint HTTP status |
 | 4 | `install_claude_vietnamese_fix` | Git clones `daotaolaixe-quangthang/claude-code-vietnamese-fix`, runs `install.sh` or `setup.sh` |
 | 5 | `menu_telegram_bot` | Opens Claude Code Telegram Bot submenu (5 actions) |
@@ -50,12 +50,26 @@ Claude Code CLI reads `ANTHROPIC_API_KEY` from the environment at runtime, so ex
 
 ### ~/.bashrc config block format
 
+When mode is **CLIProxyAPI (local)** (default, recommended):
+
 ```
 # OPS: claude-code config
-export ANTHROPIC_BASE_URL=https://api.anthropic.com/v1
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8317
+export ANTHROPIC_API_KEY=<CLIProxyAPI api key from /etc/ops/.cli-proxy-api-key>
+export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_API_KEY}"
+export ANTHROPIC_MODEL="claude-opus-4-5-20251101"
+```
+
+Note: `ANTHROPIC_BASE_URL` for CLIProxyAPI has NO `/v1` suffix. The Anthropic SDK appends `/v1` automatically. Using `http://127.0.0.1:8317/v1` would cause double-path errors.
+
+When mode is **Anthropic API (direct)**:
+
+```
+# OPS: claude-code config
+export ANTHROPIC_BASE_URL=https://api.anthropic.com
 export ANTHROPIC_API_KEY=sk-ant-...
 export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_API_KEY}"
-export ANTHROPIC_MODEL="claude-opus-4-5"
+export ANTHROPIC_MODEL="claude-opus-4-5-20251101"
 ```
 
 The block is delimited by the marker line `# OPS: claude-code config` and a blank line.

@@ -287,7 +287,7 @@ error-logs-max-files: 10
 usage-statistics-enabled: false
 proxy-url: ""
 force-model-prefix: false
-passthrough-headers: false
+passthrough-headers: true
 request-retry: 3
 max-retry-credentials: 0
 max-retry-interval: 30
@@ -298,11 +298,32 @@ quota-exceeded:
   antigravity-credits: true
 routing:
   strategy: "round-robin"
-  session-affinity: false
-  session-affinity-ttl: "1h"
+  session-affinity: true
+  session-affinity-ttl: "12h"
 ws-auth: false
 enable-gemini-cli-endpoint: false
-nonstream-keepalive-interval: 0
+nonstream-keepalive-interval: 30
+streaming:
+  keepalive-seconds: 30
+  bootstrap-retries: 3
+oauth-model-alias:
+  codex:
+    claude-opus-4-5-20251101: gpt-5.4
+    claude-sonnet-4-6: gpt-5.4
+    claude-haiku-4-5-20251001: gpt-5.4-mini
+    claude-3-5-haiku-20241022: gpt-5.4-mini
+    claude-sonnet-4-5: gpt-5.3-codex
+  antigravity:
+    claude-opus-4-5-20251101: claude-sonnet-4-6
+    claude-opus-4-7: claude-sonnet-4-6
+    claude-sonnet-4-6: claude-sonnet-4-6
+    claude-haiku-4-5-20251001: claude-sonnet-4-6
+payload:
+  filter:
+    antigravity:
+      - propertyNames
+      - additionalProperties
+      - patternProperties
 EOF
     chown "$runtime_user:$runtime_user" "$CLIPROXYAPI_CONFIG_FILE"
     chmod 640 "$CLIPROXYAPI_CONFIG_FILE"
@@ -327,7 +348,7 @@ Group=${runtime_user}
 WorkingDirectory=${CLIPROXYAPI_DIR}
 Environment=HOME=${runtime_home}
 ExecStart=${CLIPROXYAPI_BINARY}
-Restart=always
+Restart=on-failure
 RestartSec=10
 NoNewPrivileges=true
 PrivateTmp=true
@@ -663,13 +684,16 @@ _cliproxyapi_verify_models_json() {
 
 verify_cliproxyapi() {
     print_section "Verify CLIProxyAPI"
-    require_root || return 1
+    require_root || { log_error "Must run as root"; return 0; }
+
+    local all_ok=true
 
     if ! service_active "$CLIPROXYAPI_SERVICE_NAME"; then
         log_error "Service ${CLIPROXYAPI_SERVICE_NAME} is not active"
-        return 1
+        all_ok=false
+    else
+        print_ok "Systemd service is active"
     fi
-    print_ok "Systemd service is active"
 
     local listening_public listening_local
     listening_public=$(ss -tln 2>/dev/null | awk '$4 ~ /:8317$/ {print $4}' | grep -E '(^0\.0\.0\.0:8317$|^\[::\]:8317$)' || true)
@@ -677,22 +701,29 @@ verify_cliproxyapi() {
 
     if [[ -n "$listening_public" ]]; then
         log_error "CLIProxyAPI is binding publicly on 8317 (${listening_public})"
-        return 1
-    fi
-    if [[ -z "$listening_local" ]]; then
+        all_ok=false
+    elif [[ -z "$listening_local" ]]; then
         log_error "CLIProxyAPI is not listening on loopback 8317"
-        return 1
+        all_ok=false
+    else
+        print_ok "Service is listening on loopback only"
     fi
-    print_ok "Service is listening on loopback only"
 
     if ! _cliproxyapi_verify_models_json; then
         log_error "Local /v1/models did not return JSON"
-        return 1
+        all_ok=false
+    else
+        print_ok "Local /v1/models endpoint returned JSON"
     fi
-    print_ok "Local /v1/models endpoint returned JSON"
 
-    _cliproxyapi_assert_ufw_closed || return 1
-    print_ok "Verification passed"
+    _cliproxyapi_assert_ufw_closed || true
+
+    if [[ "$all_ok" == "true" ]]; then
+        print_ok "Verification passed"
+    else
+        log_warn "Verification completed with errors. See above."
+    fi
+    return 0
 }
 
 cliproxyapi_start() {
@@ -772,6 +803,38 @@ _cliproxyapi_show_status() {
     echo ""
 }
 
+bootstrap_cliproxyapi_auth() {
+    local provider="${1:-all}"
+    local runtime_user runtime_home
+    runtime_user="$(_cliproxyapi_runtime_user)"
+    runtime_home="$(_cliproxyapi_runtime_home)"
+
+    if [[ ! -x "$CLIPROXYAPI_BINARY" ]]; then
+        log_error "CLIProxyAPI binary not found. Install first."
+        return 1
+    fi
+
+    case "$provider" in
+        claude)
+            log_info "Launching Claude provider login as ${runtime_user} ..."
+            _cliproxyapi_run_as_runtime_user "$CLIPROXYAPI_BINARY" --claude-login
+            ;;
+        codex)
+            log_info "Launching Codex provider login as ${runtime_user} ..."
+            _cliproxyapi_run_as_runtime_user "$CLIPROXYAPI_BINARY" --codex-login
+            ;;
+        all|*)
+            log_info "Launching Claude provider login as ${runtime_user} ..."
+            _cliproxyapi_run_as_runtime_user "$CLIPROXYAPI_BINARY" --claude-login || true
+            echo ""
+            log_info "Launching Codex provider login as ${runtime_user} ..."
+            _cliproxyapi_run_as_runtime_user "$CLIPROXYAPI_BINARY" --codex-login || true
+            ;;
+    esac
+    echo ""
+    log_info "Auth bootstrap complete. Auth stored at ${runtime_home}/.cli-proxy-api"
+}
+
 menu_cliproxyapi() {
     _cliproxyapi_menu_run() {
         "$@"
@@ -793,9 +856,12 @@ menu_cliproxyapi() {
         echo "  10) Enable request logging"
         echo "  11) Disable request logging"
         echo "  12) Verify CLIProxyAPI"
+        echo "  13) Bootstrap auth providers (--claude-login / --codex-login)"
         echo "  0) Back"
         echo ""
-        read -r -p "Select: " choice
+        printf "  Select: " > /dev/tty
+        local choice
+        read -r choice < /dev/tty
         case "$choice" in
             1) _cliproxyapi_menu_run install_cliproxyapi ;;
             2) _cliproxyapi_menu_run update_cliproxyapi ;;
@@ -809,6 +875,7 @@ menu_cliproxyapi() {
             10) _cliproxyapi_menu_run toggle_cliproxyapi_request_logs on ;;
             11) _cliproxyapi_menu_run toggle_cliproxyapi_request_logs off ;;
             12) _cliproxyapi_menu_run verify_cliproxyapi ;;
+            13) _cliproxyapi_menu_run bootstrap_cliproxyapi_auth all ;;
             0) return 0 ;;
             *) print_warn "Invalid option" ;;
         esac

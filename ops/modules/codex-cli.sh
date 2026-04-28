@@ -80,34 +80,77 @@ install_codex_cli() {
 }
 
 configure_codex_with_cliproxyapi() {
-    local api_key model_name
-    read -r -s -p "Paste API key from CLIProxyAPI: " api_key
-    echo
+    local api_key model_name cpa_key_file admin_bashrc admin_home
+    cpa_key_file="${OPS_CONFIG_DIR}/.cli-proxy-api-key"
+    admin_home=$(getent passwd "$ADMIN_USER" | cut -d: -f6 || true)
+    admin_home="${admin_home:-/home/$ADMIN_USER}"
+    admin_bashrc="${admin_home}/.bashrc"
+
+    # Auto-read CLIProxyAPI key if available
+    if [[ -f "$cpa_key_file" ]]; then
+        api_key=$(tr -d '\r\n' < "$cpa_key_file")
+        log_info "Using CLIProxyAPI key from $cpa_key_file"
+    else
+        printf "  Paste API key from CLIProxyAPI: " > /dev/tty
+        read -r -s api_key < /dev/tty
+        echo ""
+    fi
 
     if [[ -z "$api_key" ]]; then
         log_error "API key cannot be empty"
         return 1
     fi
 
-    read -r -p "Model name [if/kimi-k2-thinking]: " model_name
-    model_name="${model_name:-if/kimi-k2-thinking}"
+    printf "  Default model [gpt-5.4]: " > /dev/tty
+    read -r model_name < /dev/tty
+    model_name="${model_name:-gpt-5.4}"
 
-    _codex_write_api_key_file "$api_key"
+    # Write correct config.toml format (env_key style, no inline secret)
+    local codex_env_key="CLI_PROXY_API_KEY"
+    local env_key_instructions="Set ${codex_env_key} to your CLIProxyAPI api key (from ${cpa_key_file})"
 
-    _codex_write_config_toml "[model]
-provider = \"openai\"
-name     = \"${model_name}\"
+    _codex_write_config_toml "model = \"${model_name}\"
+model_provider = \"cliproxyapi\"
+model_reasoning_effort = \"medium\"
 
-[provider.openai]
+[model_providers.cliproxyapi]
+name = \"CLIProxyAPI\"
 base_url = \"http://127.0.0.1:8317/v1\"
-api_key  = \"${api_key}\""
+wire_api = \"responses\"
+env_key = \"${codex_env_key}\"
+env_key_instructions = \"${env_key_instructions}\"
+
+[profiles.max]
+model = \"gpt-5.4\"
+model_provider = \"cliproxyapi\"
+
+[profiles.fast]
+model = \"gpt-5.3-codex\"
+model_provider = \"cliproxyapi\""
+
+    # Export CLI_PROXY_API_KEY into admin ~/.bashrc
+    local codex_marker="# OPS: codex-cliproxyapi env"
+    touch "$admin_bashrc"
+    chown "$ADMIN_USER:$ADMIN_USER" "$admin_bashrc"
+    if grep -q "$codex_marker" "$admin_bashrc" 2>/dev/null; then
+        backup_file "$admin_bashrc" >/dev/null || true
+        sed -i "/^${codex_marker}$/,/^$/d" "$admin_bashrc"
+    else
+        backup_file "$admin_bashrc" >/dev/null || true
+    fi
+    cat >> "$admin_bashrc" <<EOF
+
+${codex_marker}
+export ${codex_env_key}=${api_key}
+EOF
+    chown "$ADMIN_USER:$ADMIN_USER" "$admin_bashrc"
 
     _codex_set_state "CODEX_MODE" "cliproxyapi"
     _codex_set_state "CODEX_ENDPOINT" "http://127.0.0.1:8317/v1"
     _codex_set_state "CODEX_MODEL" "$model_name"
-    _codex_set_state "CODEX_API_KEY_FILE" "$CODEX_API_KEY_FILE"
 
-    log_info "Codex CLI configured to use CLIProxyAPI"
+    log_info "Codex CLI configured to use CLIProxyAPI (model: ${model_name})"
+    print_warn "Reload shell to apply: source ~/.bashrc"
 }
 
 configure_codex_with_openai_api() {
@@ -153,12 +196,14 @@ configure_codex_custom() {
 
     # Prompt Base URL
     local base_url
-    read -r -p "  Enter Base URL [https://api.openai.com/v1]: " base_url
+    printf "  Enter Base URL [https://api.openai.com/v1]: " > /dev/tty
+    read -r base_url < /dev/tty
     base_url="${base_url:-https://api.openai.com/v1}"
 
     # Prompt API Key
     local api_key
-    read -r -s -p "  Enter API Key: " api_key
+    printf "  Enter API Key: " > /dev/tty
+    read -r -s api_key < /dev/tty
     echo ""
     if [[ -z "$api_key" ]]; then
         log_error "API Key cannot be empty"
@@ -167,7 +212,8 @@ configure_codex_custom() {
 
     # Prompt Model
     local model
-    read -r -p "  Enter Model name [gpt-4o]: " model
+    printf "  Enter Model name [gpt-4o]: " > /dev/tty
+    read -r model < /dev/tty
     model="${model:-gpt-4o}"
 
     _codex_write_api_key_file "$api_key"
@@ -202,7 +248,9 @@ configure_codex_cli() {
         echo "  4) Custom endpoint (enter Base URL / API Key / Model)"
         echo "  0) Back"
         echo ""
-        read -r -p "Select: " choice
+        printf "  Select: " > /dev/tty
+        local choice
+        read -r choice < /dev/tty
 
         case "$choice" in
             1) _configure_codex_menu_run configure_codex_with_cliproxyapi; return 0 ;;
@@ -268,7 +316,9 @@ toggle_codex_auto_env() {
         echo "  2) Disable auto environment"
         echo "  0) Back"
         echo ""
-        read -r -p "Select: " choice
+        printf "  Select: " > /dev/tty
+        local choice
+        read -r choice < /dev/tty
         case "$choice" in
             1) _toggle_codex_auto_env_run enable_codex_auto_env; return 0 ;;
             2) _toggle_codex_auto_env_run disable_codex_auto_env; return 0 ;;
@@ -304,7 +354,9 @@ menu_codex_cli() {
         echo "  4) Test Codex CLI"
         echo "  0) Back"
         echo ""
-        read -r -p "Select: " choice
+        printf "  Select: " > /dev/tty
+        local choice
+        read -r choice < /dev/tty
         case "$choice" in
             1) _codex_menu_run install_codex_cli ;;
             2) _codex_menu_run configure_codex_cli ;;

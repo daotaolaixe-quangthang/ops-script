@@ -91,25 +91,63 @@ configure_claude_cli() {
 
     print_section "Configure Claude Code CLI for this server"
     echo ""
-
-    # Prompt Base URL
-    local base_url
-    read -r -p "  Enter Base URL [https://api.anthropic.com/v1]: " base_url
-    base_url="${base_url:-https://api.anthropic.com/v1}"
-
-    # Prompt API Key
-    local api_key
-    read -r -s -p "  Enter API Key: " api_key
+    echo "  1) Use CLIProxyAPI (local, recommended)"
+    echo "  2) Use Anthropic API (direct)"
     echo ""
-    if [[ -z "$api_key" ]]; then
-        log_error "API Key cannot be empty"
-        return 1
-    fi
+    printf "  Select mode [1]: " > /dev/tty
+    local mode_choice
+    read -r mode_choice < /dev/tty
+    mode_choice="${mode_choice:-1}"
 
-    # Prompt Model
-    local model
-    read -r -p "  Enter Model name [claude-opus-4-5]: " model
-    model="${model:-claude-opus-4-5}"
+    local base_url api_key model
+
+    if [[ "$mode_choice" == "1" ]]; then
+        base_url="http://127.0.0.1:8317"
+
+        # Warn if CLIProxyAPI service is not active
+        if ! systemctl is-active --quiet cli-proxy-api 2>/dev/null; then
+            print_warn "CLIProxyAPI service is not running. Install/start it from menu 5 before using Claude Code CLI."
+            printf "  Continue anyway? [y/N]: " > /dev/tty
+            local cont_ans
+            read -r cont_ans < /dev/tty
+            [[ "${cont_ans,,}" == "y" ]] || return 0
+        fi
+
+        if [[ -f "${OPS_CONFIG_DIR}/.cli-proxy-api-key" ]]; then
+            api_key=$(tr -d '\r\n' < "${OPS_CONFIG_DIR}/.cli-proxy-api-key")
+            log_info "Using CLIProxyAPI key from ${OPS_CONFIG_DIR}/.cli-proxy-api-key"
+        else
+            echo ""
+            printf "  CLIProxyAPI key not found. Enter API Key: " > /dev/tty
+            read -r -s api_key < /dev/tty
+            echo ""
+        fi
+
+        if [[ -z "$api_key" ]]; then
+            log_error "API Key cannot be empty"
+            return 1
+        fi
+
+        printf "  Model name [claude-opus-4-5-20251101]: " > /dev/tty
+        read -r model < /dev/tty
+        model="${model:-claude-opus-4-5-20251101}"
+    else
+        printf "  Enter Base URL [https://api.anthropic.com]: " > /dev/tty
+        read -r base_url < /dev/tty
+        base_url="${base_url:-https://api.anthropic.com}"
+
+        printf "  Enter API Key: " > /dev/tty
+        read -r -s api_key < /dev/tty
+        echo ""
+        if [[ -z "$api_key" ]]; then
+            log_error "API Key cannot be empty"
+            return 1
+        fi
+
+        printf "  Model name [claude-opus-4-5-20251101]: " > /dev/tty
+        read -r model < /dev/tty
+        model="${model:-claude-opus-4-5-20251101}"
+    fi
 
     echo ""
     log_info "Writing Claude config to $bashrc ..."
@@ -121,7 +159,6 @@ configure_claude_cli() {
     # Remove old block if exists (idempotent)
     if grep -q "$CLAUDE_MARKER" "$bashrc" 2>/dev/null; then
         backup_file "$bashrc" >/dev/null || true
-        # Delete from marker line to the next blank line after the last export
         sed -i "/^${CLAUDE_MARKER}$/,/^$/d" "$bashrc"
     else
         backup_file "$bashrc" >/dev/null || true
@@ -278,12 +315,14 @@ configure_claude_telegram_bot() {
 
     # Bot Username
     local bot_username
-    read -r -p "  Telegram Bot Username (without @): " bot_username
+    printf "  Telegram Bot Username (without @): " > /dev/tty
+    read -r bot_username < /dev/tty
     bot_username="${bot_username:-my_claude_bot}"
 
     # Allowed Users
     local allowed_users
-    read -r -p "  Allowed Telegram User IDs (comma-separated, from @userinfobot): " allowed_users
+    printf "  Allowed Telegram User IDs (comma-separated, from @userinfobot): " > /dev/tty
+    read -r allowed_users < /dev/tty
     if [[ -z "$allowed_users" ]]; then
         log_error "At least one allowed user ID is required."
         return 1
@@ -293,7 +332,8 @@ configure_claude_telegram_bot() {
     local admin_home
     admin_home="$(_claude_admin_home)"
     local approved_dir
-    read -r -p "  Approved directory [${admin_home}]: " approved_dir
+    printf "  Approved directory [${admin_home}]: " > /dev/tty
+    read -r approved_dir < /dev/tty
     approved_dir="${approved_dir:-${admin_home}}"
 
     # ── Auto-copy ANTHROPIC_* from Claude Code CLI bashrc ─────
@@ -454,7 +494,9 @@ menu_telegram_bot() {
         echo "  5) Status / Logs"
         echo "  0) Back"
         echo ""
-        read -r -p "Select: " choice
+        printf "  Select: " > /dev/tty
+        local choice
+        read -r choice < /dev/tty
         case "$choice" in
             1) _telegram_bot_menu_run install_claude_telegram_bot ;;
             2) _telegram_bot_menu_run configure_claude_telegram_bot ;;
@@ -484,14 +526,16 @@ menu_claude_cli() {
         echo "  5) Claude Code Telegram Bot"
         echo "  0) Back"
         echo ""
-        read -r -p "Select: " choice
+        printf "  Select: " > /dev/tty
+        local choice
+        read -r choice < /dev/tty
         case "$choice" in
             1) _claude_cli_menu_run install_claude_cli ;;
             2) _claude_cli_menu_run configure_claude_cli ;;
             3) _claude_cli_menu_run test_claude_cli ;;
             4) _claude_cli_menu_run install_claude_vietnamese_fix ;;
             5) _claude_cli_menu_run menu_telegram_bot ;;
-            0) return 0                             ;;
+            0) return 0 ;;
             *) print_warn "Invalid option" ;;
         esac
     done
@@ -509,11 +553,13 @@ menu_ai_agent() {
         echo "  2) Claude Code CLI Integration"
         echo "  0) Back"
         echo ""
-        read -r -p "Select: " choice
+        printf "  Select: " > /dev/tty
+        local choice
+        read -r choice < /dev/tty
         case "$choice" in
             1) _ai_agent_menu_run menu_codex_cli ;;
             2) _ai_agent_menu_run menu_claude_cli ;;
-            0) return 0                ;;
+            0) return 0 ;;
             *) print_warn "Invalid option" ;;
         esac
     done

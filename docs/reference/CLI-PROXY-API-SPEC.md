@@ -81,9 +81,44 @@ remote-management:
 pprof:
   enable: false
 auth-dir: "/home/<runtime_user>/.cli-proxy-api"
-api-keys: []
+api-keys: []             # populated when require-api-key is on
+passthrough-headers: true
+nonstream-keepalive-interval: 30
+routing:
+  strategy: "round-robin"
+  session-affinity: true
+  session-affinity-ttl: "12h"
+streaming:
+  keepalive-seconds: 30
+  bootstrap-retries: 3
+oauth-model-alias:
+  codex:
+    claude-opus-4-5-20251101: gpt-5.4
+    claude-sonnet-4-6: gpt-5.4
+    claude-haiku-4-5-20251001: gpt-5.4-mini
+    claude-3-5-haiku-20241022: gpt-5.4-mini
+    claude-sonnet-4-5: gpt-5.3-codex
+  antigravity:
+    claude-opus-4-5-20251101: claude-sonnet-4-6
+    claude-opus-4-7: claude-sonnet-4-6
+    claude-sonnet-4-6: claude-sonnet-4-6
+    claude-haiku-4-5-20251001: claude-sonnet-4-6
+payload:
+  filter:
+    antigravity:
+      - propertyNames
+      - additionalProperties
+      - patternProperties
 logging-to-file: false
 ```
+
+Key production settings:
+
+- `passthrough-headers: true` - required for Claude Code CLI to work correctly (forwards full SDK request headers)
+- `session-affinity: true / 12h` - prevents "dot token" errors by keeping conversations on the same OAuth account
+- `streaming.keepalive-seconds: 30` - prevents proxy timeout on long streaming responses
+- `oauth-model-alias` - translates Claude model names to real provider model names for Codex (gpt-5.4 family) and Antigravity/Gemini (claude-sonnet-4-6)
+- `payload.filter.antigravity` - strips JSON Schema fields rejected by Gemini API (`propertyNames`, `additionalProperties`, `patternProperties`) to avoid 400 errors
 
 Required posture:
 
