@@ -145,6 +145,11 @@ export ${codex_env_key}=${api_key}
 EOF
     chown "$ADMIN_USER:$ADMIN_USER" "$admin_bashrc"
 
+    # If CLIProxyAPI module is loaded, ensure api-keys is enabled in config.yaml too.
+    if declare -F _cliproxyapi_activate_api_key >/dev/null; then
+        _cliproxyapi_activate_api_key
+    fi
+
     _codex_set_state "CODEX_MODE" "cliproxyapi"
     _codex_set_state "CODEX_ENDPOINT" "http://127.0.0.1:8317/v1"
     _codex_set_state "CODEX_MODEL" "$model_name"

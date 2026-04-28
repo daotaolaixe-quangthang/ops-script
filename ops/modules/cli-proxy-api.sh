@@ -620,8 +620,20 @@ link_cliproxyapi_domain() {
     print_ok "CLIProxyAPI linked to domain: ${domain}"
 }
 
+_cliproxyapi_activate_api_key() {
+    if [[ ! -x "$CLIPROXYAPI_BINARY" ]]; then
+        return 0
+    fi
+    _cliproxyapi_ensure_client_key > /dev/null
+    _cliproxyapi_set_state "CLIPROXYAPI_REQUIRE_API_KEY" "yes"
+    _cliproxyapi_write_config
+    if service_active "$CLIPROXYAPI_SERVICE_NAME"; then
+        service_restart "$CLIPROXYAPI_SERVICE_NAME" 10 > /dev/null || true
+        log_info "CLIProxyAPI reloaded with API key enabled"
+    fi
+}
+
 toggle_cliproxyapi_api_key() {
-    require_root || return 1
     local mode="${1:-}"
     local state_value
 

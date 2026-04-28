@@ -176,6 +176,11 @@ EOF
 
     chown "$ADMIN_USER:$ADMIN_USER" "$bashrc"
 
+    # If CLIProxyAPI module is loaded and local mode is selected, ensure api-keys is enabled in config.yaml too.
+    if [[ "$mode_choice" == "1" ]] && declare -F _cliproxyapi_activate_api_key >/dev/null; then
+        _cliproxyapi_activate_api_key
+    fi
+
     _claude_set_state "CLAUDE_BASE_URL" "$base_url"
     _claude_set_state "CLAUDE_MODEL"    "$model"
 
