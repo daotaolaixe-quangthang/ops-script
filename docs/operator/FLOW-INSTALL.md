@@ -111,7 +111,7 @@ From the main menu, user selects **“Production Setup Wizard”** (or similar).
    - Apply kernel hardening via `/etc/sysctl.d/99-ops-hardening.conf`.
 
 3. **Nginx installation & tuning**
-   - Install Nginx from the distribution repositories.
+   - Install Nginx from nginx.org mainline repo (enforced by `_nginx_add_official_repo()`; Ubuntu distro package is rejected as it ships 1.18.0 with known CVEs).
    - Apply tuning based on RAM/CPU via `PERF-TUNING.md`:
      - `worker_processes`
      - `worker_connections`
@@ -195,9 +195,10 @@ If the user declines:
 
 After reboot and first stable login on the new port, users typically:
 
-1. Use **Node.js Services** menu to:
+1. Use **CLIProxyAPI Management** menu (option 5) to:
+   - Install CLIProxyAPI, link a domain, manage API keys.
+2. Use **Node.js Services** menu to:
    - Create or import Node.js apps.
-   - Deploy and manage CLIProxyAPI.
 2. Use **Domains & Nginx** menu to:
    - Add domains.
    - Attach them to Node/PHP apps.

@@ -71,11 +71,8 @@ Read when building a new phase or porting OPS to another stack.
 | [CODE-SKELETON-GUIDE.md](dev/CODE-SKELETON-GUIDE.md) | Skeleton code, module pattern, convention cheat sheet |
 | [DESIGN-PATTERNS-EXTRACTED.md](dev/DESIGN-PATTERNS-EXTRACTED.md) | Reusable patterns for any new control plane |
 | [PLATFORM-AGNOSTIC-CAPABILITIES.md](dev/PLATFORM-AGNOSTIC-CAPABILITIES.md) | Capabilities abstracted from Node/PHP/Nginx syntax |
-| [PORTING-MAP-NODE-FIRST.md](dev/PORTING-MAP-NODE-FIRST.md) | Map OPS logic to Node-first production stack |
 | [PROMPTS-TEMPLATES.md](dev/PROMPTS-TEMPLATES.md) | Prompt templates for AI agent task execution |
-| [PROMPTS-TASK-EXECUTION.md](dev/PROMPTS-TASK-EXECUTION.md) | Task execution prompt patterns |
 | [ROADMAP.md](dev/ROADMAP.md) | High-level phase overview and backlog |
-| [TASK-CHECKLIST.md](dev/TASK-CHECKLIST.md) | Build-phase task checklist (Phase 1+2) |
 
 ---
 

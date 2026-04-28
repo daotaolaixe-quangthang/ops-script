@@ -19,22 +19,21 @@ This README gives a high‑level overview for humans; detailed flows and rules f
 
 ### Documentation map
 
-- `docs/README.md` – recommended reading order and docs update contract.
-- `docs/FLOW-INSTALL.md` – full end-to-end installation and first-time run flow.
-- `docs/MENU-REFERENCE.md` – all menus and submenus, in English.
-- `docs/ARCHITECTURE.md` – internal structure and module boundaries.
-- `docs/SECURITY-RULES.md` – security invariants that must never be broken.
-- `docs/PERF-TUNING.md` – RAM/CPU → tuning tables for Nginx, PHP-FPM, DB, Node.
-- `docs/BUG-TRIAGE-INDEX.md` – bug triage by impact layer.
-- `docs/SOURCE-TO-RUNTIME-TRACE.md` – map from menus/modules to runtime state and rollback.
-- `docs/KNOWN-RISKS-PATTERNS.md` – production risk patterns for reviews and bugfixes.
-- `docs/RUNBOOKS.md` – rollback-first operational runbooks for risky changes.
-- `docs/RUNTIME-ARTEFACT-INVENTORY.md` – expected runtime artefacts and source-of-truth targets.
-- `docs/PLATFORM-AGNOSTIC-CAPABILITIES.md` – extracted capabilities independent of stack syntax.
-- `docs/PORTING-MAP-NODE-FIRST.md` – how to apply OPS logic to a Node-first production stack with PHP as secondary.
-- `docs/DESIGN-PATTERNS-EXTRACTED.md` – reusable control-plane patterns.
-- `rules/` – coding & project rules for contributors and AI agents.
-- `agents/OPS-AI-GUIDE.md` – how AI agents should work on this project.
+- `docs/README.md` - recommended reading order and docs update contract.
+- `docs/operator/FLOW-INSTALL.md` - full end-to-end installation and first-time run flow.
+- `docs/operator/MENU-REFERENCE.md` - all menus and submenus, in English.
+- `docs/reference/ARCHITECTURE.md` - internal structure and module boundaries.
+- `docs/operator/SECURITY-RULES.md` - security invariants that must never be broken.
+- `docs/operator/PERF-TUNING.md` - RAM/CPU tuning tables for Nginx, PHP-FPM, DB, Node.
+- `docs/reference/BUG-TRIAGE-INDEX.md` - bug triage by impact layer.
+- `docs/reference/SOURCE-TO-RUNTIME-TRACE.md` - map from menus/modules to runtime state and rollback.
+- `docs/reference/KNOWN-RISKS-PATTERNS.md` - production risk patterns for reviews and bugfixes.
+- `docs/operator/RUNBOOKS.md` - rollback-first operational runbooks for risky changes.
+- `docs/reference/RUNTIME-ARTEFACT-INVENTORY.md` - expected runtime artefacts and source-of-truth targets.
+- `docs/dev/PLATFORM-AGNOSTIC-CAPABILITIES.md` - extracted capabilities independent of stack syntax.
+- `docs/dev/DESIGN-PATTERNS-EXTRACTED.md` - reusable control-plane patterns.
+- `rules/` - coding & project rules for contributors and AI agents.
+- `agents/OPS-AI-GUIDE.md` - how AI agents should work on this project.
 
 Humans and AI agents must **read the relevant docs in `docs/` and `rules/` before writing scripts** to avoid accidental security or performance regressions.
 

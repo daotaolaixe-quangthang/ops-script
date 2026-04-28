@@ -259,7 +259,7 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
 - **Risk**: Hard crash instead of graceful restart; in-flight requests are lost without graceful shutdown.
 - **Safe action**: Set `node_args: "--max-old-space-size=<N>"` to ≈90% of `max_memory_restart` (e.g. `460` for 512M restart). This makes V8 GC aggressive at the threshold and allows PM2 to trigger a clean restart.
 
-## 17) Nginx from Ubuntu distro repo — old version with CVEs
+## 23) Nginx from Ubuntu distro repo - old version with CVEs
 
 **Risk:** Ubuntu 20.04/22.04 ships nginx/1.18.0. CVE-2021-23017 (1-byte DNS overwrite) and other post-1.18 CVEs exist. Running distro nginx on a production server is a policy violation.
 
@@ -269,7 +269,7 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
 
 ---
 
-## 18) `gzip on` without `gzip_types` — nearly useless gzip
+## 24) `gzip on` without `gzip_types` - nearly useless gzip
 
 **Risk:** The default Nginx gzip config only compresses `text/html`. Without `gzip_types`, JS, CSS, JSON — the bulk of application payload — are sent uncompressed.
 
@@ -279,7 +279,7 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
 
 ---
 
-## 19) No rate limiting in Nginx — origin DoS possible if CF bypass
+## 25) No rate limiting in Nginx - origin DoS possible if CF bypass
 
 **Risk:** Without `limit_req_zone` / `limit_conn_zone`, if the VPS IP is discovered and Cloudflare is bypassed, an attacker can send unlimited requests directly to the origin.
 
@@ -289,7 +289,7 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
 
 ---
 
-## 20) `listen 443 ssl` without `http2` — forced HTTP/1.1
+## 26) `listen 443 ssl` without `http2` - forced HTTP/1.1
 
 **Risk:** HTTP/2 provides multiplexing and header compression. Without `http2` in the listen directive, all HTTPS traffic uses HTTP/1.1 even on modern clients.
 
@@ -299,7 +299,7 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
 
 ---
 
-## 23) `read -p` prompt bị nuốt khi `< /dev/tty` + `2>/dev/null` — FIXED (3 lần)
+## 27) `read -p` prompt bi nuot khi `< /dev/tty` + `2>/dev/null` - FIXED (3 lan)
 
 - **Pattern**:
   - Dùng `read -r -t N -p "Label: " var < /dev/tty 2>/dev/null` để đọc input từ TTY

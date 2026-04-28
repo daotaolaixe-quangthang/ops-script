@@ -434,7 +434,7 @@ Notes:
 **Steps:**
 ```bash
 # 1. From OPS menu:
-# Domains & Nginx â†’ Install / update Nginx (option 6)
+# Domains & Nginx -> Install / update Nginx (option 6)
 # This calls _nginx_add_official_repo() + apt upgrade
 
 # 2. Or manually:
@@ -461,11 +461,11 @@ nginx -v && nginx -t && systemctl reload nginx
 **Steps:**
 ```bash
 # From OPS menu:
-# Domains & Nginx â†’ Apply security baseline (option 8)
+# Domains & Nginx -> Apply security baseline (option 8)
 # This runs nginx_apply_security_baseline() which calls _nginx_apply_global_tuning() + reload
 
 # Verify all checks pass:
-# Main menu â†’ Verify stack â†’ check Nginx section for PASS
+# Main menu -> Verify stack -> check Nginx section for PASS
 ```
 
 **What it applies:**
@@ -484,7 +484,7 @@ nginx -v && nginx -t && systemctl reload nginx
 
 **Enable:**
 ```bash
-# OPS menu: Domains & Nginx â†’ Advanced web controls â†’ option 5
+# OPS menu: Domains & Nginx -> Advanced web controls -> option 5
 # Writes /etc/nginx/conf.d/cloudflare-ip-restrict.conf
 # Then manually add to each server {} block:
 #   if ($blocked_cf) { return 444; }
@@ -493,7 +493,7 @@ nginx -v && nginx -t && systemctl reload nginx
 
 **Disable:**
 ```bash
-# OPS menu: Domains & Nginx â†’ Advanced web controls â†’ option 6
+# OPS menu: Domains & Nginx -> Advanced web controls -> option 6
 # Removes /etc/nginx/conf.d/cloudflare-ip-restrict.conf
 # Then remove any "if ($blocked_cf)" lines from server blocks
 # Then: nginx -t && systemctl reload nginx

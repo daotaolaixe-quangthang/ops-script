@@ -41,7 +41,7 @@ Moi feature/sua bug moi phai di qua 4 lop test:
 3. **Integration/runtime validation**
    - verify file tao ra, service state, process manager, config syntax
 4. **Regression validation**
-   - re-test nhung bug pattern da tung xay ra trong `docs/KNOWN-RISKS-PATTERNS.md`
+   - re-test nhung bug pattern da tung xay ra trong `docs/reference/KNOWN-RISKS-PATTERNS.md`
 
 ## 2. Definition of Done cho thay doi moi
 
@@ -52,7 +52,7 @@ Mot thay doi chi duoc xem la passed khi dap ung du cac dieu kien sau:
 - Co verify ro rang va lap lai duoc tren Ubuntu 22.04 va/hoac 24.04.
 - Co rollback toi thieu neu thay doi cham vao SSH, Nginx, DB, PHP, PM2, firewall.
 - Khong lam lo secret trong output/log/doc.
-- Khong tao runtime drift voi `docs/ARCHITECTURE.md`, `docs/MENU-REFERENCE.md`, `docs/SECURITY-RULES.md`.
+- Khong tao runtime drift voi `docs/reference/ARCHITECTURE.md`, `docs/operator/MENU-REFERENCE.md`, `docs/operator/SECURITY-RULES.md`.
 - Da chay lai nhom regression lien quan den impact layer cua thay doi.
 
 ## 3. Test matrix moi truong
@@ -93,7 +93,7 @@ Khuyen nghi:
 
 | ID | Test case | Preconditions | Steps | Expected result |
 |---|---|---|---|---|
-| TUI-01 | Main menu render du labels | OPS da cai | Chay `ops` | Menu hien du muc theo `docs/MENU-REFERENCE.md` |
+| TUI-01 | Main menu render du labels | OPS da cai | Chay `ops` | Menu hien du muc theo `docs/operator/MENU-REFERENCE.md` |
 | TUI-02 | Invalid option khong crash | Dang o main menu | Nhap ky tu la | Hien warn, menu tiep tuc |
 | TUI-03 | Timeout TTY exit clean | Dang o main menu | De qua timeout hoac mat tty | Process exit 0, khong spin CPU 100% |
 | TUI-04 | Chay `ops` trong non-tty | Pipe/redirect stdin stdout | Chay `ops < /dev/null` | Thong bao can interactive terminal, exit sach |
