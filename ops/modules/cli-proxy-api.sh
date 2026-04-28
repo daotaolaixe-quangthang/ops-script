@@ -303,27 +303,6 @@ routing:
 ws-auth: false
 enable-gemini-cli-endpoint: false
 nonstream-keepalive-interval: 30
-streaming:
-  keepalive-seconds: 30
-  bootstrap-retries: 3
-oauth-model-alias:
-  codex:
-    claude-opus-4-5-20251101: gpt-5.4
-    claude-sonnet-4-6: gpt-5.4
-    claude-haiku-4-5-20251001: gpt-5.4-mini
-    claude-3-5-haiku-20241022: gpt-5.4-mini
-    claude-sonnet-4-5: gpt-5.3-codex
-  antigravity:
-    claude-opus-4-5-20251101: claude-sonnet-4-6
-    claude-opus-4-7: claude-sonnet-4-6
-    claude-sonnet-4-6: claude-sonnet-4-6
-    claude-haiku-4-5-20251001: claude-sonnet-4-6
-payload:
-  filter:
-    antigravity:
-      - propertyNames
-      - additionalProperties
-      - patternProperties
 EOF
     chown "$runtime_user:$runtime_user" "$CLIPROXYAPI_CONFIG_FILE"
     chmod 640 "$CLIPROXYAPI_CONFIG_FILE"
