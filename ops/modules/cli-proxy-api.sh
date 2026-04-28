@@ -23,11 +23,6 @@ CLIPROXYAPI_PORT="8317"
 CLIPROXYAPI_PPROF_PORT="8316"
 CLIPROXYAPI_LOGS_DIR="${CLIPROXYAPI_DIR}/logs"
 CLIPROXYAPI_VHOST_TEMPLATE="${OPS_ROOT}/modules/templates/nginx/cli-proxy-api.vhost.conf.tpl"
-LEGACY_NINE_ROUTER_STATE_FILE="${OPS_CONFIG_DIR}/nine-router.conf"
-LEGACY_NINE_ROUTER_DIR="/opt/9router"
-LEGACY_NINE_ROUTER_DATA_DIR="/var/lib/9router"
-LEGACY_NINE_ROUTER_PM2_NAME="nine-router"
-LEGACY_NINE_ROUTER_LOGROTATE_FILE="/etc/logrotate.d/nine-router"
 
 _cliproxyapi_runtime_user() {
     ops_runtime_user
@@ -63,47 +58,7 @@ _cliproxyapi_set_state() {
 
 _cliproxyapi_state_get() {
     local key="$1"
-    local value=""
-    value=$(ops_conf_get "cli-proxy-api.conf" "$key" 2>/dev/null || true)
-    if [[ -n "$value" ]]; then
-        printf '%s' "$value"
-        return 0
-    fi
-
-    case "$key" in
-        CLIPROXYAPI_DOMAIN)
-            ops_conf_get "nine-router.conf" "NINE_ROUTER_DOMAIN" 2>/dev/null || true
-            ;;
-        CLIPROXYAPI_SSL)
-            ops_conf_get "nine-router.conf" "NINE_ROUTER_SSL" 2>/dev/null || true
-            ;;
-        CLIPROXYAPI_REQUIRE_API_KEY)
-            ops_conf_get "nine-router.conf" "NINE_ROUTER_REQUIRE_API_KEY" 2>/dev/null || true
-            ;;
-        CLIPROXYAPI_REQUEST_LOGS)
-            ops_conf_get "nine-router.conf" "NINE_ROUTER_REQUEST_LOGS" 2>/dev/null || true
-            ;;
-        *)
-            printf '%s' ""
-            ;;
-    esac
-}
-
-_cliproxyapi_migrate_legacy_state() {
-    if [[ -f "$CLIPROXYAPI_STATE_FILE" ]] || [[ ! -f "$LEGACY_NINE_ROUTER_STATE_FILE" ]]; then
-        return 0
-    fi
-
-    local legacy_domain legacy_ssl legacy_require_api_key legacy_request_logs
-    legacy_domain=$(ops_conf_get "nine-router.conf" "NINE_ROUTER_DOMAIN" 2>/dev/null || true)
-    legacy_ssl=$(ops_conf_get "nine-router.conf" "NINE_ROUTER_SSL" 2>/dev/null || true)
-    legacy_require_api_key=$(ops_conf_get "nine-router.conf" "NINE_ROUTER_REQUIRE_API_KEY" 2>/dev/null || true)
-    legacy_request_logs=$(ops_conf_get "nine-router.conf" "NINE_ROUTER_REQUEST_LOGS" 2>/dev/null || true)
-
-    _cliproxyapi_set_state "CLIPROXYAPI_DOMAIN" "$legacy_domain"
-    _cliproxyapi_set_state "CLIPROXYAPI_SSL" "${legacy_ssl:-no}"
-    _cliproxyapi_set_state "CLIPROXYAPI_REQUIRE_API_KEY" "${legacy_require_api_key:-no}"
-    _cliproxyapi_set_state "CLIPROXYAPI_REQUEST_LOGS" "${legacy_request_logs:-no}"
+    ops_conf_get "cli-proxy-api.conf" "$key" 2>/dev/null || true
 }
 
 _cliproxyapi_generate_api_key() {
@@ -420,8 +375,7 @@ _cliproxyapi_ssl_cert_ready() {
 }
 
 _cliproxyapi_remove_legacy_domain_files() {
-    local domain="$1"
-    rm -f "/etc/nginx/sites-enabled/nine-router.${domain}" "/etc/nginx/sites-available/nine-router.${domain}"
+    : # no-op on fresh installs
 }
 
 _cliproxyapi_render_vhost() {
@@ -497,21 +451,6 @@ EOF
     printf '%s' "$ssl_enabled"
 }
 
-_cliproxyapi_retire_legacy_runtime() {
-    if command -v pm2 >/dev/null 2>&1 && _cliproxyapi_run_as_runtime_user pm2 describe "$LEGACY_NINE_ROUTER_PM2_NAME" >/dev/null 2>&1; then
-        _cliproxyapi_run_as_runtime_user pm2 delete "$LEGACY_NINE_ROUTER_PM2_NAME" >/dev/null 2>&1 || true
-        _cliproxyapi_run_as_runtime_user pm2 save >/dev/null 2>&1 || true
-    fi
-
-    if [[ -d "$LEGACY_NINE_ROUTER_DIR" ]]; then
-        rm -rf "$LEGACY_NINE_ROUTER_DIR"
-    fi
-    if [[ -d "$LEGACY_NINE_ROUTER_DATA_DIR" ]]; then
-        rm -rf "$LEGACY_NINE_ROUTER_DATA_DIR"
-    fi
-    rm -f "$LEGACY_NINE_ROUTER_LOGROTATE_FILE"
-}
-
 _cliproxyapi_show_login_guidance() {
     local runtime_user runtime_home
     runtime_user="$(_cliproxyapi_runtime_user)"
@@ -531,7 +470,6 @@ _cliproxyapi_show_login_guidance() {
 install_cliproxyapi() {
     print_section "Install CLIProxyAPI"
     require_root || return 1
-    _cliproxyapi_migrate_legacy_state
 
     if [[ -x "$CLIPROXYAPI_BINARY" ]]; then
         print_warn "CLIProxyAPI is already installed at ${CLIPROXYAPI_DIR}."
@@ -647,7 +585,6 @@ link_cliproxyapi_domain() {
     _cliproxyapi_set_state "CLIPROXYAPI_DOMAIN" "$domain"
     _cliproxyapi_set_state "CLIPROXYAPI_SSL" "$ssl_enabled"
 
-    _cliproxyapi_retire_legacy_runtime
     _cliproxyapi_assert_ufw_closed || return 1
     print_ok "CLIProxyAPI linked to domain: ${domain}"
 }
