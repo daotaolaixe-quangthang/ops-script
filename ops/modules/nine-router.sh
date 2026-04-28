@@ -592,9 +592,9 @@ verify_nine_router() {
     print_section "Verify 9router"
     require_root || return 1
 
-    local pm2_line
-    pm2_line=$(_nine_router_run_as_runtime_user pm2 status "$NINE_ROUTER_PM2_NAME" 2>/dev/null | grep "$NINE_ROUTER_PM2_NAME" | head -n1 || true)
-    if [[ -z "$pm2_line" ]] || [[ "$pm2_line" != *"online"* ]]; then
+    local pm2_status
+    pm2_status=$(ops_pm2_process_status "$NINE_ROUTER_PM2_NAME" 2>/dev/null || echo "not-found")
+    if [[ "$pm2_status" != "online" ]]; then
         log_error "PM2 process ${NINE_ROUTER_PM2_NAME} is not online"
         return 1
     fi

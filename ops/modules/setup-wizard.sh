@@ -646,29 +646,22 @@ wizard_status() {
 
     pm2_online_count="0"
     if command -v pm2 >/dev/null 2>&1; then
-        pm2_online_count=$(ops_pm2_jlist 2>/dev/null | python3 -c '
-import sys, json
-try:
-    procs = json.load(sys.stdin)
-    print(sum(1 for p in procs if p.get("pm2_env", {}).get("status") == "online"))
-except Exception:
-    print(0)
-' 2>/dev/null || echo "0")
-    [[ -z "$pm2_online_count" ]] && pm2_online_count="0"
-    [[ ! "$pm2_online_count" =~ ^[0-9]+$ ]] && pm2_online_count="0"
-    print_ok "pm2: installed ($(pm2 --version 2>/dev/null))"
-    print_ok "pm2 online apps: ${pm2_online_count}"
-    if [[ "$node_apps" -gt 0 ]]; then
-        print_ok "node registry apps: ${node_apps}"
+        pm2_online_count=$(ops_pm2_online_count 2>/dev/null || echo "0")
+        [[ -z "$pm2_online_count" ]] && pm2_online_count="0"
+        [[ ! "$pm2_online_count" =~ ^[0-9]+$ ]] && pm2_online_count="0"
+        print_ok "pm2: installed ($(pm2 --version 2>/dev/null))"
+        print_ok "pm2 online apps: ${pm2_online_count}"
+        if [[ "$node_apps" -gt 0 ]]; then
+            print_ok "node registry apps: ${node_apps}"
+        fi
+        if [[ "$node_sites" -gt 0 ]]; then
+            print_ok "node managed sites: ${node_sites}"
+        fi
+        if [[ "$pm2_online_count" -ne "$node_sites" ]]; then
+            print_warn "pm2 online app count may differ from node site count (one app can serve multiple domains)."
+        fi
+        echo ""
     fi
-    if [[ "$node_sites" -gt 0 ]]; then
-        print_ok "node managed sites: ${node_sites}"
-    fi
-    if [[ "$pm2_online_count" -ne "$node_sites" ]]; then
-        print_warn "pm2 online app count may differ from node site count (one app can serve multiple domains)."
-    fi
-    echo ""
-fi
 
     # ── PHP-FPM active versions ──────────────────────────────
     for php_ver in 7.4 8.1 8.2 8.3; do

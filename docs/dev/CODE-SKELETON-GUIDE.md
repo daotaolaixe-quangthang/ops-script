@@ -331,8 +331,9 @@ main_menu() {
         echo "  5) 9router Management"
         echo "  6) PHP / PHP-FPM Management"
         echo "  7) Database Management"
-        echo "  8) Codex CLI Integration"
+        echo "  8) AI Agent Integration"
         echo "  9) System & Monitoring"
+        echo "  s) Security Management"
         echo "  0) Exit"
         echo ""
         read -r -p "Select: " choice
@@ -344,8 +345,9 @@ main_menu() {
             5) menu_nine_router    ;;
             6) menu_php            ;;
             7) menu_database       ;;
-            8) menu_codex_cli      ;;
+            8) menu_ai_agent       ;;
             9) menu_monitoring     ;;
+            s|S) menu_security     ;;
             0) exit 0              ;;
             *) print_warn "Invalid option" ;;
         esac

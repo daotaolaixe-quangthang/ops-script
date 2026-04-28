@@ -227,9 +227,9 @@ During `install_nginx()`, OPS automatically:
    - `keepalive_timeout 30s`, `client_max_body_size 10m`, client timeouts
    - Full gzip config (`gzip_types`, `gzip_comp_level 6`, etc.)
    - `open_file_cache`, `limit_req_zone`, `limit_conn_zone`
-   - Security headers (HSTS+preload, CSP, Permissions-Policy, X-XSS-Protection)
+   - Security headers (CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, X-XSS-Protection) -- HSTS is applied per SSL vhost only, not globally (RFC 6797 §7.2)
    - Custom `log_format main_ext` with upstream response timing
 4. Calls `create_default_deny()` and `_nginx_disable_packaged_default_site()`.
-5. Runs `nginx -t && nginx reload`.
+5. Runs `nginx -t && systemctl reload-or-restart nginx`.
 
 If Nginx >= 1.24 is already installed, `_nginx_add_official_repo()` is a no-op.

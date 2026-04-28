@@ -3,7 +3,16 @@
 > Source repo: **https://github.com/daotaolaixe-quangthang/9routervps** (chốt — không dùng URL nào khác)
 > Tech Stack: Node.js 20+, Next.js 16, React 19, LowDB (JSON file-based), SSE streaming
 > Port: `20128` (fixed, do not change)
-> Binding: `HOSTNAME=0.0.0.0` (Next.js requirement) — security enforced tại **UFW + Nginx layer**
+> Binding: `127.0.0.1:20128` only — this is the required OPS runtime posture.
+> Implementation authority: `ops/modules/nine-router.sh`, `ops/modules/templates/pm2/nine-router.ecosystem.config.js.tpl`, `ops/modules/templates/nginx/nine-router.vhost.conf.tpl`, `ops/modules/nginx.sh`, `ops/modules/verify.sh`.
+
+### Source of truth and agent guardrails
+
+When 9router docs, prompts, comments, and runtime observations disagree, defer to the implementation authority above.
+
+- Do not "fix" 9router by switching it back to `0.0.0.0`.
+- Do not add per-vhost `limit_req` / `limit_conn` to the 9router vhost.
+- Do not remove global `limit_req_zone` / `limit_conn_zone` from Nginx just because the 9router vhost does not enforce them.
 
 ---
 
@@ -35,24 +44,37 @@
 
 - Node.js 20+ (installed via `nodesource` apt — see PHASE-01-SPEC P1-06)
 - PM2 installed globally
-- Git
 
-#### 2.2 Clone and install
+#### 2.2 Download archive and install
 
 ```bash
 NINE_ROUTER_DIR="/opt/9router"
 NINE_ROUTER_DATA_DIR="/var/lib/9router"
+NINE_ROUTER_REPO_URL="https://github.com/daotaolaixe-quangthang/9routervps/archive/refs/heads/vpswork.tar.gz"
+RUNTIME_USER="<ops runtime user>"
 
-# Clone — chốt URL này, không dùng decolua/9router hay URL nào khác
-git clone https://github.com/daotaolaixe-quangthang/9routervps.git "$NINE_ROUTER_DIR"
-cd "$NINE_ROUTER_DIR"
+# Download source archive from branch vpswork
+archive="$(mktemp /tmp/nine-router-XXXXXX.tar.gz)"
+curl -fsSL "$NINE_ROUTER_REPO_URL" -o "$archive"
 
-# Install dependencies
-npm install
+# Extract into /opt/9router then remove archive
+mkdir -p "$NINE_ROUTER_DIR"
+tar -xzf "$archive" --strip-components=1 -C "$NINE_ROUTER_DIR"
+rm -f "$archive"
 
-# Build production bundle (bắt buộc — Next.js cần build trước khi start)
-npm run build
+# Tar extracts as root; fix ownership before npm writes node_modules/build output
+chown -R "$RUNTIME_USER:$RUNTIME_USER" "$NINE_ROUTER_DIR"
+
+# Install/build as runtime user
+runuser -u "$RUNTIME_USER" -- npm install --prefix "$NINE_ROUTER_DIR"
+runuser -u "$RUNTIME_USER" -- npm run build --prefix "$NINE_ROUTER_DIR"
+
+# Re-create standalone symlinks after build
+ln -sfn "$NINE_ROUTER_DIR/.next/static" "$NINE_ROUTER_DIR/.next/standalone/.next/static"
+ln -sfn "$NINE_ROUTER_DIR/public"       "$NINE_ROUTER_DIR/.next/standalone/public"
 ```
+
+> OPS does not use a git working tree for 9router deployment. Future agents must align install/update docs to the `vpswork.tar.gz` archive flow from `ops/modules/nine-router.sh`.
 
 #### 2.3 Environment configuration
 
@@ -81,7 +103,7 @@ MACHINE_ID_SALT=$(openssl rand -hex 16)
 
 write_file /opt/9router/.env <<EOF
 PORT=20128
-HOSTNAME=0.0.0.0
+HOSTNAME=127.0.0.1
 NODE_ENV=production
 DATA_DIR=/var/lib/9router
 JWT_SECRET=${JWT_SECRET}
@@ -95,18 +117,18 @@ AUTH_COOKIE_SECURE=false
 REQUIRE_API_KEY=false
 EOF
 chmod 600 /opt/9router/.env
-chown "$ADMIN_USER":"$ADMIN_USER" /opt/9router/.env
+chown "$RUNTIME_USER":"$RUNTIME_USER" /opt/9router/.env
 ```
 
-> **Security**: `HOSTNAME=0.0.0.0` là yêu cầu của Next.js để bind HTTP server.
-> Public exposure bị chặn tại **UFW layer** (port 20128 không được mở) và **Nginx layer**.
-> Nginx chỉ proxy đến `127.0.0.1:20128`.
+> **Security**: 9router must bind loopback only: `HOSTNAME=127.0.0.1` and `PORT=20128`.
+> Public access must go through **Nginx only**; Nginx proxies to `127.0.0.1:20128`.
+> UFW must not have any `ALLOW` rule for `20128`. An explicit `DENY` is not required; if a stale `DENY` exists it may be removed as unnecessary cleanup.
 
 **Bước 3 — Tạo state dirs:**
 
 ```bash
 mkdir -p "$NINE_ROUTER_DATA_DIR"
-chown "$ADMIN_USER":"$ADMIN_USER" "$NINE_ROUTER_DATA_DIR"
+chown "$RUNTIME_USER":"$RUNTIME_USER" "$NINE_ROUTER_DATA_DIR"
 chmod 750 "$NINE_ROUTER_DATA_DIR"
 ```
 
@@ -140,14 +162,14 @@ Use the template at `templates/pm2/nine-router.ecosystem.config.js.tpl`:
 module.exports = {
   apps: [{
     name:       'nine-router',
-    script:     'node_modules/.bin/next',
-    args:       'start',
+    script:     'node',
+    args:       '.next/standalone/server.js',
     cwd:        '/opt/9router',
     instances:  1,
     exec_mode:  'fork',
     env: {
       PORT:                    '20128',
-      HOSTNAME:                '0.0.0.0',
+      HOSTNAME:                '127.0.0.1',
       NODE_ENV:                'production',
       DATA_DIR:                '/var/lib/9router',
       // Secrets loaded from .env file — do NOT inline here
@@ -156,8 +178,12 @@ module.exports = {
     error_file:      '/var/log/ops/nine-router.err.log',
     out_file:        '/var/log/ops/nine-router.out.log',
     log_date_format: 'YYYY-MM-DD HH:mm:ss',
+    merge_logs:      true,
     restart_delay:   3000,
     max_restarts:    10,
+    max_memory_restart: '512M',
+    kill_timeout:    8000,
+    listen_timeout:  15000,
     watch:           false
   }]
 };
@@ -178,7 +204,8 @@ When user selects "Link 9router to a domain", OPS creates an Nginx vhost:
 ```nginx
 # /etc/nginx/sites-available/nine-router.<domain>
 # Managed by OPS - do not edit manually.
-# Rate limiting is handled by Cloudflare at the edge — no limit_req directives needed here.
+# Rate limiting is handled by Cloudflare at the edge.
+# Do NOT add per-vhost limit_req/limit_conn for 9router.
 
 server {
     listen 80;
@@ -223,22 +250,53 @@ server {
 
 > **Important**: `proxy_buffering off` is required for SSE streaming (AI responses streamed in real-time).
 
-> **Rate limiting**: Nginx-level `limit_req` has been removed. Domain runs behind **Cloudflare** which
-> handles rate limiting at the edge. Adding a second layer at nginx caused false-positive 429 errors
-> on fast page navigation / F5 refresh.
+> **Rate limiting split (important)**:
+> - `ops/modules/nginx.sh` still defines global `limit_req_zone` and `limit_conn_zone` inside Nginx `http {}` as a shared hardening baseline.
+> - Standard Node/PHP/static vhosts may enforce those zones with per-vhost `limit_req` / `limit_conn`.
+> - The 9router vhost intentionally does **not** enforce `limit_req` / `limit_conn`.
+> - Rationale: the 9router domain relies on **Cloudflare** edge handling, and nginx per-vhost enforcement caused false-positive `429` during fast navigation / repeated F5.
+> - Do **not** remove the global zones when adjusting the 9router vhost; global zone definition and per-vhost enforcement are separate concerns.
 
 
 #### 2.6 Update flow
 
 ```bash
-cd /opt/9router
-pm2 stop nine-router
-git pull origin main
-npm install
-npm run build
-pm2 start nine-router
+# Compare local package.json version with remote package.json from branch vpswork
+# If same version, OPS may offer "update anyway"
+
+# Stop PM2 process before refresh
+pm2 stop nine-router || true
+
+# Re-download source archive from branch vpswork into existing /opt/9router
+archive="$(mktemp /tmp/nine-router-XXXXXX.tar.gz)"
+curl -fsSL "https://github.com/daotaolaixe-quangthang/9routervps/archive/refs/heads/vpswork.tar.gz" -o "$archive"
+tar -xzf "$archive" --strip-components=1 -C /opt/9router
+rm -f "$archive"
+
+# Preserve runtime state
+# - /opt/9router/.env stays in place
+# - /var/lib/9router data stays in place
+
+# Re-apply ownership, reinstall deps, patch NEXT_PUBLIC_BASE_URL if linked, rebuild
+chown -R "$RUNTIME_USER:$RUNTIME_USER" /opt/9router
+runuser -u "$RUNTIME_USER" -- npm install --prefix /opt/9router
+runuser -u "$RUNTIME_USER" -- npm run build --prefix /opt/9router
+
+# Restore runtime artifacts/state and bring PM2 back
+ln -sfn /opt/9router/.next/static /opt/9router/.next/standalone/.next/static
+ln -sfn /opt/9router/public       /opt/9router/.next/standalone/public
+pm2 start /opt/9router/nine-router.ecosystem.config.js
 pm2 save
 ```
+
+Actual `update_nine_router()` behavior to preserve in docs:
+
+- Compare local and remote versions first; no-op unless operator confirms forced refresh.
+- Stop PM2, then refresh `/opt/9router` from the `vpswork.tar.gz` archive.
+- Preserve `.env`, linked-domain state, and `/var/lib/9router` data.
+- Reinstall/build as runtime user, re-create standalone symlinks, re-render PM2 config.
+- If PM2 process already exists, reload with updated env; otherwise start from ecosystem config; then `pm2 save`.
+- Re-assert firewall posture after update: no UFW `ALLOW 20128`.
 
 ---
 
@@ -255,6 +313,15 @@ pm2 save
 | OPS state file | `/etc/ops/nine-router.conf` | OPS-level metadata |
 | Nginx vhost | `/etc/nginx/sites-available/nine-router.*` | Public routing |
 | App log | `/var/log/ops/nine-router.{out,err}.log` | PM2 logs |
+
+#### Network posture contract
+
+- 9router listens on `127.0.0.1:20128` only.
+- Nginx is the only public entrypoint for the 9router domain.
+- UFW must not contain `ALLOW 20128`; explicit `DENY 20128` is optional and stale deny rules may be removed.
+- Global Nginx `limit_req_zone` / `limit_conn_zone` stay in `http {}` even though the 9router vhost itself does not enforce them.
+
+If older notes disagree, defer to the implementation authority listed at the top of this file.
 
 #### OPS state file format:
 
@@ -289,7 +356,7 @@ pm2 status nine-router
 curl -s http://127.0.0.1:20128/v1/models | head -5
 
 # 3. Port 20128 NOT open in UFW
-ufw status | grep 20128   # should return nothing
+ufw status | grep 20128   # must not show ALLOW; stale DENY is optional cleanup only
 
 # 4. Dashboard accessible via domain (after Nginx linked)
 curl -I https://<domain>/dashboard
@@ -313,12 +380,11 @@ rm /etc/nginx/sites-enabled/nine-router.<domain>
 nginx -t && systemctl reload nginx
 
 # Restore previous state if update went wrong
-cd /opt/9router
-git log --oneline -5
-git checkout <previous-commit>
-npm install
-npm run build
-pm2 start nine-router.ecosystem.config.js
+# restore from VPS snapshot / backup of /opt/9router and /etc/ops/nine-router.conf,
+# then rebuild/restart as runtime user
+runuser -u "$RUNTIME_USER" -- npm install --prefix /opt/9router
+runuser -u "$RUNTIME_USER" -- npm run build --prefix /opt/9router
+pm2 start /opt/9router/nine-router.ecosystem.config.js
 pm2 save
 ```
 
@@ -334,11 +400,13 @@ pm2 save
 
 ---
 
-### 7. Note on `HOSTNAME=0.0.0.0`
+### 7. Loopback-only binding rationale
 
-Next.js requires `HOSTNAME=0.0.0.0` to bind its HTTP server to accept connections.
-On the OS level, this means port 20128 is bound on all interfaces.
-**Security is enforced at the UFW layer** (port 20128 must not be allowed in UFW rules)
-and at the **Nginx layer** (only Nginx proxies to it; direct public access is blocked by UFW).
+Current OPS posture is the opposite: `HOSTNAME=127.0.0.1` is required.
 
-OPS must verify UFW does not have port 20128 open after any install/update.
+- 9router must listen on loopback only: `127.0.0.1:20128`.
+- Nginx is the only public entrypoint and proxies to `127.0.0.1:20128`.
+- Port `20128` must not have any UFW `ALLOW` rule.
+- Explicit `DENY 20128` is not required for compliance; a stale deny may exist temporarily or be cleaned up.
+
+If any older note, external prompt, or Next.js advice suggests `0.0.0.0`, treat it as stale for OPS.

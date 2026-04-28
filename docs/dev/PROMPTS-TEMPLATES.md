@@ -18,12 +18,12 @@ Goal:
 
 Before writing any code, read and respect:
 - docs/README.md
-- docs/ARCHITECTURE.md
-- docs/FLOW-INSTALL.md
-- docs/MENU-REFERENCE.md
-- docs/SECURITY-RULES.md
-- docs/PERF-TUNING.md
-- docs/CODE-SKELETON-GUIDE.md   ← read before writing any module
+- docs/reference/ARCHITECTURE.md
+- docs/operator/FLOW-INSTALL.md
+- docs/operator/MENU-REFERENCE.md
+- docs/operator/SECURITY-RULES.md
+- docs/operator/PERF-TUNING.md
+- docs/dev/CODE-SKELETON-GUIDE.md   ← read before writing any module
 - rules/PROJECT-RULES.md
 - rules/BASH-STYLE.md
 
@@ -45,10 +45,10 @@ Use this when working on `install/ops-install.sh` or related installer logic.
 Repo: E:\2WEBApp\ops-script
 
 Read first (mandatory):
-- docs/FLOW-INSTALL.md       ← primary spec for installer flow
-- docs/SECURITY-RULES.md sections 1, 4
-- docs/ARCHITECTURE.md
-- docs/CODE-SKELETON-GUIDE.md
+- docs/operator/FLOW-INSTALL.md       ← primary spec for installer flow
+- docs/operator/SECURITY-RULES.md sections 1, 4
+- docs/reference/ARCHITECTURE.md
+- docs/dev/CODE-SKELETON-GUIDE.md
 - rules/BASH-STYLE.md
 
 Task: Implement or update install/ops-install.sh
@@ -56,7 +56,7 @@ Task: Implement or update install/ops-install.sh
 Installer URL (fixed): https://raw.githubusercontent.com/daotaolaixe-quangthang/ops-script/main/install/ops-install.sh
 
 Key requirements:
-- Match flow in docs/FLOW-INSTALL.md exactly:
+- Match flow in docs/operator/FLOW-INSTALL.md exactly:
   - OS detection for Ubuntu 22.04/24.04 (fail clearly if wrong).
   - SSH port change with transition (keep port 22 until final confirmation).
   - Non-root admin user creation (sudo, SSH-capable).
@@ -77,11 +77,11 @@ Use this when working on a specific module.
 Repo: E:\2WEBApp\ops-script
 
 Read first (mandatory):
-- docs/ARCHITECTURE.md
-- docs/CODE-SKELETON-GUIDE.md   ← read before writing any module
-- docs/MENU-REFERENCE.md        ← section for this module
-- docs/SECURITY-RULES.md
-- docs/PERF-TUNING.md           ← if module tunes services
+- docs/reference/ARCHITECTURE.md
+- docs/dev/CODE-SKELETON-GUIDE.md   ← read before writing any module
+- docs/operator/MENU-REFERENCE.md        ← section for this module
+- docs/operator/SECURITY-RULES.md
+- docs/operator/PERF-TUNING.md           ← if module tunes services
 - rules/BASH-STYLE.md
 
 Task: Implement or update modules/<MODULE>.sh
@@ -96,7 +96,7 @@ Requirements:
 - Validate configs before reload (e.g. nginx -t, bash -n).
 - Every state change must write to /etc/ops/<module>.conf.
 
-If you change menu labels or behaviour, update docs/MENU-REFERENCE.md.
+If you change menu labels or behaviour, update docs/operator/MENU-REFERENCE.md.
 ```
 
 ---
@@ -109,14 +109,14 @@ If you change menu labels or behaviour, update docs/MENU-REFERENCE.md.
 Repo: E:\2WEBApp\ops-script
 
 Read first:
-- docs/ARCHITECTURE.md (section 2: Directory layout, section 3.1: state files)
-- docs/CODE-SKELETON-GUIDE.md
+- docs/reference/ARCHITECTURE.md (section 2: Directory layout, section 3.1: state files)
+- docs/dev/CODE-SKELETON-GUIDE.md
 - rules/BASH-STYLE.md
 
 Task P1-00: Create full Phase 1 skeleton file structure.
 
 Requirements:
-- Create all files listed in docs/ARCHITECTURE.md section 2.
+- Create all files listed in docs/reference/ARCHITECTURE.md section 2.
 - Each .sh file must have: shebang, header comment, set -euo pipefail.
 - bin/ops: menu dispatcher stub (returns "not implemented" per item).
 - core/env.sh: detect RAM_MB, CPU_CORES, OS version, ADMIN_USER;
@@ -141,9 +141,9 @@ Verify: bash -n on all .sh files must return no errors.
 Repo: E:\2WEBApp\ops-script
 
 Read first (mandatory):
-- docs/FLOW-INSTALL.md        ← read entirely, primary spec
-- docs/SECURITY-RULES.md sections 1, 4
-- docs/CODE-SKELETON-GUIDE.md
+- docs/operator/FLOW-INSTALL.md        ← read entirely, primary spec
+- docs/operator/SECURITY-RULES.md sections 1, 4
+- docs/dev/CODE-SKELETON-GUIDE.md
 - rules/BASH-STYLE.md
 
 Task P1-01: Implement install/ops-install.sh
@@ -186,10 +186,10 @@ Security: Do NOT create any secret files in this phase.
 Repo: E:\2WEBApp\ops-script
 
 Read first:
-- docs/SECURITY-RULES.md      ← entire file
-- docs/KNOWN-RISKS-PATTERNS.md patterns #2, #14
-- docs/MENU-REFERENCE.md (main menu Production Setup Wizard)
-- docs/CODE-SKELETON-GUIDE.md
+- docs/operator/SECURITY-RULES.md      ← entire file
+- docs/reference/KNOWN-RISKS-PATTERNS.md patterns #2, #14
+- docs/operator/MENU-REFERENCE.md (main menu Production Setup Wizard)
+- docs/dev/CODE-SKELETON-GUIDE.md
 
 Task P1-04: Implement modules/security.sh
 
@@ -215,12 +215,12 @@ Rollback: open port 22 first, then revert sshd_config, restart sshd.
 Repo: E:\2WEBApp\ops-script
 
 Read first (mandatory):
-- docs/MENU-REFERENCE.md section 4 (Domains & Nginx) — web root + remove domain flow
-- docs/MENU-REFERENCE.md section 5 (SSL Management)
-- docs/SECURITY-RULES.md sections 2, 3
-- docs/PERF-TUNING.md section 2 (Nginx)
-- docs/NINE-ROUTER-SPEC.md section 2.5 (Nginx vhost — no rate limiting, Cloudflare handles it)
-- docs/CODE-SKELETON-GUIDE.md
+- docs/operator/MENU-REFERENCE.md section 4 (Domains & Nginx) — web root + remove domain flow
+- docs/operator/MENU-REFERENCE.md section 5 (SSL Management)
+- docs/operator/SECURITY-RULES.md sections 2, 3
+- docs/operator/PERF-TUNING.md section 2 (Nginx)
+- docs/reference/NINE-ROUTER-SPEC.md section 2.5 (Nginx vhost — no rate limiting, Cloudflare handles it)
+- docs/dev/CODE-SKELETON-GUIDE.md
 
 Task P1-05: Implement modules/nginx.sh
 
@@ -260,32 +260,46 @@ Verify: nginx -t, curl -I https://<domain>, certbot certificates.
 Repo: E:\2WEBApp\ops-script
 
 Read first (mandatory — entire files):
-- docs/NINE-ROUTER-SPEC.md    ← source of truth for all 9router implementation
-- docs/SECURITY-RULES.md sections 2, 3
-- docs/KNOWN-RISKS-PATTERNS.md patterns #13, #14
-- docs/CODE-SKELETON-GUIDE.md
+- docs/reference/NINE-ROUTER-SPEC.md    ← source of truth for all 9router implementation
+- docs/operator/SECURITY-RULES.md sections 2, 3
+- docs/reference/KNOWN-RISKS-PATTERNS.md patterns #13, #14
+- ops/modules/nine-router.sh
+- ops/modules/nginx.sh
+- ops/modules/verify.sh
+- ops/modules/templates/nginx/nine-router.vhost.conf.tpl
+- ops/modules/templates/pm2/nine-router.ecosystem.config.js.tpl
+- docs/dev/CODE-SKELETON-GUIDE.md
 
 Task P1-06: Implement modules/nine-router.sh
 
-Git repo (fixed URL — do NOT use any other):
-  https://github.com/daotaolaixe-quangthang/9routervps
+Source archive authority:
+  https://github.com/daotaolaixe-quangthang/9routervps/archive/refs/heads/vpswork.tar.gz
 
 Functions to implement (follow NINE-ROUTER-SPEC exactly):
 
 1. install_nine_router:
-   - Clone to /opt/9router
-   - npm install && npm run build
+   - Download/extract branch `vpswork` archive to /opt/9router
+   - chown app dir to runtime user before dependency install
+   - run `npm install` and `npm run build` as runtime user
    - prompt_secret "Enter 9router dashboard initial password"
-     → save to /etc/ops/.nine-router-password (chmod 600, chown $ADMIN_USER)
+      → save to /etc/ops/.nine-router-password (chmod 600, chown $ADMIN_USER)
    - Generate: JWT_SECRET=$(openssl rand -hex 32), API_KEY_SECRET, MACHINE_ID_SALT
    - Create /opt/9router/.env (chmod 600) with all vars from NINE-ROUTER-SPEC section 2.3
-   - mkdir -p /var/lib/9router; chown $ADMIN_USER; chmod 750
+   - mkdir -p /var/lib/9router; chown runtime user; chmod 750
    - Register PM2 process nine-router; pm2 save; pm2 startup
 
+1b. update_nine_router:
+   - Compare local version vs remote package.json from branch `vpswork`
+   - stop PM2 process, re-download/extract archive into /opt/9router
+   - preserve `/opt/9router/.env` and `/var/lib/9router`
+   - run npm install/build as runtime user, re-create standalone symlinks, re-render PM2 config
+   - PM2 reload existing process with updated env, or start from ecosystem config, then pm2 save
+
 2. link_nine_router_domain <domain>:
-   - Render nine-router.vhost.conf.tpl (proxy to 127.0.0.1:20128, buffering off,
-     proxy_connect_timeout 10s, proxy_read_timeout 120s, proxy_send_timeout 60s)
-   - NO rate limiting at nginx level (domain runs through Cloudflare which handles it)
+    - Render nine-router.vhost.conf.tpl (proxy to 127.0.0.1:20128, buffering off,
+      proxy_connect_timeout 10s, proxy_read_timeout 120s, proxy_send_timeout 60s)
+    - NO per-vhost rate limiting for 9router (domain runs through Cloudflare which handles it)
+    - Do NOT remove global nginx `limit_req_zone` / `limit_conn_zone`; those remain in `http {}` for other vhosts
    - nginx -t && enable && reload
    - If domain already has SSL cert: set AUTH_COOKIE_SECURE=true in /opt/9router/.env
      then pm2 restart nine-router
@@ -302,9 +316,27 @@ Functions to implement (follow NINE-ROUTER-SPEC exactly):
    - ufw status | grep 20128 → MUST be empty (port not open)
 
 Security invariants:
-- HOSTNAME=0.0.0.0 in .env is EXPECTED (Next.js requirement)
+- HOSTNAME=127.0.0.1 in .env and PM2 env is REQUIRED
 - UFW must NOT open port 20128 — verify every time
+- Explicit `ufw deny 20128` is not required; stale deny rules may be cleaned up
+- Nginx is the only public entrypoint for 9router
+- Distinguish global zone definitions from per-vhost enforcement: 9router skips per-vhost `limit_req`/`limit_conn`, but nginx global `limit_req_zone`/`limit_conn_zone` must remain
 - All secrets auto-generated, never hard-coded
+```
+
+Use this note in any 9router/networking prompt when ambiguity exists:
+
+```text
+Authority note:
+- For 9router network posture and rate limiting, source-of-truth is the live OPS implementation in:
+  - ops/modules/nine-router.sh
+  - ops/modules/nginx.sh
+  - ops/modules/verify.sh
+  - ops/modules/templates/nginx/nine-router.vhost.conf.tpl
+  - ops/modules/templates/pm2/nine-router.ecosystem.config.js.tpl
+- Do not "fix" 9router by switching it back to 0.0.0.0.
+- Do not describe 9router install/update as git clone/git pull; OPS deploys from the `vpswork.tar.gz` archive.
+- Do not "fix" nginx by removing global limit_req_zone/limit_conn_zone just because the 9router vhost does not enforce them.
 ```
 
 ---
@@ -315,10 +347,10 @@ Security invariants:
 Repo: E:\2WEBApp\ops-script
 
 Read first:
-- docs/PHASE-01-IMPLEMENTATION-SPEC.md section P1-07
-- docs/MENU-REFERENCE.md section 7
-- docs/PERF-TUNING.md section 3 (PHP-FPM per tier)
-- docs/CODE-SKELETON-GUIDE.md
+- docs/dev/PHASE-01-IMPLEMENTATION-SPEC.md section P1-07
+- docs/operator/MENU-REFERENCE.md section 7
+- docs/operator/PERF-TUNING.md section 3 (PHP-FPM per tier)
+- docs/dev/CODE-SKELETON-GUIDE.md
 
 Task P1-07: Implement modules/php.sh
 
@@ -348,10 +380,10 @@ Verify: php -v, php-fpm<ver> -t, service php<ver>-fpm status.
 Repo: E:\2WEBApp\ops-script
 
 Read first:
-- docs/PHASE-01-IMPLEMENTATION-SPEC.md section P1-08
-- docs/PERF-TUNING.md section 4 (MariaDB — bind-address=127.0.0.1)
-- docs/SECURITY-RULES.md section 7
-- docs/CODE-SKELETON-GUIDE.md
+- docs/dev/PHASE-01-IMPLEMENTATION-SPEC.md section P1-08
+- docs/operator/PERF-TUNING.md section 4 (MariaDB — bind-address=127.0.0.1)
+- docs/operator/SECURITY-RULES.md section 7
+- docs/dev/CODE-SKELETON-GUIDE.md
 
 Task P1-08: Implement modules/database.sh — MariaDB as default engine
 
@@ -389,14 +421,14 @@ Verify: mysqladmin status, mysql -u root --password=$(cat /etc/ops/.db-root-pass
 Repo: E:\2WEBApp\ops-script
 
 Read first (mandatory — entire files):
-- docs/CODEX-CLI-SPEC.md    ← source of truth for all Codex CLI implementation
-- docs/MENU-REFERENCE.md section 9
-- docs/SECURITY-RULES.md section 9
-- docs/CODE-SKELETON-GUIDE.md
+- docs/reference/CODEX-CLI-SPEC.md    ← source of truth for all Codex CLI implementation
+- docs/operator/MENU-REFERENCE.md section 9
+- docs/operator/SECURITY-RULES.md section 9
+- docs/dev/CODE-SKELETON-GUIDE.md
 
 Task: Implement modules/codex-cli.sh
 
-Follow docs/CODEX-CLI-SPEC.md exactly:
+Follow docs/reference/CODEX-CLI-SPEC.md exactly:
 - Section 2: install via npm install -g @openai/codex
 - Section 3.1: configure with 9router (recommended)
 - Section 3.2: configure with OpenAI API key
@@ -418,11 +450,11 @@ Secret files:
 ```text
 Task P1-XX has been implemented.
 
-Verify against docs/PHASE-01-IMPLEMENTATION-SPEC.md section P1-XX:
+Verify against docs/dev/PHASE-01-IMPLEMENTATION-SPEC.md section P1-XX:
 
 1. Run: bash -n on all new/modified .sh files.
 2. Check all verify steps in the spec are covered in the implementation.
-3. Check security invariants from docs/SECURITY-RULES.md are not violated.
+3. Check security invariants from docs/operator/SECURITY-RULES.md are not violated.
 4. Check no secrets are printed to terminal or written to logs:
    grep -r "password\|api_key\|token\|secret" modules/<module>.sh | grep -v "FILE\|Path\|_file\|prompt"
 5. Check all /etc/ops/*.conf state writes are present.
@@ -439,7 +471,7 @@ Repo: E:\2WEBApp\ops-script
 Task: Adjust performance tuning for <component> (Nginx / PHP-FPM / MariaDB).
 
 Steps:
-1. First update docs/PERF-TUNING.md:
+1. First update docs/operator/PERF-TUNING.md:
    - Which parameters change per tier (S: <1500MB / M: 1500-5000MB / L: >5000MB RAM).
    - Rationale for new values.
 2. Then update the relevant module to implement those values.
@@ -458,9 +490,9 @@ Constraints:
 Repo: E:\2WEBApp\ops-script
 
 Read first:
-- docs/BUG-TRIAGE-INDEX.md   ← identify impact layer
-- docs/SOURCE-TO-RUNTIME-TRACE.md  ← trace to runtime state
-- docs/KNOWN-RISKS-PATTERNS.md     ← check for known patterns
+- docs/reference/BUG-TRIAGE-INDEX.md   ← identify impact layer
+- docs/reference/SOURCE-TO-RUNTIME-TRACE.md  ← trace to runtime state
+- docs/reference/KNOWN-RISKS-PATTERNS.md     ← check for known patterns
 
 Task: Fix bug / refactor — <describe bug/goal>
 

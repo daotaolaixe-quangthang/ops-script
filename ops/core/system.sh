@@ -139,6 +139,38 @@ ops_pm2_jlist() {
     ops_run_as_runtime_user pm2 jlist
 }
 
+ops_pm2_online_count_from_json() {
+    python3 -c 'import json, sys; procs=json.load(sys.stdin); print(sum(1 for p in procs if p.get("pm2_env", {}).get("status") == "online"))'
+}
+
+ops_pm2_total_count_from_json() {
+    python3 -c 'import json, sys; procs=json.load(sys.stdin); print(len(procs))'
+}
+
+ops_pm2_process_status_from_json() {
+    local pm2_name="$1"
+    python3 -c 'import json, sys; name=sys.argv[1]; procs=json.load(sys.stdin)
+for p in procs:
+    if p.get("name") == name:
+        print(p.get("pm2_env", {}).get("status", "?"))
+        break
+else:
+    print("not-found")' "$pm2_name"
+}
+
+ops_pm2_online_count() {
+    ops_pm2_jlist 2>/dev/null | ops_pm2_online_count_from_json
+}
+
+ops_pm2_total_count() {
+    ops_pm2_jlist 2>/dev/null | ops_pm2_total_count_from_json
+}
+
+ops_pm2_process_status() {
+    local pm2_name="$1"
+    ops_pm2_jlist 2>/dev/null | ops_pm2_process_status_from_json "$pm2_name"
+}
+
 # ── Nginx helpers ─────────────────────────────────────────────
 
 nginx_validate() {

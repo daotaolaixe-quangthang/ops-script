@@ -288,15 +288,7 @@ _vs_check_pm2() {
         return 0
     fi
     local online_count runtime_user pm2_owner
-    online_count=$(_vs_run_as_runtime_user pm2 jlist 2>/dev/null | python3 -c "
-import sys,json
-try:
-    procs=json.load(sys.stdin)
-    online=sum(1 for p in procs if p.get('pm2_env',{}).get('status')=='online')
-    print(online)
-except:
-    print(0)
-" 2>/dev/null || echo "0")
+    online_count=$(_vs_run_as_runtime_user pm2 jlist 2>/dev/null | ops_pm2_online_count_from_json 2>/dev/null || echo "0")
     runtime_user="$(_vs_get_ops_runtime_user)"
     pm2_owner="$(ps -eo user=,comm= 2>/dev/null | awk '$2=="PM2"{print $1; exit}')"
 
@@ -323,20 +315,7 @@ _vs_check_nine_router() {
         return 0
     fi
     local status listening_public
-    status=$(_vs_run_as_runtime_user pm2 jlist 2>/dev/null | python3 -c "
-import sys,json
-try:
-    procs=json.load(sys.stdin)
-    for p in procs:
-        if p.get('name')=='nine-router':
-            print(p.get('pm2_env',{}).get('status','?'))
-            raise SystemExit
-    print('not-found')
-except SystemExit:
-    pass
-except:
-    print('error')
-" 2>/dev/null || echo "not-found")
+    status=$(_vs_run_as_runtime_user pm2 jlist 2>/dev/null | ops_pm2_process_status_from_json "nine-router" 2>/dev/null || echo "error")
     listening_public=$(ss -tln 2>/dev/null | awk '$4 ~ /:20128$/ {print $4}' | grep -E '(^0\.0\.0\.0:20128$|^\[::\]:20128$)' || true)
     case "$status" in
         online)
@@ -589,6 +568,39 @@ _vs_check_sysctl_swap() {
     return 0
 }
 
+_vs_check_patch_state() {
+    local reboot_needed=0 upgradable_count=0
+    [[ -f /var/run/reboot-required ]] && reboot_needed=1
+    upgradable_count=$(apt list --upgradable 2>/dev/null | grep -c '/upgradable' || true)
+    upgradable_count="${upgradable_count:-0}"
+
+    if [[ "$reboot_needed" -eq 1 ]]; then
+        _vs_fail "OS Patches" "reboot required (pending kernel/lib update)" "reboot in a controlled window, then re-run verify"
+        _vs_set_result fail
+    elif [[ "$upgradable_count" -gt 0 ]]; then
+        _vs_warn "OS Patches" "${upgradable_count} package(s) upgradable" "run: apt upgrade -y && apt autoremove -y"
+        _vs_set_result warn
+    else
+        _vs_pass "OS Patches" "up-to-date, no reboot required"
+        _vs_set_result pass
+    fi
+    return 0
+}
+
+_vs_check_runtime_user() {
+    local ru
+    ru="$(ops_runtime_user 2>/dev/null || true)"
+    if [[ "$ru" == "root" || -z "$ru" ]]; then
+        _vs_fail "Runtime User" "ops_runtime_user resolved to '${ru:-empty}'" \
+            "set OPS_RUNTIME_USER=<username> in ops.conf"
+        _vs_set_result fail
+    else
+        _vs_pass "Runtime User" "${ru}"
+        _vs_set_result pass
+    fi
+    return 0
+}
+
 # ── Main verify_stack function ────────────────────────────────
 
 verify_stack() {
@@ -616,11 +628,13 @@ verify_stack() {
     _vs_run _vs_check_fail2ban
     _vs_run _vs_check_nginx
     _vs_run _vs_check_pm2
+    _vs_run _vs_check_runtime_user
     _vs_run _vs_check_nine_router
     _vs_run _vs_check_php_fpm
     _vs_run _vs_check_mariadb
     _vs_run _vs_check_ssl
     _vs_run _vs_check_sysctl_swap
+    _vs_run _vs_check_patch_state
     _vs_check_monitoring 2>/dev/null || true
 
     echo ""

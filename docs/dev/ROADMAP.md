@@ -1,212 +1,100 @@
-## OPS Roadmap & Phases
+# OPS Roadmap & Phases
 
-This document describes the planned phases for OPS and the major tasks in each phase. It helps humans and AI agents know what is in scope now and what is planned for later.
+Phase overview — mục tiêu, entry conditions, và "done" criteria mỗi phase.
 
-Important contract:
-
-- `ROADMAP.md` is the phase overview.
-- `PHASE-01-IMPLEMENTATION-SPEC.md` to `PHASE-04-IMPLEMENTATION-SPEC.md` are the execution source of truth for task IDs, task order, verification, and acceptance.
-- If task numbering or ordering differs, the phase implementation spec wins.
-
-Use together with:
-
-- `docs/PHASE-01-IMPLEMENTATION-SPEC.md`
-- `docs/PHASE-02-IMPLEMENTATION-SPEC.md`
-- `docs/PHASE-03-IMPLEMENTATION-SPEC.md`
-- `docs/PHASE-04-IMPLEMENTATION-SPEC.md`
-- `docs/RUNBOOKS.md`
-- `docs/RUNTIME-ARTEFACT-INVENTORY.md`
-
-### Phase 0 – Legacy 9router VPS kit (cleanup completed)
-
-Status: **Deprecated and removed from active architecture**.
-
-Purpose:
-
-- The old kit informed early docs, but it diverged from the current OPS direction:
-  - PM2-only for Node services
-  - shared control plane for Node-first + PHP-secondary VPS
-  - unified docs-first architecture
-
-Tasks (no active work unless needed):
-
-- Keep any useful knowledge in main `docs/`.
-- Do not reintroduce legacy folder-level reference kits that conflict with active architecture.
+**Contract:** `ROADMAP.md` là overview cấp cao. Các `docs/dev/PHASE-0x-IMPLEMENTATION-SPEC.md` là source of truth cho task IDs, thứ tự, verify, và acceptance. Khi xung đột, phase spec thắng.
 
 ---
 
-### Phase 1 – Core OPS foundation (current focus)
+## Phase 0 — Legacy 9router VPS kit
 
-Goal: Deliver a working OPS stack for Ubuntu 22.04/24.04 with:
+Status: **Deprecated — removed from active architecture.**
 
-- Installer (`curl && bash`).
-- Production setup wizard.
-- Core menu system.
-- Nginx + Node.js LTS + PM2.
-- Multi‑PHP (7.4, 8.1, 8.2, 8.3).
-- MariaDB (default).
-- Certbot SSL.
-- Basic monitoring.
-- 9router management.
-- Codex CLI integration.
+Legacy kit đã inform early docs nhưng diverge khỏi OPS direction:
+- PM2-only for Node services
+- shared control plane Node-first + PHP-secondary
+- unified docs-first architecture
 
-High‑level tasks:
-
-1. **Scaffold file structure**
-   - Create `bin/`, `install/`, `core/`, `modules/`, `templates/` with minimal skeletons.
-   - Wire `ops` entrypoint to a simple main menu stub.
-
-2. **Installer (`install/ops-install.sh`)**
-   - OS detection for Ubuntu 22.04/24.04.
-   - SSH port + admin user creation with capacity estimation.
-   - Clone/extract OPS to `/opt/ops` and run `ops-setup.sh`.
-
-3. **Core & dashboard**
-   - Implement `core/env.sh`, `core/ui.sh`, `core/utils.sh`, `core/system.sh`.
-   - Implement `bin/ops-dashboard` (login info + “press 1 to open menu”).
-   - Implement `bin/ops-setup.sh` (symlinks, login hook, base config).
-
-4. **Production Setup Wizard module**
-   - Implement `modules/setup-wizard.sh` orchestrating:
-     - Security & firewall.
-     - Nginx install + base tuning.
-     - Node.js LTS + PM2.
-     - PHP‑FPM multi‑version support.
-     - MariaDB (default) install + secure setup.
-     - Logging & basic monitoring.
-
-5. **Feature modules**
-   - `modules/nginx.sh` – vhost and global config management.
-   - `modules/node.sh` – Node services / PM2 integration.
-   - `modules/nine-router.sh` – 9router install and control.
-   - `modules/php.sh` – PHP‑FPM (7.4, 8.1, 8.2, 8.3).
-   - `modules/database.sh` – MariaDB (default).
-   - `modules/monitoring.sh` – system overview, service status, quick logs (basic).
-   - `modules/codex-cli.sh` – Codex CLI install and config.
-
-6. **SSH finalisation and reboot flow**
-   - Implement menu/wizard step offering to:
-     - Close port 22.
-     - Keep `<NEW_PORT>` open.
-     - Reboot with a clear reminder of `ssh -p <NEW_PORT> <ADMIN_USER>@...`.
-
-7. **Docs, rules, and AI integration**
-   - Keep `docs/`, `rules/`, and `agents/` in sync with implementation.
-   - Provide examples and quick-start sections for end users.
-   - Add AI-operational docs:
-     - bug triage index
-     - source-to-runtime trace
-     - known risks patterns
-     - platform-agnostic capabilities
-     - Node-first porting map
-
-Phase 1 “done” criteria:
-
-- A user on a fresh Ubuntu 22.04/24.04 VPS can:
-  - Run the installer one‑liner.
-  - Log in with the admin user, see the dashboard, open the menu.
-  - Run the production wizard successfully.
-  - Create at least one Node service and one PHP site.
-  - Install and expose 9router behind Nginx.
-  - Obtain SSL via Certbot.
-
-Detailed execution spec:
-
-- `docs/PHASE-01-IMPLEMENTATION-SPEC.md`
+Không có active work. Không reintroduce legacy folder-level kits.
 
 ---
 
-### Phase 2 – Advanced monitoring and quality of life
+## Phase 1 — Core OPS Foundation
 
-Goal: Enhance observability, resilience, and admin UX without bloating the stack.
+Status: **Implemented.** Gate 1 (static) + Gate 2 (shell regression) PASS. Gate 3/4 (Ubuntu runtime) chưa chạy.
 
-Potential tasks:
+Goal: VPS production stack trên Ubuntu 22.04/24.04 với:
+- Installer (`curl && bash`)
+- Production setup wizard
+- Core menu system
+- Nginx + Node.js LTS + PM2
+- Multi-PHP (7.4, 8.1, 8.2, 8.3)
+- MariaDB (default)
+- Certbot SSL
+- Basic monitoring
+- 9router management
+- Codex CLI + Claude Code CLI integration
 
-1. **Advanced monitoring options**
-   - Add optional install for tools like Netdata or similar.
-   - Wire monitoring into the “System & Monitoring” menu.
+"Done" criteria:
+- Fresh Ubuntu 22.04/24.04 VPS: chạy installer one-liner, login admin user, thấy dashboard, mở menu.
+- Chạy production wizard thành công.
+- Tạo được Node service và PHP site.
+- Install và expose 9router qua Nginx.
+- Cấp SSL qua Certbot.
 
-2. **Alerts and health checks**
-   - Lightweight scripts to check CPU/RAM/disk thresholds on cron.
-   - Optional notifications (e.g. email/webhook) when thresholds are exceeded.
-
-3. **Improved verification commands**
-   - Unified “Verify stack health” menu entry.
-   - Deeper checks for Nginx, PHP‑FPM, DB, Node services, 9router.
-
-4. **Backup helpers**
-   - Simple menu actions to:
-     - Dump MariaDB (default) databases.
-     - Archive Nginx and OPS configs.
-   - Restore guidance (manual but scripted support where reasonable).
-
-Task groups (P2-01 through P2-09):
-
-- `P2-01` runtime observation audit
-- `P2-02` advanced monitoring integration (opt-in)
-- `P2-03` alerts, scheduled checks, and thresholds
-- `P2-04` unified verify stack (bao gom exit code contract)
-- `P2-05` backup helpers
-- `P2-06` runtime artefact inventory expansion
-- `P2-07` rollback playbooks expansion
-- `P2-08` phase acceptance and docs sync
-- `P2-09` advanced web controls for Nginx/PHP-secondary
-
-Phase 2 is optional and can be scoped per actual needs.
-
-Detailed execution spec (source of truth cho task IDs, order, verify, acceptance):
-
-- `docs/PHASE-02-IMPLEMENTATION-SPEC.md`
+Detailed spec: `docs/dev/PHASE-01-IMPLEMENTATION-SPEC.md`
 
 ---
 
-### Phase 3 – Extensibility and multi-OS support (future)
+## Phase 2 — Advanced Monitoring and Quality of Life
 
-Goal: Make OPS more portable and flexible.
+Status: **Implemented.** Acceptance report chưa có (cần Ubuntu runtime).
+
+Goal: Observability, resilience, admin UX không bloat stack.
+
+Deliverables (P2-01 đến P2-09):
+- P2-02: Advanced monitoring opt-in (Netdata)
+- P2-03: Scheduled checks + Telegram alerts (cron + systemd OnFailure)
+- P2-04: Unified verify stack với exit code contract
+- P2-05: Backup helpers (DB dump + config archive)
+- P2-06: Runtime artefact inventory expansion
+- P2-07: Rollback playbooks expansion
+- P2-08: Phase acceptance and docs sync
+- P2-09: Advanced web controls (Cloudflare real IP, X-Powered-By, IP restrict)
+
+Detailed spec: `docs/dev/PHASE-02-IMPLEMENTATION-SPEC.md`
+
+---
+
+## Phase 3 — Extensibility and Multi-OS Support
+
+Status: **Not started.** Entry condition: Phase 1+2 stable trên runtime thật, nhu cầu rõ ràng.
 
 Ideas (not committed):
+- Support thêm Linux distro (Debian).
+- Plugin hooks cho third-party modules.
+- Template/rendering abstraction.
 
-- Add support for another Linux distribution (e.g. Debian).
-- Create plugin hooks so third-party modules can add menus safely.
-- Add templating helpers for more complex app deployments.
+Task groups: distro abstraction audit, compatibility matrix, plugin hook design, plugin loading safety, migration docs.
 
-Suggested task groups:
+Bất kỳ work nào trong phase này phải update `docs/reference/ARCHITECTURE.md` trước.
 
-- distro abstraction audit
-- compatibility matrix and path/service mapping
-- plugin hook and loading safety design
-- template/rendering abstraction
-- migration and compatibility docs
-
-Detailed execution spec:
-
-- `docs/PHASE-03-IMPLEMENTATION-SPEC.md`
-
-Any work in this phase must first update `ARCHITECTURE.md` and rules to account for multi‑OS behaviour.
+Detailed spec: `docs/dev/PHASE-03-IMPLEMENTATION-SPEC.md`
 
 ---
 
-### Phase 4 – Cloud automation and integrations (future)
+## Phase 4 — Cloud Automation and Integrations
 
-Long-term ideas:
+Status: **Not started.** Entry condition: Phase 1+2 stable, Phase 3 có abstraction đủ, nhu cầu thực tế.
 
-- Optional integration with cloud APIs (DNS management, snapshots, etc.).
-- Deeper Codex CLI integration for automated runbooks.
+Ideas:
+- DNS provider abstraction (Cloudflare first).
+- Snapshot/backup provider abstraction.
+- Telegram Cloud backup transport.
+- Codex-assisted runbook automation.
 
-Suggested task groups:
+Task groups: provider abstraction audit, DNS provider, snapshot/backup, cloud-aware SSL, secret handling model, Codex runbook design, provider support matrix.
 
-- provider abstraction audit
-- DNS provider abstraction
-- snapshot/backup provider abstraction
-- Telegram Cloud backup transport
-- cloud-aware SSL and domain workflows
-- secret and credential handling model
-- Codex-assisted runbook automation
-- provider support matrix and docs
+Features phải optional; không tăng baseline resource footprint.
 
-Detailed execution spec:
-
-- `docs/PHASE-04-IMPLEMENTATION-SPEC.md`
-
-These features should remain optional and not increase the baseline resource footprint significantly.
-
+Detailed spec: `docs/dev/PHASE-04-IMPLEMENTATION-SPEC.md`

@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+set -euo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=ops/tests/regression/lib.sh
+source "${SCRIPT_DIR}/lib.sh"
+
+TEST_SUITE_NAME="reg-suite"
+test::init
+
+case_reg_01_tty_prompt_antipattern_absent() {
+    local hits
+    hits="$(grep -R -n -E "read[[:space:]]+-[^\r\n]*-p[^\r\n]*<[[:space:]]*/dev/tty" "${OPS_ROOT}" 2>/dev/null || true)"
+    test::assert_eq "" "$hits" "prompt anti-pattern must stay absent" || return 1
+}
+
+case_reg_02_menu_boundary_wrapper_present() {
+    local content
+    content="$(<"${OPS_ROOT}/modules/monitoring.sh")"
+    test::assert_contains "$content" '_monitoring_menu_run()' 'monitoring menu wrapper missing' || return 1
+    test::assert_contains "$content" 'return 0' 'monitoring menu wrapper must absorb non-zero' || return 1
+}
+
+case_reg_03_verify_exit_zero_contract_documented_in_code() {
+    local content
+    content="$(<"${OPS_ROOT}/modules/verify.sh")"
+    test::assert_contains "$content" 'return 0' 'verify functions must return 0' || return 1
+    test::assert_contains "$content" '_vs_fail' 'verify fail formatter missing' || return 1
+    test::assert_contains "$content" '_vs_warn' 'verify warn formatter missing' || return 1
+}
+
+case_reg_04_security_guard_present_before_disable_password_auth() {
+    local content
+    content="$(<"${OPS_ROOT}/modules/security.sh")"
+    test::assert_contains "$content" '_security_has_authorized_keys' 'authorized key guard missing' || return 1
+    test::assert_contains "$content" 'PasswordAuthentication' 'password auth control missing' || return 1
+}
+
+case_reg_05_login_hook_uses_ssh_connection_not_ssh_tty_doc_contract() {
+    local content
+    content="$(<"${REPO_ROOT}/docs/MENU-REFERENCE.md")"
+    test::assert_contains "$content" 'SSH_CONNECTION' 'login hook must use SSH_CONNECTION contract' || return 1
+}
+
+case_reg_06_9router_posture_contract_present() {
+    local content
+    content="$(<"${OPS_ROOT}/modules/verify.sh")"
+    test::assert_contains "$content" '20128/tcp' 'verify must check public exposure of 20128' || return 1
+    test::assert_contains "$content" 'remove allow rule and keep only nginx public' 'verify hint for 20128 exposure missing' || return 1
+}
+
+case_reg_07_pm2_startup_not_root_contract_present() {
+    local content
+    content="$(<"${REPO_ROOT}/docs/KNOWN-RISKS-PATTERNS.md")"
+    test::assert_contains "$content" 'pm2-root.service' 'pm2 root startup regression coverage missing' || return 1
+}
+
+case_reg_08_pm2_runtime_user_wrapper_present() {
+    local content
+    content="$(<"${OPS_ROOT}/modules/verify.sh")"
+    test::assert_contains "$content" '_vs_run_as_runtime_user' 'runtime user wrapper missing' || return 1
+}
+
+case_reg_09_secret_permission_contract_present() {
+    local content
+    content="$(<"${REPO_ROOT}/docs/KNOWN-RISKS-PATTERNS.md")"
+    test::assert_contains "$content" 'chmod 600 <file> && chown $ADMIN_USER:$ADMIN_USER <file>' 'secret permission contract missing' || return 1
+}
+
+case_reg_10_config_rewrite_must_validate_syntax() {
+    local content
+    content="$(<"${REPO_ROOT}/rules/BASH-STYLE.md")"
+    test::assert_contains "$content" 'nginx -t' 'syntax validation contract missing' || return 1
+}
+
+case_reg_11_nine_router_vhost_preserves_global_rate_limit_zone() {
+    local content
+    content="$(<"${REPO_ROOT}/docs/ARCHITECTURE.md")"
+    test::assert_contains "$content" 'limit_req_zone' 'global rate limit zone contract missing' || return 1
+    test::assert_contains "$content" 'the 9router vhost intentionally does not' '9router vhost exception missing' || return 1
+}
+
+case_reg_12_pm2_logrotate_and_merge_logs_contract_present() {
+    local content
+    content="$(<"${REPO_ROOT}/docs/KNOWN-RISKS-PATTERNS.md")"
+    test::assert_contains "$content" 'pm2-logrotate' 'pm2 logrotate regression contract missing' || return 1
+    test::assert_contains "$content" 'merge_logs: true' 'merge_logs regression contract missing' || return 1
+}
+
+case_reg_13_pm2_read_helpers_centralized() {
+    local system_content setup_content monitoring_content checks_content verify_content nine_router_content
+    system_content="$(<"${OPS_ROOT}/core/system.sh")"
+    setup_content="$(<"${OPS_ROOT}/modules/setup-wizard.sh")"
+    monitoring_content="$(<"${OPS_ROOT}/modules/monitoring.sh")"
+    checks_content="$(<"${OPS_ROOT}/modules/checks.sh")"
+    verify_content="$(<"${OPS_ROOT}/modules/verify.sh")"
+    nine_router_content="$(<"${OPS_ROOT}/modules/nine-router.sh")"
+
+    test::assert_contains "$system_content" 'ops_pm2_online_count_from_json' 'shared PM2 online-count helper missing' || return 1
+    test::assert_contains "$system_content" 'ops_pm2_total_count_from_json' 'shared PM2 total-count helper missing' || return 1
+    test::assert_contains "$system_content" 'ops_pm2_process_status_from_json' 'shared PM2 status helper missing' || return 1
+    test::assert_contains "$setup_content" 'ops_pm2_online_count' 'setup wizard must use shared PM2 online-count helper' || return 1
+    test::assert_contains "$monitoring_content" 'ops_pm2_online_count' 'monitoring must use shared PM2 online-count helper' || return 1
+    test::assert_contains "$checks_content" 'ops_pm2_online_count_from_json' 'checks digest must use shared PM2 online-count parser' || return 1
+    test::assert_contains "$checks_content" 'ops_pm2_total_count_from_json' 'checks digest must use shared PM2 total-count parser' || return 1
+    test::assert_contains "$verify_content" 'ops_pm2_process_status_from_json' 'verify must use shared PM2 status parser' || return 1
+    test::assert_contains "$nine_router_content" 'ops_pm2_process_status' '9router verify must use shared PM2 status helper' || return 1
+}
+
+case_reg_14_patch_state_check_present() {
+    local content
+    content="$(<"${OPS_ROOT}/modules/verify.sh")"
+    test::assert_contains "$content" '_vs_check_patch_state' 'patch state check missing in verify.sh' || return 1
+    test::assert_contains "$content" 'reboot-required' 'reboot-required detection missing in verify.sh' || return 1
+}
+
+case_reg_15_runtime_user_check_present() {
+    local content
+    content="$(<"${OPS_ROOT}/modules/verify.sh")"
+    test::assert_contains "$content" '_vs_check_runtime_user' 'runtime user check missing in verify.sh' || return 1
+    test::assert_contains "$content" 'OPS_RUNTIME_USER' 'ops.conf reference missing in runtime user check' || return 1
+}
+
+test::run_case 'REG-01' 'tty prompt anti-pattern absent' case_reg_01_tty_prompt_antipattern_absent
+test::run_case 'REG-02' 'menu boundary wrapper present' case_reg_02_menu_boundary_wrapper_present
+test::run_case 'REG-03' 'verify exit-zero contract present' case_reg_03_verify_exit_zero_contract_documented_in_code
+test::run_case 'REG-04' 'ssh key guard present before disabling password auth' case_reg_04_security_guard_present_before_disable_password_auth
+test::run_case 'REG-05' 'login hook contract uses SSH_CONNECTION' case_reg_05_login_hook_uses_ssh_connection_not_ssh_tty_doc_contract
+test::run_case 'REG-06' '9router exposure regression guarded' case_reg_06_9router_posture_contract_present
+test::run_case 'REG-07' 'pm2 startup non-root contract documented' case_reg_07_pm2_startup_not_root_contract_present
+test::run_case 'REG-08' 'pm2 runtime user wrapper present' case_reg_08_pm2_runtime_user_wrapper_present
+test::run_case 'REG-09' 'secret permission contract present' case_reg_09_secret_permission_contract_present
+test::run_case 'REG-10' 'config rewrite validates syntax' case_reg_10_config_rewrite_must_validate_syntax
+test::run_case 'REG-11' '9router rate-limit contract preserved' case_reg_11_nine_router_vhost_preserves_global_rate_limit_zone
+test::run_case 'REG-12' 'pm2 log contracts preserved' case_reg_12_pm2_logrotate_and_merge_logs_contract_present
+test::run_case 'REG-13' 'pm2 read helpers centralized' case_reg_13_pm2_read_helpers_centralized
+test::run_case 'REG-14' 'patch state check present in verify' case_reg_14_patch_state_check_present
+test::run_case 'REG-15' 'runtime user check present in verify' case_reg_15_runtime_user_check_present
+
+test::finish

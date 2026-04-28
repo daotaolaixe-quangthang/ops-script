@@ -79,7 +79,7 @@ Node services va 9router deu theo PM2 contract:
 | Check log | `/var/log/ops/checks.log` | cron redirect | `tail /var/log/ops/checks.log` | 0644 |
 | Checks config override | `/etc/ops/checks.conf` | operator-created (optional) | `cat /etc/ops/checks.conf` | 0600 |
 | Telegram token | `/etc/ops/.telegram-bot-token` | `modules/monitoring.sh` | exists + 0600 | 0600 |
-| Telegram config | `/etc/ops/ops.conf` (TELEGRAM_ENABLED, TELEGRAM_CHAT_ID) | `modules/monitoring.sh` | `grep TELEGRAM /etc/ops/ops.conf` | 0600 |
+| Telegram config | `/etc/ops/notifications.conf` (TELEGRAM_ENABLED, TELEGRAM_CHAT_ID) | `modules/monitoring.sh` | `grep TELEGRAM /etc/ops/notifications.conf` | 0640 |
 
 **Rollback:** `checks_remove_cron` removes `/etc/cron.d/ops-checks`; delete cooldown files manually if needed.
 

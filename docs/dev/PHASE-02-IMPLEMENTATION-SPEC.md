@@ -70,7 +70,8 @@ Cu the phai cover:
 - website uptime/downtime checks
 - SSL expiry alerts
 - domain expiry alerts
-- Telegram and Email notification channels
+- Telegram notification channel (implemented)
+- Email/webhook notification channel: **deferred to Phase 4** — not implemented in Phase 2; spec originally listed it but no implementation exists; OPS stays quiet-by-default with Telegram only for now
 - periodic security scan
 
 ### B. Backup helper layer
@@ -94,9 +95,9 @@ Cu the phai cover:
 ### E. Advanced web controls (`P2-09`)
 
 - Cloudflare real IP logging
-- direct `http://IP` access block
+- direct `http://IP` access block — **Note:** handled implicitly by Phase 1's `default-deny.conf.tpl` vhost (`server_name _; return 444`); no separate Phase 2 action needed unless an explicit menu toggle is desired
 - custom `X-Powered-By`
-- `.htaccess` factory reset for PHP-secondary compatibility only
+- `.htaccess` factory reset for PHP sites — **Note:** menu action lives in `modules/php.sh` (PHP menu), not nginx.sh; spec placed it under nginx controls but implementation is correct in PHP module
 
 ---
 
@@ -208,9 +209,9 @@ Ly do:
 2. tao scripts check nhe
 3. chot scheduler contract:
    - cron hoac systemd timer, nhung phai doc va inventory duoc
-4. optional notification targets:
-   - email/webhook
-   - Telegram
+4. notification target implemented:
+   - Telegram (implemented via `/etc/ops/notifications.conf` + `/etc/ops/.telegram-bot-token`)
+   - email/webhook: deferred to Phase 4 — not implemented
 5. define quiet mode / spam control
 6. define periodic security scan schedule and reporting contract
 
@@ -246,7 +247,7 @@ Ly do:
    - block direct `http://IP`
    - custom `X-Powered-By`
 2. xac dinh `.htaccess` factory reset contract:
-   - chi PHP-secondary
+   - chi PHP sites (menu action nam trong `modules/php.sh`, khong phai `nginx.sh`)
    - chi la app-level compatibility/reset utility
 3. define per-domain state va rollback
 
@@ -258,14 +259,15 @@ Ly do:
 
 - `nginx -t`
 - real IP log dung
-- direct IP access bi chan
+- direct IP access bi chan (via default-deny vhost tu Phase 1 — `server_name _; return 444`)
 - header `X-Powered-By` dung nhu mong doi
-- `.htaccess` reset khoi phuc file mong doi khi ap dung cho PHP-secondary
+- `.htaccess` reset khoi phuc file mong doi khi ap dung cho PHP site (xem PHP menu)
 
 **Review checklist**
 
 - khong mo ta `.htaccess` nhu edge control chinh
 - moi rule Nginx moi phai backup va rollback duoc
+- direct IP block la implicit via default-deny; khong can them action rieng neu da co Phase 1 vhost
 
 ---
 
@@ -354,10 +356,10 @@ Ly do:
    - dump all DBs tuy chon
    - output path: `/var/backups/ops/db/<dbname>-YYYYMMDD-HHMMSS.sql.gz` — permission 0600
 2. config archive helper:
-   - `/etc/ops` → `/var/backups/ops/config/ops-config-YYYYMMDD-HHMMSS.tar.gz` — permission 0600
-   - Nginx sites
-   - selected app manifests
+   - `/etc/ops` -> `/var/backups/ops/config/ops-config-YYYYMMDD-HHMMSS.tar.gz` — permission 0600
+   - Nginx sites (`/etc/nginx/sites-available/`)
    - backup base dir: `/var/backups/ops/` — permission 0700
+   - Note: PM2 ecosystem/app manifest files are NOT included in the config archive (they are regenerated from `/etc/ops/apps/*.conf` state; no separate backup needed)
 3. **Naming + retention contract (bat buoc):**
    - Format: `<type>-YYYYMMDD-HHMMSS.<ext>` — moi lan chay tao file moi, KHONG overwrite
    - **Files KHONG BAO GIO bi tu dong xoa** — chi operator xoa thu cong
@@ -515,6 +517,27 @@ Moi task chi duoc xem la xong khi co:
 - verify pass
 - rollback minimum mo ta ro
 - khong them overhead lon trai voi muc tieu VPS nho/vua
+
+### Test ID mapping nhanh theo menu/module
+
+| Menu / Module | Phase tasks | Test IDs bat buoc |
+|---|---|---|
+| `modules/monitoring.sh` advanced monitoring | `P2-02` | `MON-01..MON-05`, `TUI-05`, `REG-02`, `REG-03` |
+| `modules/checks.sh`, notification/scheduler logic | `P2-03` | `MON-04`, `MON-05`, `FILE-01`, `FILE-02`, `REG-09`, `REG-10` |
+| `modules/verify.sh` unified verify stack | `P2-04` | `MON-01`, `TUI-05`, `TUI-06`, `REG-02`, `REG-03`, `ops/tests/regression/reg-suite.sh` |
+| `modules/backup.sh` | `P2-05` | `DB-06`, `FILE-01`, `FILE-04`, plus backup helper verify gate trong phase spec |
+| Runtime docs sync | `P2-06`, `P2-07` | `REG-05`, `REG-09`, doi chieu runtime manual voi docs |
+| Phase acceptance | `P2-08` | `bash ops/tests/regression/run-all.sh` + toan bo smoke suite cua feature P2 da bat |
+| Advanced web controls / Nginx snippets | `P2-09` | `WEB-01`, `WEB-06`, `REG-10`, `REG-11` |
+
+### Release gate toi thieu cho Phase 2
+
+Truoc khi danh dau task `P2-*` la pass:
+
+1. Chay `bash ops/tests/regression/run-all.sh`.
+2. Chay smoke suite dung theo bang mapping tren.
+3. Neu co scheduler/notification/runtime artefact moi: doi chieu runtime that voi docs.
+4. Ghi ket qua theo mau PASS/FAIL report chuan trong `docs/RUNBOOKS.md`.
 
 ---
 

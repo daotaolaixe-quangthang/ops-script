@@ -131,18 +131,22 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
 - **Safe action**:
   - clone capability, source of truth, verify/rollback discipline
 
-## 13) 9router HOSTNAME=0.0.0.0 va UFW check
+## 13) 9router network posture va UFW check
 
 - **Pattern**:
-  - sau khi install 9router, quet port tren server thay port 20128 "mo" (netstat/ss bind 0.0.0.0)
-  - tuong nham rang UFW da expose port nay ra ngoai
+  - doc note cu/ngoai repo roi "sua" 9router bind thanh `0.0.0.0`
+  - hoac thay 9router vhost khong co `limit_req` roi xoa ca global `limit_req_zone` / `limit_conn_zone`
+  - hoac ep buoc them `ufw deny 20128` du explicit deny khong can thiet
 - **Rui ro**:
-  - UFW co the da block, nhung neu ai do chay `ufw allow 20128` nham la 9router bi expose truc tiep
+  - 9router bi expose sai posture, hoac lam vo baseline hardening cho cac vhost khac
+  - 9router co the bi false-positive `429` khi fast navigation / F5 neu them rate limit per-vhost
 - **Safe action**:
-  - 9router BUOC PHAI bind HOSTNAME=0.0.0.0 (Next.js requirement)
-  - Bao mat phu thuoc vao UFW (port 20128 KHONG duoc allow) va Nginx (proxy in front)
-  - Luon verify: `ufw status | grep 20128` phai tra ve trong sau moi install/update 9router
-  - Neu co doubt: `curl -x "" http://<PUBLIC_IP>:20128` tu ngoai phai bi tu choi (timeout/refused)
+  - 9router trong OPS hien tai BUOC PHAI bind `127.0.0.1:20128`
+  - Nginx la public entrypoint duy nhat cho 9router
+  - `ufw allow 20128` la sai; explicit `ufw deny 20128` khong bat buoc va stale deny co the xoa
+  - Global `limit_req_zone` / `limit_conn_zone` trong `nginx.conf` van phai giu; chi rieng vhost 9router khong enforce `limit_req` / `limit_conn`
+  - Source of truth: `ops/modules/nine-router.sh`, `ops/modules/nginx.sh`, `ops/modules/verify.sh`, `ops/modules/templates/nginx/nine-router.vhost.conf.tpl`, `ops/modules/templates/pm2/nine-router.ecosystem.config.js.tpl`
+  - Luon verify: `ufw status | grep 20128` khong duoc co `ALLOW`; `curl http://127.0.0.1:20128/v1/models` phai truy cap duoc local; public path phai di qua Nginx
 
 ## 14) Secret files permissions drift
 

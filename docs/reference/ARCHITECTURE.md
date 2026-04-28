@@ -99,10 +99,11 @@ Expected layout inside this repo under `ops/`:
     - `nginx/`
       - `node_vhost.conf.tpl`
       - `php_vhost.conf.tpl`
-      - `nine-router.vhost.conf.tpl`    # SSE proxy + rate limiting
+      - `nine-router.vhost.conf.tpl`    # SSE proxy; intentionally no per-vhost limit_req/limit_conn
       - `static_vhost.conf.tpl`
-      - `ssl_snippet.tpl`
       - `default-deny.conf.tpl`
+      - `cloudflare-real-ip.conf.tpl`
+      - `custom-powered-by.conf.tpl`
     - `pm2/`
       - `ecosystem.config.js.tpl`
       - `nine-router.ecosystem.config.js.tpl`
@@ -188,7 +189,24 @@ AI agents must **not** hard-code additional runtime paths without updating this 
 
 - Fresh or lightly customised Ubuntu 22.04 / 24.04 with `systemd`.
 - Nginx used as the only public HTTP(S) entrypoint.
-- 9router runs locally and is never exposed directly to the public internet.
+- 9router runs on `127.0.0.1:20128` and is never exposed directly to the public internet.
+
+### 6. 9router and Nginx authority boundaries
+
+- Source of truth for 9router network posture is the implementation, not older prose:
+  - `ops/modules/nine-router.sh`
+  - `ops/modules/nginx.sh`
+  - `ops/modules/verify.sh`
+  - `ops/modules/templates/nginx/nine-router.vhost.conf.tpl`
+  - `ops/modules/templates/pm2/nine-router.ecosystem.config.js.tpl`
+- Required posture:
+  - 9router binds `127.0.0.1:20128` only.
+  - Nginx is the only public entrypoint for 9router.
+  - UFW must not have `ALLOW 20128`; explicit `DENY 20128` is optional and stale deny rules may be removed.
+- Nginx rate limiting has two layers that must not be conflated:
+  - Global baseline in `http {}`: `limit_req_zone` and `limit_conn_zone` remain defined.
+  - Per-vhost enforcement: standard vhosts may use `limit_req` / `limit_conn`, but the 9router vhost intentionally does not.
+- Rationale: 9router relies on Cloudflare edge handling there, and nginx per-vhost rate limiting caused false-positive `429` on fast navigation / F5.
 
 If future work adds support for other OSes or init systems, update this file first.
 

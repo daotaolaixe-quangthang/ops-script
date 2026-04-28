@@ -469,6 +469,18 @@ check_services() {
         fi
     done
 
+    # ── MariaDB rescue-mode detection ──
+    local db_rescue
+    db_rescue=$(ps -eo args= 2>/dev/null | grep -E '[m]ariadbd?.*--skip-grant-tables|[m]ysqld.*--skip-grant-tables' || true)
+    if [[ -n "$db_rescue" ]]; then
+        local rescue_msg="DB SECURITY: MariaDB running with --skip-grant-tables on ${hostname}"
+        log_warn "check_services: $rescue_msg"
+        if _checks_cooldown_ok "svc" "mariadb-rescue"; then
+            _checks_send_telegram "[WARN] ${rescue_msg} - stop rescue process immediately"
+        fi
+        [[ "$rc" -lt 2 ]] && rc=2
+    fi
+
     # ── PM2 processes ──
     if command -v pm2 >/dev/null 2>&1; then
         # Fix-3 (partial): capture pm2 jlist once — reused by restart-loop check below.
@@ -709,24 +721,13 @@ check_health_digest() {
     done
 
     # ── PM2 ──
-    # Fix-3: call pm2 jlist once, pass the cached JSON to both python3 invocations.
-    # Previously called twice → 2× PM2 daemon startup latency (~1-2 s each).
+    # Keep a single pm2 jlist fetch, then reuse shared parsers for the summary.
     local pm2_summary="not installed"
     if command -v pm2 >/dev/null 2>&1; then
         local _pm2_json online_count total_count
         _pm2_json=$(ops_pm2_jlist 2>/dev/null || echo '[]')
-        online_count=$(printf '%s' "$_pm2_json" | python3 -c "
-import sys,json
-try:
-    p=json.load(sys.stdin); print(sum(1 for x in p if x.get('pm2_env',{}).get('status')=='online'))
-except: print('?')
-" 2>/dev/null || echo "?")
-        total_count=$(printf '%s' "$_pm2_json" | python3 -c "
-import sys,json
-try:
-    p=json.load(sys.stdin); print(len(p))
-except: print('?')
-" 2>/dev/null || echo "?")
+        online_count=$(printf '%s' "$_pm2_json" | ops_pm2_online_count_from_json 2>/dev/null || echo "?")
+        total_count=$(printf '%s' "$_pm2_json" | ops_pm2_total_count_from_json 2>/dev/null || echo "?")
         pm2_summary="${online_count}/${total_count} online"
     fi
 

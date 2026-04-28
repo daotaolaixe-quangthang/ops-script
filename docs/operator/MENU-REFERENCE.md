@@ -50,9 +50,12 @@ Suggested layout:
 5. **9router Management**
 6. **PHP / PHP-FPM Management**
 7. **Database Management**
-8. **Codex CLI Integration**
+8. **AI Agent Integration**
 9. **System & Monitoring**
+s. **Security Management**
 0. **Exit**
+
+Source of truth: `bin/ops` (dispatch table). This list matches the current implementation.
 
 Each item maps to a module or group of modules as described below.
 
@@ -114,8 +117,22 @@ Submenu:
 4. **Remove domain**
 5. **Test Nginx config & reload**
 6. **Install / update Nginx** — install from apt, apply global tuning (worker, TLS, security headers)
-7. **Advanced web controls** → submenu (Cloudflare real IP, custom X-Powered-By)
+7. **Advanced web controls** -> submenu (xem chi tiet ben duoi)
+8. **Apply security baseline** — server_tokens off, TLS headers
 0. **Back to main menu**
+
+**Advanced web controls submenu (da implement):**
+
+1. Enable Cloudflare real IP logging — snippet `/etc/nginx/snippets/cloudflare-real-ip.conf`
+2. Remove Cloudflare real IP snippet
+3. Add custom X-Powered-By header — snippet `/etc/nginx/snippets/custom-powered-by.conf`
+4. Remove custom X-Powered-By snippet
+5. Enable Cloudflare IP restrict — block non-CF traffic via geo{} block (opt-in only; use when all domains are Orange Cloud)
+6. Refresh Cloudflare IP list — re-download from cloudflare.com/ips
+7. Remove Cloudflare IP restrict
+0. Back
+
+> Note: "Block direct http://IP access" is handled automatically by the default deny server block (`00-default-deny`) which Nginx applies to all unmatched hosts. No separate menu action is needed.
 
 **Add new domain flow (chốt):**
 
@@ -205,7 +222,7 @@ Ngay khi vào menu `5) 9router Management`, OPS hiển thị một status block 
 
 | Trường | Nguồn dữ liệu | Fallback khi chưa cài |
 |---|---|---|
-| Installation | `[[ -d /opt/9router/.git ]]` | `✗ Not installed` (đỏ) |
+| Installation | `[[ -d /opt/9router ]] && [[ -f /opt/9router/package.json ]]` | `✗ Not installed` (đỏ) |
 | Local address | Hằng `NINE_ROUTER_PORT=20128` | Luôn hiện |
 | Domain | `ops_conf_get nine-router.conf NINE_ROUTER_DOMAIN` | `— (not configured)` |
 | PM2 Status | `pm2 jlist` JSON parse (field `status`) | `— (not registered)` |
@@ -218,7 +235,7 @@ Màu sắc: xanh = tốt / hoạt động, vàng = cần chú ý / disabled, đ�
 **Submenu:**
 
 1. **Install 9router**
-2. **Update 9router** (git pull + npm build + pm2 restart)
+2. **Update 9router** (archive refresh from branch `vpswork` + npm install/build + PM2 reload/start)
 3. **Link 9router to a domain**
 4. **Start 9router**
 5. **Stop 9router**
@@ -232,19 +249,36 @@ Màu sắc: xanh = tốt / hoạt động, vàng = cần chú ý / disabled, đ�
 Notes:
 
 - **Install 9router**:
-  - Clone from `https://github.com/daotaolaixe-quangthang/9routervps` (chốt URL).
+  - Download source archive from `https://github.com/daotaolaixe-quangthang/9routervps/archive/refs/heads/vpswork.tar.gz`.
+  - Extract into `/opt/9router`, then `chown` app dir to runtime user before dependency install.
   - Hỏi operator nhập INITIAL_PASSWORD; lưu tại `/etc/ops/.nine-router-password` (0600).
   - Generate JWT_SECRET, API_KEY_SECRET, MACHINE_ID_SALT tự động bằng `openssl rand`.
-  - `npm install && npm run build`.
+  - Write `/opt/9router/.env` with `HOSTNAME=127.0.0.1` and `PORT=20128`.
+  - Run `npm install` và `npm run build` as runtime user.
   - Đăng ký PM2 process `nine-router`.
+- **Update 9router**:
+  - Compare installed version with remote `package.json` from branch `vpswork`.
+  - Stop PM2, re-download/extract archive into `/opt/9router`, preserve `.env` and `/var/lib/9router` data.
+  - Reinstall/build as runtime user, re-create standalone symlinks, then PM2 reload or start + `pm2 save`.
+  - UFW requirement remains: no `ALLOW 20128`; explicit deny is optional and stale deny may be removed.
 - **Link 9router to a domain**:
   - Tạo Nginx vhost với `proxy_buffering off` (bắt buộc cho SSE).
+  - Nginx la public entrypoint duy nhat; proxy toi `127.0.0.1:20128`.
+  - Vhost 9router co chu y khong them per-vhost `limit_req` / `limit_conn`.
+  - Khong duoc xoa global `limit_req_zone` / `limit_conn_zone` trong `http {}` khi cham vao 9router docs/config.
   - Nếu domain đã có SSL: tự động set `AUTH_COOKIE_SECURE=true` trong `.env` và restart.
 - **Enable/Disable API key requirement** (toggle):
   - Cập nhật `REQUIRE_API_KEY=true|false` trong `/opt/9router/.env`.
   - `pm2 restart nine-router`.
   - Cập nhật `/etc/ops/nine-router.conf`: `NINE_ROUTER_REQUIRE_API_KEY="yes"|"no"`.
   - Khi bật: chỉ clients có API key từ dashboard mới được dùng endpoint `/v1`.
+
+9router implementation authority for future agents:
+- `ops/modules/nine-router.sh`
+- `ops/modules/nginx.sh`
+- `ops/modules/verify.sh`
+- `ops/modules/templates/nginx/nine-router.vhost.conf.tpl`
+- `ops/modules/templates/pm2/nine-router.ecosystem.config.js.tpl`
 
 ---
 
@@ -293,22 +327,37 @@ Constraints:
 
 ---
 
-### 9. Codex CLI Integration
+### 9. AI Agent Integration
 
-Entry: `8) Codex CLI Integration`
+Entry: `8) AI Agent Integration`  
+Dispatch: `menu_ai_agent` (in `modules/ai-agent.sh`)
 
-Submenu:
+Top-level submenu:
 
-1. **Install Codex CLI**
-2. **Configure Codex for this server**
-3. **Enable / disable Codex CLI auto environment**
-4. **Test Codex CLI**
+1. **Codex CLI Integration** -> submenu `menu_codex_cli`
+2. **Claude Code CLI Integration** -> submenu `menu_claude_cli`
 0. **Back to main menu**
 
-Purpose:
+#### 9a. Codex CLI submenu (`menu_codex_cli`)
 
-- Make Codex CLI a first-class tool on the server for AI-assisted operations.
-- Configuration stored in `/etc/ops/codex-cli.conf`; API key at `/etc/ops/.codex-api-key` (0600).
+1. **Install Codex CLI** — `npm install -g @openai/codex`
+2. **Configure Codex for this server** — endpoint, API key, model
+3. **Enable / disable Codex CLI auto environment** — source env on shell login
+4. **Test Codex CLI** — send test query
+0. **Back**
+
+Config: `/etc/ops/codex-cli.conf` | API key: `/etc/ops/.codex-api-key` (0600)
+
+#### 9b. Claude Code CLI submenu (`menu_claude_cli`)
+
+1. **Install Claude Code CLI** — `npm install -g @anthropic-ai/claude-code`
+2. **Configure environment Claude for this server** — `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` written to admin `~/.bashrc`
+3. **Test Claude Code CLI** — version check + endpoint reachability
+4. **Install Vietnamese fix for Claude Code CLI** — apply locale patch from external repo
+5. **Claude Code Telegram Bot** -> submenu (install / configure / start / stop / status)
+0. **Back**
+
+Config state: `/etc/ops/claude-code.conf` (0640) | API key stored in admin `~/.bashrc` (not in `/etc/ops`)
 
 ---
 
@@ -368,6 +417,7 @@ Submenu:
 7. **Apply host baseline (sysctl/swap/firewall/fail2ban)** — apply all non-SSH security baselines
 8. **Manage SSH keys** — add/remove authorized_keys, toggle PasswordAuthentication
 9. **TCP Forwarding (VSCode Remote SSH)** — enable or disable `AllowTcpForwarding` in sshd
+10. **Auto Security Updates (unattended-upgrades)** — configure automatic OS security patching (enable/disable/status)
 0. **Back**
 
 **Option 9 — TCP Forwarding detail:**
@@ -414,16 +464,20 @@ Suggested placement:
 - separate optional submenu
 - or under backup-related future actions in `System & Monitoring`
 
-#### Advanced Web Controls (planned, Phase 2)
+#### Advanced Web Controls (implemented — Phase 2)
 
-Planned actions:
+Status: da implement day du trong `menu_nginx_web_controls` (`modules/nginx.sh`).
 
-1. **Factory reset website `.htaccess`**
-2. **Show real visitor IP logging behind Cloudflare**
-3. **Customize `X-Powered-By` header**
-4. **Block direct `http://IP` access**
+Actions da co:
 
-Suggested placement:
+1. **Enable Cloudflare real IP logging** — deploy snippet `/etc/nginx/snippets/cloudflare-real-ip.conf`
+2. **Remove Cloudflare real IP snippet**
+3. **Add custom X-Powered-By header** — deploy snippet `/etc/nginx/snippets/custom-powered-by.conf`
+4. **Remove custom X-Powered-By snippet**
+5. **Enable Cloudflare IP restrict** — block non-CF traffic via live geo{} block (opt-in; all domains must be Orange Cloud)
+6. **Refresh Cloudflare IP list** — re-download from cloudflare.com/ips-v4 + ips-v6
+7. **Remove Cloudflare IP restrict**
 
-- under `Domains & Nginx`
-- PHP-secondary compatibility note applies to `.htaccess`
+**Factory reset `.htaccess`:** da implement tai `php_reset_htaccess` trong `modules/php.sh`.
+
+**Block direct `http://IP` access:** khong can menu action rieng. Default deny server block (`00-default-deny`) tu dong tra 444 cho tat ca request toi unknown host, bao gom raw IP.

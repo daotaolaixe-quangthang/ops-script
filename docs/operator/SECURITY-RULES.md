@@ -40,19 +40,23 @@ This document defines non-negotiable security rules for OPS. Any change that vio
 - Backend services (Node.js apps, PHP-FPM sockets) must:
   - Bind to localhost (`127.0.0.1`) or Unix sockets.
   - Never listen publicly without Nginx proxying in front.
-- **Exception — 9router only**: Next.js requires `HOSTNAME=0.0.0.0` to bind its HTTP server.
-  This is permitted under the following conditions (all three must hold):
-  1. UFW **does not** open port 20128 (verified by `ufw status | grep 20128`).
-  2. Nginx proxies 9router via `proxy_pass http://127.0.0.1:20128`.
-  3. A default-deny Nginx server block is in place to reject unknown hosts.
+- **9router contract**: 9router must bind `127.0.0.1:20128` and be reached only through Nginx.
 - There should be a default Nginx server that rejects unknown hosts (e.g. 444 or 404).
 - Direct access by `http://<SERVER_IP>` should be blocked or rejected by the default server path.
 
 ### 3. 9router exposure
 
 - 9router must:
+  - Bind to `127.0.0.1:20128` only.
   - Never be exposed directly through firewall (UFW must not open port 20128).
   - Be reachable only via Nginx and, where applicable, Cloudflare Access.
+  - Use Nginx as the only public entrypoint; direct public access to `20128` is a bug.
+- **Implementation authority for 9router network posture**:
+  - `ops/modules/nine-router.sh`
+  - `ops/modules/templates/pm2/nine-router.ecosystem.config.js.tpl`
+  - `ops/modules/templates/nginx/nine-router.vhost.conf.tpl`
+  - `ops/modules/nginx.sh`
+  - `ops/modules/verify.sh`
 - For Cloudflare Access setups:
   - Protect only the intended router domain.
   - Keep Cloudflare proxy enabled and use `Full (strict)` when applicable.
@@ -69,7 +73,8 @@ This document defines non-negotiable security rules for OPS. Any change that vio
     - HTTP (80).
     - HTTPS (443).
   - Remove stale SSH allow rules once transition is finalized.
-  - Deny other inbound ports by default — **including port 20128 (9router)**.
+  - Not have any `ALLOW` rule for port `20128` (9router).
+  - Rely on default-deny posture for other inbound ports; explicit `DENY 20128` is not required and stale deny rules may be removed.
 - `fail2ban`:
   - **Must be installed** (via `apt_install fail2ban`) **and enabled** by the end of wizard Step 1 (Security Baseline).
   - `security_apply_host_baseline` and `security_setup_fail2ban` must call `apt_install fail2ban` if not already present before attempting to configure it.
@@ -237,6 +242,10 @@ The `http {}` block in `/etc/nginx/nginx.conf` MUST enforce all of the following
 > (1 year, no `preload` — see S3-1 fix below).
 
 - `server_tokens off` must always be set.
+- Global Nginx hardening must keep `limit_req_zone` and `limit_conn_zone` definitions inside `http {}` as shared baseline controls.
+- Standard vhosts may enforce those zones with per-vhost `limit_req` / `limit_conn`.
+- The 9router vhost intentionally must **not** include per-vhost `limit_req` / `limit_conn`; Cloudflare edge handling is relied on there, and nginx-level enforcement caused false-positive `429` on fast navigation / F5.
+- AI agents must not remove the global zone definitions when editing 9router-related docs or vhosts. Global zone definition and per-vhost enforcement are separate.
 - **S3-1 fix — HSTS `preload` is an explicit operator opt-in, NOT a default.**
   Per [Google's HSTS guidelines](https://hstspreload.org/) and hstspreload.org:
   - The OPS default is `max-age=31536000; includeSubDomains` (1 year, no `preload`).

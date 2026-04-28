@@ -122,9 +122,9 @@ ops
 ## 4. Menu chính
 
 ```
-╔══════════════════════╗
-║  OPS — Main Menu     ║
-╚══════════════════════╝
++----------------------+
+|  OPS -- Main Menu    |
++----------------------+
   1) Production Setup Wizard
   2) Node.js Services
   3) Domains & Nginx
@@ -132,8 +132,9 @@ ops
   5) 9router Management
   6) PHP / PHP-FPM Management
   7) Database Management
-  8) Codex CLI Integration
+  8) AI Agent Integration
   9) System & Monitoring
+  s) Security Management
   0) Exit
 ```
 
@@ -288,19 +289,37 @@ OPS xoá Nginx config và state file. **Web root `/var/www/<domain>` KHÔNG bị
 
 ---
 
-## 12. Codex CLI Integration
+## 12. AI Agent Integration
 
-**`ops → 8`**
+**`ops -> 8`**
 
-| Menu | Chức năng |
+Menu 8 la umbrella cho cac cong cu AI tren server.
+
+### 8 -> 1) Codex CLI Integration
+
+| Menu | Chuc nang |
 |---|---|
 | 1) Install Codex CLI | npm global install |
-| 2) Configure | API key + server settings |
-| 3) Enable/disable auto env | Tự load env khi SSH |
-| 4) Test | Gửi test query |
+| 2) Configure | API key + endpoint + model |
+| 3) Enable/disable auto env | Tu load env khi SSH |
+| 4) Test | Gui test query |
 
 - Config: `/etc/ops/codex-cli.conf`
 - API key: `/etc/ops/.codex-api-key` (0600)
+
+### 8 -> 2) Claude Code CLI Integration
+
+| Menu | Chuc nang |
+|---|---|
+| 1) Install Claude Code CLI | `npm install -g @anthropic-ai/claude-code` |
+| 2) Configure | ANTHROPIC_BASE_URL, API key, model -> ghi vao `~/.bashrc` |
+| 3) Test | Version check + endpoint reachability |
+| 4) Install Vietnamese fix | Patch locale tu external repo |
+| 5) Claude Code Telegram Bot | Submenu: install / configure / start / stop / status |
+
+- Config state: `/etc/ops/claude-code.conf` (0640)
+- API key: luu trong `~/.bashrc` cua admin user (khong luu vao `/etc/ops`)
+- Telegram bot dir: `~/claude-telegram/`, env: `~/claude-telegram/.env` (0600)
 
 ---
 

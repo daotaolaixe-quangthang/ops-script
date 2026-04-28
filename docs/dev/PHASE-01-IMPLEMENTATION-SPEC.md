@@ -47,10 +47,10 @@ Truoc khi code, tat ca implementers phai coi nhung diem sau la "fixed contract":
 | Certbot | **snap primary**, apt fallback | EFF recommend; auto-renewal built-in |
 | Login hook | **`~/.bash_profile`** của admin user | Chỉ áp dụng admin, dễ rollback, không ảnh hưởng scp/non-interactive |
 | `/etc/ops/*.conf` format | **Bash key=value** shell-sourceable | Không cần parser ngoài, source trực tiếp trong script |
-| 9router install | **git clone + npm build + PM2** | Chi tiết: `docs/NINE-ROUTER-SPEC.md` |
+| 9router install | **archive download/extract (`vpswork`) + runtime-user npm install/build + PM2** | Chi tiết: `docs/reference/NINE-ROUTER-SPEC.md` |
 | Codex CLI install | **npm install -g @openai/codex** | Consistent với Node ecosystem đã có |
 
-**Code skeleton reference**: `docs/CODE-SKELETON-GUIDE.md` — đọc trước khi viết bất kỳ module nào.
+**Code skeleton reference**: `docs/dev/CODE-SKELETON-GUIDE.md` — đọc trước khi viết bất kỳ module nào.
 
 ---
 
@@ -76,16 +76,27 @@ Phase 1 duoc coi la xong khi repo co du cac nhom deliverables sau:
 - `modules/php.sh`
 - `modules/database.sh`
 - `modules/monitoring.sh`
+- `modules/verify.sh`
+- `modules/checks.sh`
+- `modules/backup.sh`
 - `modules/codex-cli.sh`
+- `modules/ai-agent.sh`
+- `install/ops-ssh-finalize.sh`
 
 ### B. Template scaffold
 
-- `templates/nginx/node_vhost.conf.tpl`
-- `templates/nginx/php_vhost.conf.tpl`
-- `templates/nginx/ssl_snippet.tpl`
-- `templates/nginx/default-deny.conf.tpl`
-- `templates/pm2/ecosystem.config.js.tpl`
-- `templates/pm2/nine-router.ecosystem.config.js.tpl`
+Templates are located under `ops/modules/templates/` (NOT a root-level `templates/` directory).
+
+- `ops/modules/templates/nginx/node_vhost.conf.tpl`
+- `ops/modules/templates/nginx/php_vhost.conf.tpl`
+- `ops/modules/templates/nginx/static_vhost.conf.tpl`
+- `ops/modules/templates/nginx/nine-router.vhost.conf.tpl`
+- `ops/modules/templates/nginx/default-deny.conf.tpl`
+- `ops/modules/templates/nginx/cloudflare-real-ip.conf.tpl`
+- `ops/modules/templates/nginx/custom-powered-by.conf.tpl`
+- `ops/modules/templates/pm2/ecosystem.config.js.tpl`
+- `ops/modules/templates/pm2/nine-router.ecosystem.config.js.tpl`
+- `ops/modules/templates/logrotate/` (logrotate configs)
 
 ### C. Runtime-state contract
 
@@ -106,8 +117,9 @@ Phase 1 duoc coi la xong khi repo co du cac nhom deliverables sau:
 - 9router Management
 - PHP / PHP-FPM Management
 - Database Management
-- Codex CLI Integration
+- AI Agent Integration  (item 8 — covers Codex CLI + Claude Code CLI + Telegram bot)
 - System & Monitoring
+- Security Management   (key `s` from main menu)
 
 ### E. Production verification line
 
@@ -161,7 +173,7 @@ Ly do:
 
 **Tasks**
 
-1. Tao `bin/`, `install/`, `core/`, `modules/`, `templates/nginx/`, `templates/pm2/`.
+1. Tao `bin/`, `install/`, `core/`, `modules/`, `ops/modules/templates/nginx/`, `ops/modules/templates/pm2/`, `ops/modules/templates/logrotate/`.
 2. Tao file shell co shebang, strict mode base, source path conventions.
 3. Chot helper pattern:
    - `source` theo relative root
@@ -252,17 +264,25 @@ Ly do:
    - tao `/etc/ops/capacity.conf`
    - wire login hook interactive shell
 
-**Login hook implementation (chốt):**
+**Login hook implementation (chot):**
 
 ```bash
-# Append to ~/.bash_profile của ADMIN_USER — KHÔNG dùng /etc/profile.d/
-# Guard: chỉ kích hoạt khi là interactive shell có SSH_TTY
-if [[ $- == *i* ]] && [[ -n "${SSH_TTY:-}" ]]; then
+# Append to ~/.bash_profile cua ADMIN_USER -- KHONG dung /etc/profile.d/
+# Guard: kich hoat khi co SSH_CONNECTION (set boi sshd cho moi SSH session).
+# Dung SSH_CONNECTION thay SSH_TTY vi SSH_TTY co the unset khi terminal chay
+# trong mot so SSH clients; SSH_CONNECTION la reliable hon.
+if [[ -n "${SSH_CONNECTION:-}" ]]; then
     /usr/local/bin/ops-dashboard
+    # SSH auto-finalise: neu SSH transition port van con mo, ket thuc qua ops-ssh-finalize
+    if [[ -f /usr/local/bin/ops-ssh-finalize ]]; then
+        /usr/local/bin/ops-ssh-finalize --auto 2>/dev/null || true
+    fi
     read -r -t 30 -p "Press 1 to open OPS menu, or Enter to continue: " _ops_ans 2>/dev/null || true
     [[ "${_ops_ans:-}" == "1" ]] && /usr/local/bin/ops
 fi
 ```
+
+> Note: spec ban dau dung `SSH_TTY` nhung implementation dung `SSH_CONNECTION` (reliable hon voi mot so SSH clients). `ops-ssh-finalize.sh` xu ly SSH port transition auto-check.
 
 **`/etc/ops/ops.conf` schema:**
 
@@ -271,8 +291,11 @@ OPS_VERSION="1.0.0"
 OPS_ROOT="/opt/ops"
 OPS_CONFIG_DIR="/etc/ops"
 OPS_LOG_DIR="/var/log/ops"
+OPS_LOG_FILE="/var/log/ops/ops.log"
 OPS_ADMIN_USER=""
+OPS_RUNTIME_USER=""         # may differ from ADMIN_USER; used by PM2 and ops_run_as_user
 OPS_SSH_PORT=""
+OPS_SSH_TRANSITION_PORT=""  # old port kept open during SSH transition; cleared after finalise
 OPS_INSTALL_DATE=""
 ```
 
@@ -381,7 +404,7 @@ OPS_MAX_SITES=""
 
 1. install Nginx (from Ubuntu apt — version trong Ubuntu 22.04/24.04 repo là đủ)
 2. apply global tuning tu `PERF-TUNING.md`
-3. create default deny server (template: `templates/nginx/default-deny.conf.tpl`)
+3. create default deny server (template: `ops/modules/templates/nginx/default-deny.conf.tpl`)
 4. create helpers:
    - list domains
    - add domain
@@ -389,9 +412,9 @@ OPS_MAX_SITES=""
    - remove domain
    - test + reload
 5. support backend type:
-   - Node reverse proxy (template: `templates/nginx/node_vhost.conf.tpl`)
-   - PHP fastcgi (template: `templates/nginx/php_vhost.conf.tpl`)
-   - static site
+   - Node reverse proxy (template: `ops/modules/templates/nginx/node_vhost.conf.tpl`)
+   - PHP fastcgi (template: `ops/modules/templates/nginx/php_vhost.conf.tpl`)
+   - static site (template: `ops/modules/templates/nginx/static_vhost.conf.tpl`)
 6. tao `/etc/ops/domains/<domain>.conf`
 
 **Certbot install method (chốt):**
@@ -463,7 +486,7 @@ node -v
    - start/stop/restart
    - view logs
 5. tao `/etc/ops/apps/<app>.conf`
-6. support ecosystem template render (template: `templates/pm2/ecosystem.config.js.tpl`)
+6. support ecosystem template render (template: `ops/modules/templates/pm2/ecosystem.config.js.tpl`)
 
 **`/etc/ops/apps/<appname>.conf` schema:**
 
@@ -682,8 +705,8 @@ DB_INSTALL_DATE=""
 
 **Tasks**
 
-1. clone/update 9router code
-2. install dependencies/build
+1. download/extract 9router source archive tu branch `vpswork`
+2. preserve runtime state, install dependencies/build bang runtime user
 3. tao PM2 process config rieng
 4. force bind `127.0.0.1:20128`
 5. helpers:
@@ -825,6 +848,35 @@ Moi task chi duoc xem la xong khi co:
 - docs khop
 - verify pass
 - rollback minimum duoc mo ta ro
+
+### Test ID mapping nhanh theo menu/module
+
+Dung bang nay de review nhanh task nao phai chay test nao trong `docs/TEST-CASES.md` va harness `ops/tests/regression/*`.
+
+| Menu / Module | Phase tasks | Test IDs bat buoc |
+|---|---|---|
+| `install/ops-install.sh`, `bin/ops-setup.sh`, `bin/ops-dashboard` | `P1-02`, `P1-03` | `INS-01..INS-09`, `TUI-04`, `REG-04`, `REG-05` |
+| `bin/ops` main menu dispatcher | `P1-03` | `TUI-01..TUI-10`, `REG-01`, `REG-02` |
+| `modules/security.sh` | `P1-04` | `SEC-01..SEC-09`, `REG-04`, `REG-09`, `REG-10` |
+| `modules/nginx.sh` | `P1-05` | `WEB-01..WEB-10`, `REG-06`, `REG-10`, `REG-11` |
+| `modules/node.sh` | `P1-06` | `NODE-01..NODE-10`, `REG-07`, `REG-08`, `REG-12` |
+| `modules/php.sh` | `P1-07` | `PHP-01..PHP-06`, `REG-09`, `REG-10` |
+| `modules/database.sh` | `P1-08` | `DB-01..DB-06`, `REG-09`, `REG-10` |
+| `modules/setup-wizard.sh` | `P1-09` | `INS-05`, `SEC-01..SEC-04`, `WEB-01`, `NODE-01`, `PHP-01`, `DB-01`, `REG-04`, `REG-10` |
+| `modules/nine-router.sh` | `P1-10` | `NINE-01..NINE-08`, `WEB-09`, `WEB-10`, `REG-06`, `REG-11` |
+| `modules/monitoring.sh`, `modules/verify.sh` | `P1-11` | `MON-01..MON-05`, `TUI-05`, `TUI-06`, `REG-02`, `REG-03` |
+| `modules/codex-cli.sh` | `P1-12` | `FILE-01..FILE-03`, `FILE-02`, plus module-specific smoke verify |
+| End-to-end release gate | `P1-13` | `ops/tests/regression/run-all.sh` + full smoke/integration suite theo impact layer |
+
+### Release gate toi thieu cho Phase 1
+
+Truoc khi danh dau `P1-13` pass hoac release/update script:
+
+1. Chay shell regression harness:
+   - `bash ops/tests/regression/run-all.sh`
+2. Chay smoke suite theo module bi thay doi trong `docs/TEST-CASES.md`.
+3. Chay it nhat 1 end-to-end flow tren Ubuntu 22.04 hoac 24.04 fresh snapshot.
+4. Ghi PASS/FAIL theo mau report chuan trong `docs/RUNBOOKS.md`.
 
 ---
 

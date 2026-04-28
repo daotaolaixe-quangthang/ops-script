@@ -15,9 +15,9 @@ Muc tieu: cung cap runbook ngan theo format `pre-check -> change -> verify -> ro
   - verify login bang session SSH moi: `ssh -p <NEW_PORT> <ADMIN_USER>@host`
   - chi dong port 22 sau khi verify xong: `ufw delete allow 22/tcp`
 - **Verify**:
-  - `sshd -t` â€” kiem tra syntax config
+  - `sshd -t` — kiem tra syntax config
   - dang nhap bang `ssh -p <NEW_PORT> <ADMIN_USER>@host`
-  - `ss -tlnp | grep <NEW_PORT>` â€” xac nhan port dang listen
+  - `ss -tlnp | grep <NEW_PORT>` — xac nhan port dang listen
 - **Rollback**:
   - mo lai port 22: `ufw allow 22/tcp`
   - khoi phuc `sshd_config`: `cp /etc/ssh/sshd_config.bak /etc/ssh/sshd_config`
@@ -240,42 +240,24 @@ chown -R ${ADMIN_USER}:${ADMIN_USER} /home/${ADMIN_USER}/.ssh
 - **Pre-check**:
   - xac nhan phien ban OPS dang chay: `cat /etc/ops/ops.conf | grep OPS_VERSION`
   - snapshot VPS neu co the, hoac backup `/opt/ops` va `/etc/ops`
-  - kiem tra `CHANGELOG.md` hoac release notes cua commit truoc khi upgrade
-- **Change (qua menu OPS)**:
-  - `ops -> 9) System & Monitoring -> 16) Update OPS from git`
-  - OPS tai tarball tu GitHub (khong dung git pull), verify archive, extract vao tmp dir, syntax-check tung `.sh`, roi copy vao `/opt/ops`.
-  - Sau khi update: thoat va chay lai `ops` de load version moi.
-- **Change (thu cong / idempotent installer)**:
-  - `bash <(curl -fsSL https://raw.githubusercontent.com/daotaolaixe-quangthang/ops-script/main/install/ops-install.sh)`
-  - Installer la idempotent — khong dung lai config hay web root.
+  - kiem tra changelog / release notes truoc khi upgrade
+- **Change**:
+  - `cd /opt/ops && git fetch origin`
+  - `git log HEAD..origin/main --oneline` — xem truoc nhung gi se thay doi
+  - `git pull origin main`
 - **Verify**:
-  - `bash -n /opt/ops/bin/ops` — syntax check
-  - Chay `ops` -> menu hien thi dung va khong bi broken
-  - `cat /etc/ops/ops.conf | grep OPS_VERSION` — version da cap nhat
+  - `bash -n bin/ops` — syntax check
+  - `ops --version` hoac chay menu de confirm khong bi broken
+  - kiem tra cac module lien quan neu co thay doi trong release notes
 - **Rollback**:
-  - `/opt/ops` la directory thuong, khong phai git working tree tren VPS.
-  - Restore tu backup: `cp -a /backup/opt-ops /opt/ops`
-  - Hoac re-run installer voi tarball cu neu can.
+  - `git log --oneline -10` — tim commit truoc do
+  - `git checkout <previous-commit>`
   - restart khong can thiet (OPS la shell script, khong phai long-running service)
 
 ## 12. Netdata advanced monitoring install / remove (P2-02)
 
 - **Pre-check**:
   - xac nhan RAM con tu do: `free -m` — nen co > 512MB free
-  - Netdata se bind `127.0.0.1:19999` — khong expose ra ngoai
-  - Khong dung tren VPS < 512MB RAM neu khong can thiet
-- **Change (install)**:
-  - OPS menu: `System & Monitoring -> Advanced monitoring (Netdata) -> Install Netdata`
-  - OPS tu dong apt install, enable service, va chinh `bind to = 127.0.0.1` trong `/etc/netdata/netdata.conf`
-- **Verify**:
-  - `systemctl is-active netdata` -> active
-  - `curl -s http://localhost:19999/api/v1/info` -> JSON response
-  - `grep 'bind to' /etc/netdata/netdata.conf` -> `127.0.0.1`
-  - `ss -tlnp | grep 19999` -> ONLY listening on 127.0.0.1 (not 0.0.0.0)
-- **Rollback (remove)**:
-  - OPS menu: `Advanced monitoring -> Remove Netdata`
-  - Manual: `systemctl stop netdata && apt-get purge -y netdata && apt-get autoremove -y`
-  - Verify: `systemctl status netdata` -> not found, `ss -tlnp | grep 19999` -> empty
 
 ## 13. Release / update / bugfix test gate
 
@@ -283,13 +265,13 @@ Muc tieu: moi release, update function, hoac fix bug deu phai chay qua cung 1 ga
 
 ### Gate bat buoc
 
-- **Gate 1 - static**:
+- **Gate 1 — static**:
   - `bash -n` cho file vua sua va file source truc tiep
-- **Gate 2 - shell regression**:
+- **Gate 2 — shell regression**:
   - `bash ops/tests/regression/run-all.sh`
-- **Gate 3 - smoke suite theo impact layer**:
+- **Gate 3 — smoke suite theo impact layer**:
   - chay test IDs duoc map trong `docs/TEST-CASES.md` va phase spec
-- **Gate 4 - runtime acceptance**:
+- **Gate 4 — runtime acceptance**:
   - chay tren VM snapshot Ubuntu 22.04 hoac 24.04
   - verify file, service, port, permissions, rollback minimum
 
@@ -372,68 +354,84 @@ Notes:
 - Khong duyet neu smoke suite cua module bi thay doi chua chay.
 - Khong duyet fix lien quan SSH/Nginx/DB neu chua co runtime acceptance tren snapshot.
 - Moi bug da fix phai duoc them vao regression mapping hoac harness neu co the tu dong hoa.
+  - Netdata se bind `127.0.0.1:19999` — khong expose ra ngoai
+  - Khong dung tren VPS < 512MB RAM neu khong can thiet
+- **Change (install)**:
+  - OPS menu: `System & Monitoring → Advanced monitoring (Netdata) → Install Netdata`
+  - OPS tu dong apt install, enable service, va chinh `bind to = 127.0.0.1` trong `/etc/netdata/netdata.conf`
+- **Verify**:
+  - `systemctl is-active netdata` → active
+  - `curl -s http://localhost:19999/api/v1/info` → JSON response
+  - `grep 'bind to' /etc/netdata/netdata.conf` → `127.0.0.1`
+  - `ss -tlnp | grep 19999` → ONLY listening on 127.0.0.1 (not 0.0.0.0)
+- **Rollback (remove)**:
+  - OPS menu: `Advanced monitoring → Remove Netdata`
+  - Manual: `systemctl stop netdata && apt-get purge -y netdata && apt-get autoremove -y`
+  - Verify: `systemctl status netdata` → not found, `ss -tlnp | grep 19999` → empty
 
-## 14. Alerts scheduler — enable / disable (P2-03)
+## 13. Alerts scheduler — enable / disable (P2-03)
 
 - **Pre-check**:
-  - xac nhan Telegram da config: `grep TELEGRAM_ENABLED /etc/ops/notifications.conf`
-  - xac nhan `/etc/ops/.telegram-bot-token` ton tai va co quyen 0600: `ls -la /etc/ops/.telegram-bot-token`
+  - xac nhan Telegram da config: `grep TELEGRAM_ENABLED /etc/ops/ops.conf`
+  - xac nhan `/etc/ops/.telegram-bot-token` ton tai va co quyen 0600
   - Neu Telegram chua setup, alerts se chi ghi vao `/var/log/ops/checks.log`
 - **Change (enable)**:
-  - OPS menu: `System & Monitoring -> Notifications & scheduled checks -> Install scheduled checks`
+  - OPS menu: `System & Monitoring → Notifications & scheduled checks → Install scheduled checks`
   - Tao `/etc/cron.d/ops-checks` va `bin/ops-check` dispatcher
 - **Verify**:
-  - `cat /etc/cron.d/ops-checks` -> 5 cron entries dung lich
-  - `bash -n <OPS_ROOT>/bin/ops-check` -> no errors
-  - `ls /var/log/ops/checks.log` -> file exists (created by cron)
-  - Sau 5 phut: `tail /var/log/ops/checks.log` -> check output
+  - `cat /etc/cron.d/ops-checks` → 5 cron entries dung lich
+  - `bash -n <OPS_ROOT>/bin/ops-check` → no errors
+  - `ls /var/log/ops/checks.log` → file exists (created by cron)
+  - Sau 5 phut: `tail /var/log/ops/checks.log` → check output
 - **Change (disable)**:
-  - OPS menu: `Notifications & scheduled checks -> Remove scheduled checks`
+  - OPS menu: `Notifications & scheduled checks → Remove scheduled checks`
   - Manual: `rm -f /etc/cron.d/ops-checks`
 - **Rollback**:
-  - `rm -f /etc/cron.d/ops-checks` -> scheduler bi vo hieu
-  - `rm -f /tmp/ops-alert-*.cooldown` -> xoa cooldown files neu can reset
+  - `rm -f /etc/cron.d/ops-checks` → scheduler bi vo hieu
+  - `rm -f /tmp/ops-alert-*.cooldown` → xoa cooldown files neu can reset
   - Khong co long-running process — chi cron entries
 
-## 15. Backup helpers — DB dump and config archive (P2-05)
+## 14. Backup helpers — DB dump and config archive (P2-05)
 
 - **Pre-check**:
   - Kiem tra disk space truoc: `df -h /var/backups`
   - DB dump yeu cau MariaDB active: `systemctl is-active mariadb`
   - Config archive yeu cau `/etc/ops/` va `/etc/nginx/sites-available/` ton tai
 - **Change (DB dump)**:
-  - OPS menu: `System & Monitoring -> Backup helpers -> Dump single database`
+  - OPS menu: `System & Monitoring → Backup helpers → Dump single database`
   - Hoac: `Dump all databases`
   - Output: `/var/backups/ops/db/<dbname>-YYYYMMDD-HHMMSS.sql.gz` (0600)
 - **Verify (DB dump)**:
-  - `ls -lh /var/backups/ops/db/` -> file ton tai, size > 0
-  - `gzip -t /var/backups/ops/db/<dbname>-<ts>.sql.gz` -> no error
+  - `ls -lh /var/backups/ops/db/` → file ton tai, size > 0
+  - `gzip -t /var/backups/ops/db/<dbname>-<ts>.sql.gz` → no error
   - Test restore (staging only): `gunzip < <file> | mysql <dbname>`
 - **Change (config archive)**:
-  - OPS menu: `Backup helpers -> Archive configs`
+  - OPS menu: `Backup helpers → Archive configs`
   - Output: `/var/backups/ops/config/ops-config-YYYYMMDD-HHMMSS.tar.gz` (0600)
 - **Verify (config archive)**:
-  - `tar -tzf /var/backups/ops/config/ops-config-<ts>.tar.gz` -> list files without error
-  - `ls -lh /var/backups/ops/config/` -> file ton tai, size > 0
+  - `tar -tzf /var/backups/ops/config/ops-config-<ts>.tar.gz` → list files without error
+  - `ls -lh /var/backups/ops/config/` → file ton tai, size > 0
 - **Restore (manual)**:
   - DB: `gunzip < /var/backups/ops/db/<file>.sql.gz | mysql <dbname>`
-  - Nginx: `tar -xzf <archive> -C /etc/nginx/sites-available/ && nginx -t && systemctl reload nginx`
-  - OPS config: `tar -xzf <archive> -C /etc/ops/ && chmod 600 /etc/ops/.*`
+  - Nginx: `tar -xzf <archive> -C / etc/nginx/sites-available/ && nginx -t && systemctl reload nginx`
+  - OPS config: `tar -xzf <archive> -C / etc/ops/ && chmod 600 /etc/ops/.*`
 - **Rollback**:
   - Backup files bao gio cung nam o `/var/backups/ops/` — khong bi xoa tu dong
   - Neu restore sai: restore tu backup cu hon
   - Secret files: verify `chmod 600` sau moi restore: `.telegram-bot-token`, `.db-root-password`, `.codex-api-key`
 
+
+
 ---
 
-## Nginx Upgrade: Ubuntu Package -> Official Mainline
+## Nginx Upgrade: Ubuntu Package → Official Mainline
 
 **When:** `nginx -v` shows < 1.24 (e.g. 1.18.0 from Ubuntu repo).
 
 **Steps:**
 ```bash
 # 1. From OPS menu:
-# Domains & Nginx â†’ Install / update Nginx (option 6)
+# Domains & Nginx → Install / update Nginx (option 6)
 # This calls _nginx_add_official_repo() + apt upgrade
 
 # 2. Or manually:
@@ -460,11 +458,11 @@ nginx -v && nginx -t && systemctl reload nginx
 **Steps:**
 ```bash
 # From OPS menu:
-# Domains & Nginx â†’ Apply security baseline (option 8)
+# Domains & Nginx → Apply security baseline (option 8)
 # This runs nginx_apply_security_baseline() which calls _nginx_apply_global_tuning() + reload
 
 # Verify all checks pass:
-# Main menu â†’ Verify stack â†’ check Nginx section for PASS
+# Main menu → Verify stack → check Nginx section for PASS
 ```
 
 **What it applies:**
@@ -483,7 +481,7 @@ nginx -v && nginx -t && systemctl reload nginx
 
 **Enable:**
 ```bash
-# OPS menu: Domains & Nginx â†’ Advanced web controls â†’ option 5
+# OPS menu: Domains & Nginx → Advanced web controls → option 5
 # Writes /etc/nginx/conf.d/cloudflare-ip-restrict.conf
 # Then manually add to each server {} block:
 #   if ($blocked_cf) { return 444; }
@@ -492,11 +490,10 @@ nginx -v && nginx -t && systemctl reload nginx
 
 **Disable:**
 ```bash
-# OPS menu: Domains & Nginx â†’ Advanced web controls â†’ option 6
+# OPS menu: Domains & Nginx → Advanced web controls → option 6
 # Removes /etc/nginx/conf.d/cloudflare-ip-restrict.conf
 # Then remove any "if ($blocked_cf)" lines from server blocks
 # Then: nginx -t && systemctl reload nginx
 ```
 
 > **Warning:** Never enable CF IP restrict if any domain has Cloudflare proxying disabled (Grey Cloud). It will block all traffic to that domain.
-

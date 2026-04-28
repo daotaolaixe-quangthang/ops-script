@@ -247,15 +247,7 @@ monitoring_service_status() {
     # Node / PM2
     if command -v pm2 >/dev/null 2>&1; then
         local online_count
-        online_count=$(ops_pm2_jlist 2>/dev/null | python3 -c "
-import sys,json
-try:
-    procs = json.load(sys.stdin)
-    online = sum(1 for p in procs if p.get('pm2_env',{}).get('status')=='online')
-    print(online)
-except:
-    print('?')
-" 2>/dev/null || echo "?")
+        online_count=$(ops_pm2_online_count 2>/dev/null || echo "?")
         print_ok "PM2: ${online_count} process(es) online"
     else
         print_warn "PM2: not installed"
