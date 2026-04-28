@@ -39,20 +39,20 @@ case_reg_04_security_guard_present_before_disable_password_auth() {
 
 case_reg_05_login_hook_uses_ssh_connection_not_ssh_tty_doc_contract() {
     local content
-    content="$(<"${REPO_ROOT}/docs/MENU-REFERENCE.md")"
+    content="$(<"${REPO_ROOT}/docs/operator/MENU-REFERENCE.md")"
     test::assert_contains "$content" 'SSH_CONNECTION' 'login hook must use SSH_CONNECTION contract' || return 1
 }
 
-case_reg_06_9router_posture_contract_present() {
+case_reg_06_cliproxyapi_posture_contract_present() {
     local content
     content="$(<"${OPS_ROOT}/modules/verify.sh")"
-    test::assert_contains "$content" '20128/tcp' 'verify must check public exposure of 20128' || return 1
-    test::assert_contains "$content" 'remove allow rule and keep only nginx public' 'verify hint for 20128 exposure missing' || return 1
+    test::assert_contains "$content" '8317/tcp' 'verify must check public exposure of 8317' || return 1
+    test::assert_contains "$content" 'remove allow rule and keep only nginx public' 'verify hint for 8317 exposure missing' || return 1
 }
 
 case_reg_07_pm2_startup_not_root_contract_present() {
     local content
-    content="$(<"${REPO_ROOT}/docs/KNOWN-RISKS-PATTERNS.md")"
+    content="$(<"${REPO_ROOT}/docs/reference/KNOWN-RISKS-PATTERNS.md")"
     test::assert_contains "$content" 'pm2-root.service' 'pm2 root startup regression coverage missing' || return 1
 }
 
@@ -64,7 +64,7 @@ case_reg_08_pm2_runtime_user_wrapper_present() {
 
 case_reg_09_secret_permission_contract_present() {
     local content
-    content="$(<"${REPO_ROOT}/docs/KNOWN-RISKS-PATTERNS.md")"
+    content="$(<"${REPO_ROOT}/docs/reference/KNOWN-RISKS-PATTERNS.md")"
     test::assert_contains "$content" 'chmod 600 <file> && chown $ADMIN_USER:$ADMIN_USER <file>' 'secret permission contract missing' || return 1
 }
 
@@ -74,38 +74,30 @@ case_reg_10_config_rewrite_must_validate_syntax() {
     test::assert_contains "$content" 'nginx -t' 'syntax validation contract missing' || return 1
 }
 
-case_reg_11_nine_router_vhost_preserves_global_rate_limit_zone() {
+case_reg_11_cliproxyapi_vhost_preserves_global_rate_limit_zone() {
     local content
-    content="$(<"${REPO_ROOT}/docs/ARCHITECTURE.md")"
-    test::assert_contains "$content" 'limit_req_zone' 'global rate limit zone contract missing' || return 1
-    test::assert_contains "$content" 'the 9router vhost intentionally does not' '9router vhost exception missing' || return 1
+    content="$(<"${OPS_ROOT}/modules/templates/nginx/cli-proxy-api.vhost.conf.tpl")"
+    test::assert_contains "$content" 'cli-proxy-api.' 'CLIProxyAPI vhost naming contract missing' || return 1
+    test::assert_contains "$content" 'proxy_buffering       off' 'CLIProxyAPI proxy buffering contract missing' || return 1
 }
 
 case_reg_12_pm2_logrotate_and_merge_logs_contract_present() {
     local content
-    content="$(<"${REPO_ROOT}/docs/KNOWN-RISKS-PATTERNS.md")"
+    content="$(<"${REPO_ROOT}/docs/reference/KNOWN-RISKS-PATTERNS.md")"
     test::assert_contains "$content" 'pm2-logrotate' 'pm2 logrotate regression contract missing' || return 1
     test::assert_contains "$content" 'merge_logs: true' 'merge_logs regression contract missing' || return 1
 }
 
 case_reg_13_pm2_read_helpers_centralized() {
-    local system_content setup_content monitoring_content checks_content verify_content nine_router_content
+    local system_content verify_content cliproxyapi_content
     system_content="$(<"${OPS_ROOT}/core/system.sh")"
-    setup_content="$(<"${OPS_ROOT}/modules/setup-wizard.sh")"
-    monitoring_content="$(<"${OPS_ROOT}/modules/monitoring.sh")"
-    checks_content="$(<"${OPS_ROOT}/modules/checks.sh")"
     verify_content="$(<"${OPS_ROOT}/modules/verify.sh")"
-    nine_router_content="$(<"${OPS_ROOT}/modules/nine-router.sh")"
+    cliproxyapi_content="$(<"${OPS_ROOT}/modules/cli-proxy-api.sh")"
 
-    test::assert_contains "$system_content" 'ops_pm2_online_count_from_json' 'shared PM2 online-count helper missing' || return 1
-    test::assert_contains "$system_content" 'ops_pm2_total_count_from_json' 'shared PM2 total-count helper missing' || return 1
-    test::assert_contains "$system_content" 'ops_pm2_process_status_from_json' 'shared PM2 status helper missing' || return 1
-    test::assert_contains "$setup_content" 'ops_pm2_online_count' 'setup wizard must use shared PM2 online-count helper' || return 1
-    test::assert_contains "$monitoring_content" 'ops_pm2_online_count' 'monitoring must use shared PM2 online-count helper' || return 1
-    test::assert_contains "$checks_content" 'ops_pm2_online_count_from_json' 'checks digest must use shared PM2 online-count parser' || return 1
-    test::assert_contains "$checks_content" 'ops_pm2_total_count_from_json' 'checks digest must use shared PM2 total-count parser' || return 1
-    test::assert_contains "$verify_content" 'ops_pm2_process_status_from_json' 'verify must use shared PM2 status parser' || return 1
-    test::assert_contains "$nine_router_content" 'ops_pm2_process_status' '9router verify must use shared PM2 status helper' || return 1
+    test::assert_contains "$system_content" 'service_active()' 'shared systemd active helper missing' || return 1
+    test::assert_contains "$system_content" 'service_restart()' 'shared systemd restart helper missing' || return 1
+    test::assert_contains "$verify_content" 'systemctl is-active cli-proxy-api' 'verify must inspect CLIProxyAPI systemd status' || return 1
+    test::assert_contains "$cliproxyapi_content" 'service_restart "$CLIPROXYAPI_SERVICE_NAME"' 'CLIProxyAPI service restart contract missing' || return 1
 }
 
 case_reg_14_patch_state_check_present() {
@@ -157,10 +149,10 @@ case_sec_05_ufw_baseline_ports_present() {
     test::assert_contains "$content" 'ufw allow 443/tcp' 'HTTPS allow baseline missing' || return 1
 }
 
-case_sec_06_ufw_must_not_allow_20128() {
+case_sec_06_ufw_must_not_allow_8317() {
     local content
-    content="$(<"${OPS_ROOT}/modules/nine-router.sh")"
-    test::assert_contains "$content" 'ufw delete allow 20128/tcp' '20128 ALLOW cleanup missing' || return 1
+    content="$(<"${OPS_ROOT}/modules/cli-proxy-api.sh")"
+    test::assert_contains "$content" 'ufw delete allow 8317/tcp' '8317 ALLOW cleanup missing' || return 1
 }
 
 case_sec_07_fail2ban_tracks_managed_ports() {
@@ -217,7 +209,7 @@ case_ins_06_07_08_login_hook_contract_present() {
 
 case_ins_09_installer_rollback_contract_present() {
     local content
-    content="$(<"${REPO_ROOT}/docs/RUNBOOKS.md")"
+    content="$(<"${REPO_ROOT}/docs/operator/RUNBOOKS.md")"
     test::assert_contains "$content" 'SSH port transition and finalisation' 'SSH rollback runbook missing' || return 1
 }
 
@@ -247,7 +239,7 @@ case_web_04_static_domain_contract_present() {
 
 case_web_05_remove_domain_keeps_root_contract_present() {
     local content
-    content="$(<"${REPO_ROOT}/docs/TEST-CASES.md")"
+    content="$(<"${REPO_ROOT}/docs/operator/TEST-CASES.md")"
     test::assert_contains "$content" 'WEB-05' 'WEB-05 testcase missing' || return 1
     test::assert_contains "$content" 'giu `/var/www/<domain>`' 'web root preservation contract missing' || return 1
 }
@@ -270,12 +262,12 @@ case_web_08_ssl_status_contract_present() {
     test::assert_contains "$content" 'expires in' 'SSL expiry status reporting missing' || return 1
 }
 
-case_web_09_web_10_nine_router_nginx_boundary_contract_present() {
-    local arch_content verify_content
-    arch_content="$(<"${REPO_ROOT}/docs/ARCHITECTURE.md")"
+case_web_09_web_10_cliproxyapi_nginx_boundary_contract_present() {
+    local tpl_content verify_content
+    tpl_content="$(<"${OPS_ROOT}/modules/templates/nginx/cli-proxy-api.vhost.conf.tpl")"
     verify_content="$(<"${OPS_ROOT}/modules/verify.sh")"
-    test::assert_contains "$arch_content" 'the 9router vhost intentionally does not' '9router vhost rate-limit exception missing' || return 1
-    test::assert_contains "$verify_content" 'localhost 20128 reachable' '9router localhost verify contract missing' || return 1
+    test::assert_contains "$tpl_content" 'proxy_buffering       off' 'CLIProxyAPI nginx boundary contract missing' || return 1
+    test::assert_contains "$verify_content" '/v1/models returned JSON' 'CLIProxyAPI localhost verify contract missing' || return 1
 }
 
 case_node_01_node_lts_install_contract_present() {
@@ -324,7 +316,7 @@ case_php_02_03_php_pool_and_domain_contract_present() {
 
 case_php_04_05_06_php_override_contract_present() {
     local content
-    content="$(<"${REPO_ROOT}/docs/TEST-CASES.md")"
+    content="$(<"${REPO_ROOT}/docs/operator/TEST-CASES.md")"
     test::assert_contains "$content" 'PHP-04' 'PHP regression testcase coverage missing' || return 1
     test::assert_contains "$content" 'PHP-06' 'PHP pool override testcase coverage missing' || return 1
 }
@@ -343,16 +335,16 @@ case_db_06_backup_helper_contract_present() {
     test::assert_contains "$content" '/var/backups/ops/db' 'DB backup output path missing' || return 1
 }
 
-case_nine_01_02_03_04_05_06_07_08_nine_router_contracts_present() {
+case_cpa_01_02_03_04_05_06_07_08_cliproxyapi_contracts_present() {
     local content
-    content="$(<"${OPS_ROOT}/modules/nine-router.sh")"
-    test::assert_contains "$content" 'vpswork.tar.gz' '9router archive install contract missing' || return 1
-    test::assert_contains "$content" 'HOSTNAME=127.0.0.1' '9router loopback bind contract missing' || return 1
-    test::assert_contains "$content" '.nine-router-password' '9router secret file contract missing' || return 1
-    test::assert_contains "$content" 'proxy_buffering       off' '9router SSE nginx contract missing' || return 1
-    test::assert_contains "$content" 'REQUIRE_API_KEY' '9router API key toggle contract missing' || return 1
-    test::assert_contains "$content" 'NEXT_PUBLIC_BASE_URL' '9router update/base-url preservation contract missing' || return 1
-    test::assert_contains "$content" 'AUTH_COOKIE_SECURE' '9router SSL cookie contract missing' || return 1
+    content="$(<"${OPS_ROOT}/modules/cli-proxy-api.sh")"
+    test::assert_contains "$content" 'CLIProxyAPI/releases/latest' 'CLIProxyAPI release install contract missing' || return 1
+    test::assert_contains "$content" 'host: "127.0.0.1"' 'CLIProxyAPI loopback bind contract missing' || return 1
+    test::assert_contains "$content" '.cli-proxy-api-key' 'CLIProxyAPI secret file contract missing' || return 1
+    test::assert_contains "$content" 'proxy_buffering       off' 'CLIProxyAPI nginx proxy contract missing' || return 1
+    test::assert_contains "$content" 'api-keys:' 'CLIProxyAPI API key toggle contract missing' || return 1
+    test::assert_contains "$content" 'remote-management:' 'CLIProxyAPI remote management contract missing' || return 1
+    test::assert_contains "$content" 'service_restart "$CLIPROXYAPI_SERVICE_NAME"' 'CLIProxyAPI service restart contract missing' || return 1
 }
 
 case_mon_01_02_03_04_05_monitoring_contracts_present() {
@@ -383,12 +375,12 @@ test::run_case 'REG-02' 'menu boundary wrapper present' case_reg_02_menu_boundar
 test::run_case 'REG-03' 'verify exit-zero contract present' case_reg_03_verify_exit_zero_contract_documented_in_code
 test::run_case 'REG-04' 'ssh key guard present before disabling password auth' case_reg_04_security_guard_present_before_disable_password_auth
 test::run_case 'REG-05' 'login hook contract uses SSH_CONNECTION' case_reg_05_login_hook_uses_ssh_connection_not_ssh_tty_doc_contract
-test::run_case 'REG-06' '9router exposure regression guarded' case_reg_06_9router_posture_contract_present
+test::run_case 'REG-06' 'CLIProxyAPI exposure regression guarded' case_reg_06_cliproxyapi_posture_contract_present
 test::run_case 'REG-07' 'pm2 startup non-root contract documented' case_reg_07_pm2_startup_not_root_contract_present
 test::run_case 'REG-08' 'pm2 runtime user wrapper present' case_reg_08_pm2_runtime_user_wrapper_present
 test::run_case 'REG-09' 'secret permission contract present' case_reg_09_secret_permission_contract_present
 test::run_case 'REG-10' 'config rewrite validates syntax' case_reg_10_config_rewrite_must_validate_syntax
-test::run_case 'REG-11' '9router rate-limit contract preserved' case_reg_11_nine_router_vhost_preserves_global_rate_limit_zone
+test::run_case 'REG-11' 'CLIProxyAPI nginx boundary contract preserved' case_reg_11_cliproxyapi_vhost_preserves_global_rate_limit_zone
 test::run_case 'REG-12' 'pm2 log contracts preserved' case_reg_12_pm2_logrotate_and_merge_logs_contract_present
 test::run_case 'REG-13' 'pm2 read helpers centralized' case_reg_13_pm2_read_helpers_centralized
 test::run_case 'REG-14' 'patch state check present in verify' case_reg_14_patch_state_check_present
@@ -398,7 +390,7 @@ test::run_case 'SEC-02' 'disable password auth requires key contract present' ca
 test::run_case 'SEC-03' 'SSH transition keeps two ports contract present' case_sec_03_transition_keeps_two_ports_contract_present
 test::run_case 'SEC-04' 'SSH finalize transition contract present' case_sec_04_finalize_transition_contract_present
 test::run_case 'SEC-05' 'UFW baseline ports contract present' case_sec_05_ufw_baseline_ports_present
-test::run_case 'SEC-06' '9router port 20128 must not be allowed' case_sec_06_ufw_must_not_allow_20128
+test::run_case 'SEC-06' 'CLIProxyAPI port 8317 must not be allowed' case_sec_06_ufw_must_not_allow_8317
 test::run_case 'SEC-07' 'fail2ban tracks managed ports' case_sec_07_fail2ban_tracks_managed_ports
 test::run_case 'SEC-08' 'PermitRootLogin disabled contract present' case_sec_08_permit_root_login_disabled_contract_present
 test::run_case 'SEC-09' 'forwarding disabled contract present' case_sec_09_forwarding_disabled_contract_present
@@ -419,8 +411,8 @@ test::run_case 'WEB-05' 'domain removal preserves web root contract present' cas
 test::run_case 'WEB-06' 'nginx reload blocked on syntax error contract present' case_web_06_nginx_reload_blocked_on_error_contract_present
 test::run_case 'WEB-07' 'SSL issue contract present' case_web_07_ssl_issue_contract_present
 test::run_case 'WEB-08' 'SSL status contract present' case_web_08_ssl_status_contract_present
-test::run_case 'WEB-09' '9router nginx rate-limit exception contract present' case_web_09_web_10_nine_router_nginx_boundary_contract_present
-test::run_case 'WEB-10' 'nginx remains sole public entrypoint contract present' case_web_09_web_10_nine_router_nginx_boundary_contract_present
+test::run_case 'WEB-09' 'CLIProxyAPI nginx boundary contract present' case_web_09_web_10_cliproxyapi_nginx_boundary_contract_present
+test::run_case 'WEB-10' 'nginx remains sole public entrypoint contract present' case_web_09_web_10_cliproxyapi_nginx_boundary_contract_present
 test::run_case 'NODE-01' 'Node LTS install contract present' case_node_01_node_lts_install_contract_present
 test::run_case 'NODE-02' 'PM2 non-root contract present' case_node_02_pm2_not_root_contract_present
 test::run_case 'NODE-03' 'Node service list contract present' case_node_03_04_05_06_07_node_menu_contract_present
@@ -443,14 +435,14 @@ test::run_case 'DB-03' 'DB secure setup contract present' case_db_01_02_03_04_05
 test::run_case 'DB-04' 'DB bind posture contract present' case_db_01_02_03_04_05_db_contracts_present
 test::run_case 'DB-05' 'DB create user/db contract present' case_db_01_02_03_04_05_db_contracts_present
 test::run_case 'DB-06' 'DB backup helper contract present' case_db_06_backup_helper_contract_present
-test::run_case 'NINE-01' '9router install contract present' case_nine_01_02_03_04_05_06_07_08_nine_router_contracts_present
-test::run_case 'NINE-02' '9router loopback bind contract present' case_nine_01_02_03_04_05_06_07_08_nine_router_contracts_present
-test::run_case 'NINE-03' '9router secret permission contract present' case_nine_01_02_03_04_05_06_07_08_nine_router_contracts_present
-test::run_case 'NINE-04' '9router domain link contract present' case_nine_01_02_03_04_05_06_07_08_nine_router_contracts_present
-test::run_case 'NINE-05' '9router verify contract present' case_nine_01_02_03_04_05_06_07_08_nine_router_contracts_present
-test::run_case 'NINE-06' '9router API key toggle contract present' case_nine_01_02_03_04_05_06_07_08_nine_router_contracts_present
-test::run_case 'NINE-07' '9router update preserve-state contract present' case_nine_01_02_03_04_05_06_07_08_nine_router_contracts_present
-test::run_case 'NINE-08' '9router SSL cookie contract present' case_nine_01_02_03_04_05_06_07_08_nine_router_contracts_present
+test::run_case 'CPA-01' 'CLIProxyAPI install contract present' case_cpa_01_02_03_04_05_06_07_08_cliproxyapi_contracts_present
+test::run_case 'CPA-02' 'CLIProxyAPI loopback bind contract present' case_cpa_01_02_03_04_05_06_07_08_cliproxyapi_contracts_present
+test::run_case 'CPA-03' 'CLIProxyAPI secret permission contract present' case_cpa_01_02_03_04_05_06_07_08_cliproxyapi_contracts_present
+test::run_case 'CPA-04' 'CLIProxyAPI domain link contract present' case_cpa_01_02_03_04_05_06_07_08_cliproxyapi_contracts_present
+test::run_case 'CPA-05' 'CLIProxyAPI verify contract present' case_cpa_01_02_03_04_05_06_07_08_cliproxyapi_contracts_present
+test::run_case 'CPA-06' 'CLIProxyAPI API key toggle contract present' case_cpa_01_02_03_04_05_06_07_08_cliproxyapi_contracts_present
+test::run_case 'CPA-07' 'CLIProxyAPI update preserve-state contract present' case_cpa_01_02_03_04_05_06_07_08_cliproxyapi_contracts_present
+test::run_case 'CPA-08' 'CLIProxyAPI SSL/vhost re-render contract present' case_cpa_01_02_03_04_05_06_07_08_cliproxyapi_contracts_present
 test::run_case 'MON-01' 'verify exit-zero contract present' case_mon_01_02_03_04_05_monitoring_contracts_present
 test::run_case 'MON-02' 'quick logs contract present' case_mon_01_02_03_04_05_monitoring_contracts_present
 test::run_case 'MON-03' 'monitoring menu boundary contract present' case_mon_01_02_03_04_05_monitoring_contracts_present

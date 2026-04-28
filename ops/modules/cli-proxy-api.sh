@@ -1,0 +1,879 @@
+#!/usr/bin/env bash
+# ============================================================
+# ops/modules/cli-proxy-api.sh
+# Purpose: CLIProxyAPI install, systemd service, and domain integration
+# Part of: OPS - VPS Production Setup & Manager
+# ============================================================
+# Called by bin/ops via menu dispatch.
+# Do NOT add set -euo pipefail here - inherited from bin/ops.
+
+CLIPROXYAPI_SOURCE_REPO_URL="https://github.com/daotaolaixe-quangthang/CLIProxyAPI"
+CLIPROXYAPI_RELEASE_API_URL="https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest"
+CLIPROXYAPI_DIR="/opt/cli-proxy-api"
+CLIPROXYAPI_RELEASES_DIR="${CLIPROXYAPI_DIR}/releases"
+CLIPROXYAPI_BINARY="${CLIPROXYAPI_DIR}/cli-proxy-api"
+CLIPROXYAPI_CONFIG_FILE="${CLIPROXYAPI_DIR}/config.yaml"
+CLIPROXYAPI_EXAMPLE_CONFIG="${CLIPROXYAPI_DIR}/config.example.yaml"
+CLIPROXYAPI_VERSION_FILE="${CLIPROXYAPI_DIR}/version.txt"
+CLIPROXYAPI_SERVICE_NAME="cli-proxy-api"
+CLIPROXYAPI_SERVICE_FILE="/etc/systemd/system/${CLIPROXYAPI_SERVICE_NAME}.service"
+CLIPROXYAPI_STATE_FILE="${OPS_CONFIG_DIR}/cli-proxy-api.conf"
+CLIPROXYAPI_CLIENT_KEY_FILE="${OPS_CONFIG_DIR}/.cli-proxy-api-key"
+CLIPROXYAPI_PORT="8317"
+CLIPROXYAPI_PPROF_PORT="8316"
+CLIPROXYAPI_LOGS_DIR="${CLIPROXYAPI_DIR}/logs"
+CLIPROXYAPI_VHOST_TEMPLATE="${OPS_ROOT}/modules/templates/nginx/cli-proxy-api.vhost.conf.tpl"
+LEGACY_NINE_ROUTER_STATE_FILE="${OPS_CONFIG_DIR}/nine-router.conf"
+LEGACY_NINE_ROUTER_DIR="/opt/9router"
+LEGACY_NINE_ROUTER_DATA_DIR="/var/lib/9router"
+LEGACY_NINE_ROUTER_PM2_NAME="nine-router"
+LEGACY_NINE_ROUTER_LOGROTATE_FILE="/etc/logrotate.d/nine-router"
+
+_cliproxyapi_runtime_user() {
+    ops_runtime_user
+}
+
+_cliproxyapi_runtime_home() {
+    ops_runtime_home "$(_cliproxyapi_runtime_user)"
+}
+
+_cliproxyapi_run_as_runtime_user() {
+    local runtime_user home_dir
+    runtime_user="$(_cliproxyapi_runtime_user)"
+    home_dir="$(_cliproxyapi_runtime_home)"
+    runuser -u "$runtime_user" -- env -i \
+        HOME="$home_dir" \
+        PATH="$PATH" \
+        USER="$runtime_user" \
+        LOGNAME="$runtime_user" \
+        LANG="${LANG:-C.UTF-8}" \
+        LC_ALL="${LC_ALL:-C.UTF-8}" \
+        "$@"
+}
+
+_cliproxyapi_set_state() {
+    local key="$1"
+    local value="$2"
+    ops_conf_set "cli-proxy-api.conf" "$key" "$value"
+    if [[ -f "$CLIPROXYAPI_STATE_FILE" ]]; then
+        chmod 640 "$CLIPROXYAPI_STATE_FILE"
+        chown "$ADMIN_USER:$ADMIN_USER" "$CLIPROXYAPI_STATE_FILE"
+    fi
+}
+
+_cliproxyapi_state_get() {
+    local key="$1"
+    local value=""
+    value=$(ops_conf_get "cli-proxy-api.conf" "$key" 2>/dev/null || true)
+    if [[ -n "$value" ]]; then
+        printf '%s' "$value"
+        return 0
+    fi
+
+    case "$key" in
+        CLIPROXYAPI_DOMAIN)
+            ops_conf_get "nine-router.conf" "NINE_ROUTER_DOMAIN" 2>/dev/null || true
+            ;;
+        CLIPROXYAPI_SSL)
+            ops_conf_get "nine-router.conf" "NINE_ROUTER_SSL" 2>/dev/null || true
+            ;;
+        CLIPROXYAPI_REQUIRE_API_KEY)
+            ops_conf_get "nine-router.conf" "NINE_ROUTER_REQUIRE_API_KEY" 2>/dev/null || true
+            ;;
+        CLIPROXYAPI_REQUEST_LOGS)
+            ops_conf_get "nine-router.conf" "NINE_ROUTER_REQUEST_LOGS" 2>/dev/null || true
+            ;;
+        *)
+            printf '%s' ""
+            ;;
+    esac
+}
+
+_cliproxyapi_migrate_legacy_state() {
+    if [[ -f "$CLIPROXYAPI_STATE_FILE" ]] || [[ ! -f "$LEGACY_NINE_ROUTER_STATE_FILE" ]]; then
+        return 0
+    fi
+
+    local legacy_domain legacy_ssl legacy_require_api_key legacy_request_logs
+    legacy_domain=$(ops_conf_get "nine-router.conf" "NINE_ROUTER_DOMAIN" 2>/dev/null || true)
+    legacy_ssl=$(ops_conf_get "nine-router.conf" "NINE_ROUTER_SSL" 2>/dev/null || true)
+    legacy_require_api_key=$(ops_conf_get "nine-router.conf" "NINE_ROUTER_REQUIRE_API_KEY" 2>/dev/null || true)
+    legacy_request_logs=$(ops_conf_get "nine-router.conf" "NINE_ROUTER_REQUEST_LOGS" 2>/dev/null || true)
+
+    _cliproxyapi_set_state "CLIPROXYAPI_DOMAIN" "$legacy_domain"
+    _cliproxyapi_set_state "CLIPROXYAPI_SSL" "${legacy_ssl:-no}"
+    _cliproxyapi_set_state "CLIPROXYAPI_REQUIRE_API_KEY" "${legacy_require_api_key:-no}"
+    _cliproxyapi_set_state "CLIPROXYAPI_REQUEST_LOGS" "${legacy_request_logs:-no}"
+}
+
+_cliproxyapi_generate_api_key() {
+    printf 'sk-%s' "$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 45)"
+}
+
+_cliproxyapi_write_client_key_file() {
+    local api_key="$1"
+    write_file "$CLIPROXYAPI_CLIENT_KEY_FILE" <<EOF
+${api_key}
+EOF
+    chmod 600 "$CLIPROXYAPI_CLIENT_KEY_FILE"
+    chown "$ADMIN_USER:$ADMIN_USER" "$CLIPROXYAPI_CLIENT_KEY_FILE"
+}
+
+_cliproxyapi_client_key() {
+    if [[ -f "$CLIPROXYAPI_CLIENT_KEY_FILE" ]]; then
+        tr -d '\r\n' < "$CLIPROXYAPI_CLIENT_KEY_FILE"
+    else
+        printf '%s' ""
+    fi
+}
+
+_cliproxyapi_ensure_client_key() {
+    local api_key
+    api_key="$(_cliproxyapi_client_key)"
+    if [[ -n "$api_key" ]]; then
+        printf '%s' "$api_key"
+        return 0
+    fi
+
+    api_key="$(_cliproxyapi_generate_api_key)"
+    _cliproxyapi_write_client_key_file "$api_key"
+    printf '%s' "$api_key"
+}
+
+_cliproxyapi_local_version() {
+    if [[ -f "$CLIPROXYAPI_VERSION_FILE" ]]; then
+        tr -d '\r\n' < "$CLIPROXYAPI_VERSION_FILE"
+    else
+        printf '%s' ""
+    fi
+}
+
+_cliproxyapi_latest_release_json() {
+    curl -fsSL --max-time 20 "$CLIPROXYAPI_RELEASE_API_URL" 2>/dev/null || true
+}
+
+_cliproxyapi_remote_version() {
+    local json
+    json="$(_cliproxyapi_latest_release_json)"
+    if [[ -z "$json" ]]; then
+        printf '%s' ""
+        return 0
+    fi
+
+    printf '%s' "$json" \
+        | grep -m1 '"tag_name"' \
+        | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v?([^\"]+)".*/\1/'
+}
+
+_cliproxyapi_release_arch() {
+    local machine
+    machine="$(uname -m)"
+    case "$machine" in
+        x86_64|amd64)
+            printf '%s' "linux_amd64"
+            ;;
+        aarch64|arm64)
+            printf '%s' "linux_arm64"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+_cliproxyapi_release_asset_url() {
+    local version="$1"
+    local arch="$2"
+    local json line
+    json="$(_cliproxyapi_latest_release_json)"
+    if [[ -z "$json" ]]; then
+        return 1
+    fi
+
+    line=$(printf '%s' "$json" \
+        | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*CLIProxyAPI_${version}_${arch}\\.tar\\.gz\"" \
+        | head -n1 || true)
+    if [[ -z "$line" ]]; then
+        return 1
+    fi
+
+    printf '%s' "$line" | sed -E 's/.*"([^\"]+)".*/\1/'
+}
+
+_cliproxyapi_prepare_directories() {
+    local runtime_user runtime_home auth_dir
+    runtime_user="$(_cliproxyapi_runtime_user)"
+    runtime_home="$(_cliproxyapi_runtime_home)"
+    auth_dir="${runtime_home}/.cli-proxy-api"
+
+    ensure_dir "$OPS_CONFIG_DIR"
+    mkdir -p "$CLIPROXYAPI_DIR" "$CLIPROXYAPI_RELEASES_DIR" "$CLIPROXYAPI_LOGS_DIR" "$auth_dir"
+    chown -R "$runtime_user:$runtime_user" "$CLIPROXYAPI_DIR" "$auth_dir"
+    chmod 750 "$auth_dir"
+}
+
+_cliproxyapi_install_latest_release() {
+    local arch version asset_url archive release_dir temp_dir binary_source config_source runtime_user
+    runtime_user="$(_cliproxyapi_runtime_user)"
+
+    if ! command -v curl >/dev/null 2>&1; then
+        apt_install curl
+    fi
+    if ! command -v tar >/dev/null 2>&1; then
+        apt_install tar
+    fi
+
+    arch="$(_cliproxyapi_release_arch)" || {
+        log_error "Unsupported architecture: $(uname -m)"
+        return 1
+    }
+
+    version="$(_cliproxyapi_remote_version)"
+    if [[ -z "$version" ]]; then
+        log_error "Could not resolve latest CLIProxyAPI release"
+        return 1
+    fi
+
+    asset_url="$(_cliproxyapi_release_asset_url "$version" "$arch")"
+    if [[ -z "$asset_url" ]]; then
+        log_error "Could not find release asset for ${arch}"
+        return 1
+    fi
+
+    _cliproxyapi_prepare_directories
+
+    archive="$(mktemp /tmp/cli-proxy-api-XXXXXX.tar.gz)"
+    temp_dir="$(mktemp -d /tmp/cli-proxy-api-XXXXXX)"
+    release_dir="${CLIPROXYAPI_RELEASES_DIR}/${version}"
+
+    log_info "Downloading CLIProxyAPI ${version} from ${asset_url}"
+    curl -fsSL "$asset_url" -o "$archive"
+
+    rm -rf "$release_dir"
+    mkdir -p "$release_dir"
+    tar -xzf "$archive" -C "$temp_dir"
+    cp -a "$temp_dir"/. "$release_dir"/
+
+    binary_source=$(find "$release_dir" -maxdepth 4 -type f \( -name 'CLIProxyAPI' -o -name 'cli-proxy-api' \) | head -n1 || true)
+    if [[ -z "$binary_source" ]]; then
+        rm -f "$archive"
+        rm -rf "$temp_dir"
+        log_error "CLIProxyAPI binary not found in release archive"
+        return 1
+    fi
+
+    cp "$binary_source" "$CLIPROXYAPI_BINARY"
+    chmod 755 "$CLIPROXYAPI_BINARY"
+
+    config_source=$(find "$release_dir" -maxdepth 4 -type f -name 'config.example.yaml' | head -n1 || true)
+    if [[ -n "$config_source" ]]; then
+        cp "$config_source" "$CLIPROXYAPI_EXAMPLE_CONFIG"
+        chown "$runtime_user:$runtime_user" "$CLIPROXYAPI_EXAMPLE_CONFIG"
+        chmod 640 "$CLIPROXYAPI_EXAMPLE_CONFIG"
+    fi
+
+    write_file "$CLIPROXYAPI_VERSION_FILE" <<EOF
+${version}
+EOF
+    chown "$runtime_user:$runtime_user" "$CLIPROXYAPI_VERSION_FILE"
+    chmod 640 "$CLIPROXYAPI_VERSION_FILE"
+    chown -R "$runtime_user:$runtime_user" "$CLIPROXYAPI_DIR"
+
+    rm -f "$archive"
+    rm -rf "$temp_dir"
+
+    printf '%s' "$version"
+}
+
+_cliproxyapi_write_config() {
+    local runtime_user runtime_home require_api_key request_logs api_keys_yaml logs_max_total_size_mb
+    runtime_user="$(_cliproxyapi_runtime_user)"
+    runtime_home="$(_cliproxyapi_runtime_home)"
+    require_api_key="$(_cliproxyapi_state_get CLIPROXYAPI_REQUIRE_API_KEY)"
+    request_logs="$(_cliproxyapi_state_get CLIPROXYAPI_REQUEST_LOGS)"
+
+    api_keys_yaml="api-keys: []"
+    if [[ "$require_api_key" == "yes" ]]; then
+        api_keys_yaml=$(cat <<EOF
+api-keys:
+  - "$(_cliproxyapi_ensure_client_key)"
+EOF
+)
+    fi
+
+    logs_max_total_size_mb=0
+    if [[ "$request_logs" == "yes" ]]; then
+        logs_max_total_size_mb=500
+    fi
+
+    backup_file "$CLIPROXYAPI_CONFIG_FILE" >/dev/null || true
+    write_file "$CLIPROXYAPI_CONFIG_FILE" <<EOF
+host: "127.0.0.1"
+port: ${CLIPROXYAPI_PORT}
+tls:
+  enable: false
+  cert: ""
+  key: ""
+remote-management:
+  allow-remote: false
+  secret-key: ""
+  disable-control-panel: false
+  panel-github-repository: "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
+auth-dir: "${runtime_home}/.cli-proxy-api"
+${api_keys_yaml}
+debug: false
+pprof:
+  enable: false
+  addr: "127.0.0.1:${CLIPROXYAPI_PPROF_PORT}"
+commercial-mode: false
+logging-to-file: $( [[ "$request_logs" == "yes" ]] && printf 'true' || printf 'false' )
+logs-max-total-size-mb: ${logs_max_total_size_mb}
+error-logs-max-files: 10
+usage-statistics-enabled: false
+proxy-url: ""
+force-model-prefix: false
+passthrough-headers: false
+request-retry: 3
+max-retry-credentials: 0
+max-retry-interval: 30
+disable-cooling: false
+quota-exceeded:
+  switch-project: true
+  switch-preview-model: true
+  antigravity-credits: true
+routing:
+  strategy: "round-robin"
+  session-affinity: false
+  session-affinity-ttl: "1h"
+ws-auth: false
+enable-gemini-cli-endpoint: false
+nonstream-keepalive-interval: 0
+EOF
+    chown "$runtime_user:$runtime_user" "$CLIPROXYAPI_CONFIG_FILE"
+    chmod 640 "$CLIPROXYAPI_CONFIG_FILE"
+}
+
+_cliproxyapi_write_service() {
+    local runtime_user runtime_home
+    runtime_user="$(_cliproxyapi_runtime_user)"
+    runtime_home="$(_cliproxyapi_runtime_home)"
+
+    backup_file "$CLIPROXYAPI_SERVICE_FILE" >/dev/null || true
+    write_file "$CLIPROXYAPI_SERVICE_FILE" <<EOF
+[Unit]
+Description=CLIProxyAPI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${runtime_user}
+Group=${runtime_user}
+WorkingDirectory=${CLIPROXYAPI_DIR}
+Environment=HOME=${runtime_home}
+ExecStart=${CLIPROXYAPI_BINARY}
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chmod 644 "$CLIPROXYAPI_SERVICE_FILE"
+    systemctl daemon-reload
+}
+
+_cliproxyapi_assert_ufw_closed() {
+    local ufw_out ufw_recheck
+    ufw_out=$(ufw status 2>/dev/null || true)
+
+    if printf '%s\n' "$ufw_out" | grep -Eq "8317.*ALLOW|ALLOW.*8317"; then
+        log_warn "Security invariant: UFW has an ALLOW rule for port 8317 - removing it automatically"
+        ufw delete allow 8317/tcp >/dev/null 2>&1 || true
+        ufw delete allow 8317 >/dev/null 2>&1 || true
+        ufw delete allow 8317/udp >/dev/null 2>&1 || true
+        ufw_recheck=$(ufw status 2>/dev/null || true)
+        if printf '%s\n' "$ufw_recheck" | grep -Eq "8317.*ALLOW|ALLOW.*8317"; then
+            log_error "Security invariant violation: UFW still has an ALLOW rule for port 8317"
+            print_error "Port 8317 is publicly allowed in UFW. Remove it manually: sudo ufw delete allow 8317/tcp"
+            return 1
+        fi
+        log_info "UFW ALLOW rule for port 8317 removed automatically"
+    fi
+
+    if printf '%s\n' "$ufw_out" | grep -Eq "8317.*DENY|DENY.*8317"; then
+        log_info "Removing stale UFW DENY rule for port 8317"
+        ufw delete deny 8317/tcp >/dev/null 2>&1 || true
+        ufw delete deny 8317 >/dev/null 2>&1 || true
+        ufw delete deny 8317/udp >/dev/null 2>&1 || true
+    fi
+
+    log_info "Verified UFW: no rule exposes port 8317"
+    return 0
+}
+
+_cliproxyapi_ssl_cert_ready() {
+    local domain="$1"
+    [[ -f "/etc/letsencrypt/live/${domain}/fullchain.pem" ]] && [[ -f "/etc/letsencrypt/live/${domain}/privkey.pem" ]]
+}
+
+_cliproxyapi_remove_legacy_domain_files() {
+    local domain="$1"
+    rm -f "/etc/nginx/sites-enabled/nine-router.${domain}" "/etc/nginx/sites-available/nine-router.${domain}"
+}
+
+_cliproxyapi_render_vhost() {
+    local domain="$1"
+    local vhost_path enabled_path ssl_http_block ssl_https_block ssl_enabled
+    vhost_path="/etc/nginx/sites-available/cli-proxy-api.${domain}"
+    enabled_path="/etc/nginx/sites-enabled/cli-proxy-api.${domain}"
+    ssl_enabled="no"
+    ssl_http_block=""
+    ssl_https_block=""
+
+    if [[ ! -f "$CLIPROXYAPI_VHOST_TEMPLATE" ]]; then
+        log_error "Missing nginx template: ${CLIPROXYAPI_VHOST_TEMPLATE}"
+        return 1
+    fi
+
+    if _cliproxyapi_ssl_cert_ready "$domain"; then
+        ssl_enabled="yes"
+        ssl_http_block="    return 301 https://\$host\$request_uri;"
+        ssl_https_block=$(cat <<EOF
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name ${domain};
+
+    access_log /var/log/nginx/cli-proxy-api.access.log;
+    error_log  /var/log/nginx/cli-proxy-api.error.log;
+
+    ssl_certificate /etc/letsencrypt/live/${domain}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    add_header Content-Security-Policy "default-src 'self'; frame-ancestors 'none'" always;
+    add_header Permissions-Policy        "geolocation=(), microphone=(), camera=(), payment=(), usb=()" always;
+    add_header X-XSS-Protection          "1; mode=block" always;
+    add_header Referrer-Policy           "strict-origin-when-cross-origin" always;
+    add_header X-Content-Type-Options    "nosniff" always;
+    add_header X-Frame-Options           "SAMEORIGIN" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    location / {
+        proxy_pass         http://127.0.0.1:${CLIPROXYAPI_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade \$http_upgrade;
+        proxy_set_header   Connection 'upgrade';
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Real-IP \$remote_addr;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
+        proxy_cache_bypass \$http_upgrade;
+
+        proxy_connect_timeout 10s;
+        proxy_read_timeout    120s;
+        proxy_send_timeout    60s;
+        proxy_buffering       off;
+    }
+}
+EOF
+)
+    fi
+
+    backup_file "$vhost_path" >/dev/null || true
+    render_template "$CLIPROXYAPI_VHOST_TEMPLATE" \
+        "DOMAIN=${domain}" \
+        "CLIPROXYAPI_PORT=${CLIPROXYAPI_PORT}" \
+        "SSL_HTTP_BLOCK=${ssl_http_block}" \
+        "SSL_HTTPS_BLOCK=${ssl_https_block}" \
+        | write_file "$vhost_path"
+
+    safe_symlink "$vhost_path" "$enabled_path"
+    _cliproxyapi_remove_legacy_domain_files "$domain"
+    printf '%s' "$ssl_enabled"
+}
+
+_cliproxyapi_retire_legacy_runtime() {
+    if command -v pm2 >/dev/null 2>&1 && _cliproxyapi_run_as_runtime_user pm2 describe "$LEGACY_NINE_ROUTER_PM2_NAME" >/dev/null 2>&1; then
+        _cliproxyapi_run_as_runtime_user pm2 delete "$LEGACY_NINE_ROUTER_PM2_NAME" >/dev/null 2>&1 || true
+        _cliproxyapi_run_as_runtime_user pm2 save >/dev/null 2>&1 || true
+    fi
+
+    if [[ -d "$LEGACY_NINE_ROUTER_DIR" ]]; then
+        rm -rf "$LEGACY_NINE_ROUTER_DIR"
+    fi
+    if [[ -d "$LEGACY_NINE_ROUTER_DATA_DIR" ]]; then
+        rm -rf "$LEGACY_NINE_ROUTER_DATA_DIR"
+    fi
+    rm -f "$LEGACY_NINE_ROUTER_LOGROTATE_FILE"
+}
+
+_cliproxyapi_show_login_guidance() {
+    local runtime_user runtime_home
+    runtime_user="$(_cliproxyapi_runtime_user)"
+    runtime_home="$(_cliproxyapi_runtime_home)"
+
+    echo ""
+    echo "Next auth/bootstrap commands:"
+    echo "  sudo -u ${runtime_user} env HOME=${runtime_home} ${CLIPROXYAPI_BINARY} --claude-login"
+    echo "  sudo -u ${runtime_user} env HOME=${runtime_home} ${CLIPROXYAPI_BINARY} --codex-login"
+    echo "  sudo -u ${runtime_user} env HOME=${runtime_home} ${CLIPROXYAPI_BINARY} --login"
+    echo ""
+    echo "Source repo: ${CLIPROXYAPI_SOURCE_REPO_URL}"
+    echo "Config file: ${CLIPROXYAPI_CONFIG_FILE}"
+    echo "Local endpoint: http://127.0.0.1:${CLIPROXYAPI_PORT}/v1"
+}
+
+install_cliproxyapi() {
+    print_section "Install CLIProxyAPI"
+    require_root || return 1
+    _cliproxyapi_migrate_legacy_state
+
+    if [[ -x "$CLIPROXYAPI_BINARY" ]]; then
+        print_warn "CLIProxyAPI is already installed at ${CLIPROXYAPI_DIR}."
+        if ! prompt_confirm "Cài lại từ đầu?"; then
+            print_warn "Installation cancelled."
+            return 0
+        fi
+        service_stop "$CLIPROXYAPI_SERVICE_NAME" >/dev/null 2>&1 || true
+    fi
+
+    local version
+    version="$(_cliproxyapi_install_latest_release)" || return 1
+
+    if [[ -z "$(_cliproxyapi_state_get CLIPROXYAPI_REQUIRE_API_KEY)" ]]; then
+        _cliproxyapi_set_state "CLIPROXYAPI_REQUIRE_API_KEY" "no"
+    fi
+    if [[ -z "$(_cliproxyapi_state_get CLIPROXYAPI_REQUEST_LOGS)" ]]; then
+        _cliproxyapi_set_state "CLIPROXYAPI_REQUEST_LOGS" "no"
+    fi
+
+    _cliproxyapi_write_config
+    _cliproxyapi_write_service
+
+    service_enable "$CLIPROXYAPI_SERVICE_NAME"
+    service_restart "$CLIPROXYAPI_SERVICE_NAME" 30 || service_start "$CLIPROXYAPI_SERVICE_NAME"
+
+    _cliproxyapi_set_state "CLIPROXYAPI_INSTALLED" "yes"
+    _cliproxyapi_set_state "CLIPROXYAPI_VERSION" "$version"
+    _cliproxyapi_set_state "CLIPROXYAPI_PORT" "$CLIPROXYAPI_PORT"
+    _cliproxyapi_set_state "CLIPROXYAPI_SERVICE_NAME" "$CLIPROXYAPI_SERVICE_NAME"
+    _cliproxyapi_set_state "CLIPROXYAPI_RUNTIME_USER" "$(_cliproxyapi_runtime_user)"
+    _cliproxyapi_set_state "CLIPROXYAPI_CONFIG_FILE" "$CLIPROXYAPI_CONFIG_FILE"
+    _cliproxyapi_set_state "CLIPROXYAPI_AUTH_DIR" "$(_cliproxyapi_runtime_home)/.cli-proxy-api"
+    _cliproxyapi_set_state "CLIPROXYAPI_INSTALL_DATE" "$(date +%F)"
+
+    [[ -n "$(_cliproxyapi_state_get CLIPROXYAPI_DOMAIN)" ]] || _cliproxyapi_set_state "CLIPROXYAPI_DOMAIN" ""
+    [[ -n "$(_cliproxyapi_state_get CLIPROXYAPI_SSL)" ]] || _cliproxyapi_set_state "CLIPROXYAPI_SSL" "no"
+
+    _cliproxyapi_assert_ufw_closed || return 1
+    print_ok "CLIProxyAPI installed and registered in systemd"
+    _cliproxyapi_show_login_guidance
+}
+
+update_cliproxyapi() {
+    print_section "Update CLIProxyAPI"
+    require_root || return 1
+
+    if [[ ! -x "$CLIPROXYAPI_BINARY" ]]; then
+        log_error "CLIProxyAPI is not installed in ${CLIPROXYAPI_DIR}"
+        return 1
+    fi
+
+    local local_ver remote_ver was_active version
+    local_ver="$(_cliproxyapi_local_version)"
+    remote_ver="$(_cliproxyapi_remote_version)"
+
+    if [[ -n "$local_ver" && -n "$remote_ver" ]]; then
+        echo "  Installed : ${local_ver}"
+        echo "  Available : ${remote_ver}"
+        if [[ "$local_ver" == "$remote_ver" ]]; then
+            print_ok "CLIProxyAPI is already up to date (${local_ver})"
+            if ! prompt_confirm "Update anyway?"; then
+                return 0
+            fi
+        else
+            print_warn "New version available: ${local_ver} -> ${remote_ver}"
+        fi
+    else
+        log_warn "Could not compare versions; proceeding with update"
+    fi
+
+    was_active="no"
+    if service_active "$CLIPROXYAPI_SERVICE_NAME"; then
+        was_active="yes"
+        service_stop "$CLIPROXYAPI_SERVICE_NAME" || true
+    fi
+
+    version="$(_cliproxyapi_install_latest_release)" || return 1
+    _cliproxyapi_write_config
+    _cliproxyapi_write_service
+
+    if [[ "$was_active" == "yes" ]]; then
+        service_start "$CLIPROXYAPI_SERVICE_NAME"
+    fi
+
+    _cliproxyapi_set_state "CLIPROXYAPI_VERSION" "$version"
+    _cliproxyapi_assert_ufw_closed || return 1
+    print_ok "CLIProxyAPI updated to ${version}"
+}
+
+link_cliproxyapi_domain() {
+    require_root || return 1
+    local domain="${1:-}"
+    if [[ -z "$domain" ]]; then
+        prompt_input "Enter domain for CLIProxyAPI"
+        domain="${REPLY:-}"
+    fi
+
+    if [[ -z "$domain" ]]; then
+        log_error "Domain is required"
+        return 1
+    fi
+
+    create_default_deny
+
+    local ssl_enabled
+    ssl_enabled="$(_cliproxyapi_render_vhost "$domain")" || return 1
+
+    nginx -t
+    service_enable nginx
+    service_reload nginx
+
+    _cliproxyapi_set_state "CLIPROXYAPI_DOMAIN" "$domain"
+    _cliproxyapi_set_state "CLIPROXYAPI_SSL" "$ssl_enabled"
+
+    _cliproxyapi_retire_legacy_runtime
+    _cliproxyapi_assert_ufw_closed || return 1
+    print_ok "CLIProxyAPI linked to domain: ${domain}"
+}
+
+toggle_cliproxyapi_api_key() {
+    require_root || return 1
+    local mode="${1:-}"
+    local state_value
+
+    case "$mode" in
+        on)  state_value="yes" ;;
+        off) state_value="no" ;;
+        *)
+            print_error "Usage: toggle_cliproxyapi_api_key <on|off>"
+            return 1
+            ;;
+    esac
+
+    if [[ ! -x "$CLIPROXYAPI_BINARY" ]]; then
+        log_error "Install CLIProxyAPI first."
+        return 1
+    fi
+
+    _cliproxyapi_set_state "CLIPROXYAPI_REQUIRE_API_KEY" "$state_value"
+    _cliproxyapi_write_config
+    service_restart "$CLIPROXYAPI_SERVICE_NAME" 30
+
+    _cliproxyapi_assert_ufw_closed || return 1
+    print_ok "API key requirement ${state_value}"
+    if [[ "$state_value" == "yes" ]]; then
+        print_warn "Client API key saved at ${CLIPROXYAPI_CLIENT_KEY_FILE}"
+    fi
+}
+
+toggle_cliproxyapi_request_logs() {
+    require_root || return 1
+    local mode="${1:-}"
+    local state_value
+
+    case "$mode" in
+        on)  state_value="yes" ;;
+        off) state_value="no" ;;
+        *)
+            print_error "Usage: toggle_cliproxyapi_request_logs <on|off>"
+            return 1
+            ;;
+    esac
+
+    if [[ ! -x "$CLIPROXYAPI_BINARY" ]]; then
+        log_error "Install CLIProxyAPI first."
+        return 1
+    fi
+
+    _cliproxyapi_set_state "CLIPROXYAPI_REQUEST_LOGS" "$state_value"
+    _cliproxyapi_write_config
+    service_restart "$CLIPROXYAPI_SERVICE_NAME" 30
+
+    _cliproxyapi_assert_ufw_closed || return 1
+    print_ok "Request logging ${state_value}"
+}
+
+_cliproxyapi_verify_models_json() {
+    local api_key curl_args response
+    api_key="$(_cliproxyapi_client_key)"
+    curl_args=( -fsS --max-time 5 )
+    if [[ "$(_cliproxyapi_state_get CLIPROXYAPI_REQUIRE_API_KEY)" == "yes" ]] && [[ -n "$api_key" ]]; then
+        curl_args+=( -H "Authorization: Bearer ${api_key}" )
+    fi
+
+    response=$(curl "${curl_args[@]}" "http://127.0.0.1:${CLIPROXYAPI_PORT}/v1/models" 2>/dev/null || true)
+    if [[ -z "$response" ]]; then
+        return 1
+    fi
+    printf '%s' "$response" | grep -qE '^[[:space:]]*[\[{]'
+}
+
+verify_cliproxyapi() {
+    print_section "Verify CLIProxyAPI"
+    require_root || return 1
+
+    if ! service_active "$CLIPROXYAPI_SERVICE_NAME"; then
+        log_error "Service ${CLIPROXYAPI_SERVICE_NAME} is not active"
+        return 1
+    fi
+    print_ok "Systemd service is active"
+
+    local listening_public listening_local
+    listening_public=$(ss -tln 2>/dev/null | awk '$4 ~ /:8317$/ {print $4}' | grep -E '(^0\.0\.0\.0:8317$|^\[::\]:8317$)' || true)
+    listening_local=$(ss -tln 2>/dev/null | awk '$4 ~ /:8317$/ {print $4}' | grep -E '(^127\.0\.0\.1:8317$|^\[::1\]:8317$)' || true)
+
+    if [[ -n "$listening_public" ]]; then
+        log_error "CLIProxyAPI is binding publicly on 8317 (${listening_public})"
+        return 1
+    fi
+    if [[ -z "$listening_local" ]]; then
+        log_error "CLIProxyAPI is not listening on loopback 8317"
+        return 1
+    fi
+    print_ok "Service is listening on loopback only"
+
+    if ! _cliproxyapi_verify_models_json; then
+        log_error "Local /v1/models did not return JSON"
+        return 1
+    fi
+    print_ok "Local /v1/models endpoint returned JSON"
+
+    _cliproxyapi_assert_ufw_closed || return 1
+    print_ok "Verification passed"
+}
+
+cliproxyapi_start() {
+    print_section "Start CLIProxyAPI"
+    require_root || return 1
+    service_start "$CLIPROXYAPI_SERVICE_NAME"
+    _cliproxyapi_assert_ufw_closed
+}
+
+cliproxyapi_stop() {
+    print_section "Stop CLIProxyAPI"
+    require_root || return 1
+    service_stop "$CLIPROXYAPI_SERVICE_NAME"
+}
+
+cliproxyapi_restart() {
+    print_section "Restart CLIProxyAPI"
+    require_root || return 1
+    service_restart "$CLIPROXYAPI_SERVICE_NAME" 30
+    _cliproxyapi_assert_ufw_closed
+}
+
+cliproxyapi_status() {
+    print_section "CLIProxyAPI Status"
+    service_status "$CLIPROXYAPI_SERVICE_NAME" || true
+    _cliproxyapi_assert_ufw_closed || true
+}
+
+cliproxyapi_logs() {
+    print_section "CLIProxyAPI Logs"
+    journalctl -u "$CLIPROXYAPI_SERVICE_NAME" -n 50 --no-pager || true
+}
+
+_cliproxyapi_show_status() {
+    local installed_label domain ssl_val domain_label service_status_label api_key_label request_logs_label local_ver
+
+    if [[ -x "$CLIPROXYAPI_BINARY" ]]; then
+        local_ver="$(_cliproxyapi_local_version)"
+        installed_label="Installed (${CLIPROXYAPI_DIR}) v${local_ver:-?}"
+    else
+        installed_label="Not installed"
+    fi
+
+    domain="$(_cliproxyapi_state_get CLIPROXYAPI_DOMAIN)"
+    if [[ -n "$domain" ]]; then
+        ssl_val="$(_cliproxyapi_state_get CLIPROXYAPI_SSL)"
+        if [[ "$ssl_val" == "yes" ]]; then
+            domain_label="${domain} (SSL)"
+        else
+            domain_label="${domain} (no SSL)"
+        fi
+    else
+        domain_label="not configured"
+    fi
+
+    service_status_label=$(systemctl is-active "$CLIPROXYAPI_SERVICE_NAME" 2>/dev/null || echo "inactive")
+
+    if [[ "$(_cliproxyapi_state_get CLIPROXYAPI_REQUIRE_API_KEY)" == "yes" ]]; then
+        api_key_label="enabled"
+    else
+        api_key_label="disabled"
+    fi
+
+    if [[ "$(_cliproxyapi_state_get CLIPROXYAPI_REQUEST_LOGS)" == "yes" ]]; then
+        request_logs_label="enabled"
+    else
+        request_logs_label="disabled"
+    fi
+
+    echo "  Installation  : ${installed_label}"
+    echo "  Source repo    : ${CLIPROXYAPI_SOURCE_REPO_URL}"
+    echo "  Local address  : 127.0.0.1:${CLIPROXYAPI_PORT}"
+    echo "  Domain         : ${domain_label}"
+    echo "  Service        : ${service_status_label}"
+    echo "  API Key        : ${api_key_label}"
+    echo "  Request logs   : ${request_logs_label}"
+    echo ""
+}
+
+menu_cliproxyapi() {
+    _cliproxyapi_menu_run() {
+        "$@"
+        return 0
+    }
+
+    while true; do
+        print_section "CLIProxyAPI Management"
+        _cliproxyapi_show_status
+        echo "  1) Install CLIProxyAPI"
+        echo "  2) Update CLIProxyAPI"
+        echo "  3) Link CLIProxyAPI to a domain"
+        echo "  4) Start CLIProxyAPI"
+        echo "  5) Stop CLIProxyAPI"
+        echo "  6) Restart CLIProxyAPI"
+        echo "  7) View CLIProxyAPI logs"
+        echo "  8) Enable API key requirement"
+        echo "  9) Disable API key requirement"
+        echo "  10) Enable request logging"
+        echo "  11) Disable request logging"
+        echo "  12) Verify CLIProxyAPI"
+        echo "  0) Back"
+        echo ""
+        read -r -p "Select: " choice
+        case "$choice" in
+            1) _cliproxyapi_menu_run install_cliproxyapi ;;
+            2) _cliproxyapi_menu_run update_cliproxyapi ;;
+            3) _cliproxyapi_menu_run link_cliproxyapi_domain ;;
+            4) _cliproxyapi_menu_run cliproxyapi_start ;;
+            5) _cliproxyapi_menu_run cliproxyapi_stop ;;
+            6) _cliproxyapi_menu_run cliproxyapi_restart ;;
+            7) _cliproxyapi_menu_run cliproxyapi_logs ;;
+            8) _cliproxyapi_menu_run toggle_cliproxyapi_api_key on ;;
+            9) _cliproxyapi_menu_run toggle_cliproxyapi_api_key off ;;
+            10) _cliproxyapi_menu_run toggle_cliproxyapi_request_logs on ;;
+            11) _cliproxyapi_menu_run toggle_cliproxyapi_request_logs off ;;
+            12) _cliproxyapi_menu_run verify_cliproxyapi ;;
+            0) return 0 ;;
+            *) print_warn "Invalid option" ;;
+        esac
+    done
+}

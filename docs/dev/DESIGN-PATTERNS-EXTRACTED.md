@@ -57,7 +57,7 @@ Muc tieu: chot cac pattern control-plane ma script production cua OPS nen tuan t
   - Nginx 80/443
 - Private:
   - Node app localhost
-  - 9router localhost
+  - CLIProxyAPI localhost
   - PHP-FPM socket/localhost
   - DB local by default
 

@@ -26,11 +26,11 @@ When the task is implementation planning or execution by phase, also read the co
 - `docs/dev/PHASE-03-IMPLEMENTATION-SPEC.md`
 - `docs/dev/PHASE-04-IMPLEMENTATION-SPEC.md`
 
-When the task involves **9router**, **Codex CLI**, or **Claude Code CLI**:
+When the task involves **CLIProxyAPI**, **Codex CLI**, or **Claude Code CLI**:
 
-- `docs/reference/NINE-ROUTER-SPEC.md` — clone URL, install, env (INITIAL_PASSWORD flow), PM2, Nginx (SSE), security contract
-- `docs/reference/CODEX-CLI-SPEC.md` — install, configure (9router mode / API key), menu actions, secret file paths
-- `docs/reference/CLAUDE-CODE-SPEC.md` — install, configure, Vietnamese fix, Telegram bot, config paths, security rules, rollback
+- `docs/reference/CLI-PROXY-API-SPEC.md` - CLIProxyAPI provider spec: release install, `config.yaml`, systemd, Nginx proxy, security contract
+- `docs/reference/CODEX-CLI-SPEC.md` - install, configure (CLIProxyAPI mode / API key), menu actions, secret file paths
+- `docs/reference/CLAUDE-CODE-SPEC.md` - install, configure, Vietnamese fix, Telegram bot, config paths, security rules, rollback
 
 Do not skip this step; these documents contain project-level contracts.
 
@@ -104,7 +104,7 @@ When updating docs after a code change, put the file in the correct tier:
 
 ## 8. Interaction with other parts of the repo
 
-- OPS is designed to deploy and manage 9router and other Node/PHP apps, but:
+- OPS is designed to deploy and manage CLIProxyAPI and other Node/PHP apps, but:
   - It should not embed application-specific logic beyond what is necessary to install and run them.
   - Keep OPS generic and modular; legacy folder-specific kits should not become hidden architecture dependencies.
 

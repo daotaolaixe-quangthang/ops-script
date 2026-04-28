@@ -46,7 +46,7 @@ Installer asks for:
 
 3. **Capacity estimation**:
    - Based on RAM and CPU, compute:
-     - Recommended number of active Node/9router sites.
+     - Recommended number of active Node.js / CLIProxyAPI sites.
      - Rough concurrent user range per site.
    - Store this in `/etc/ops/capacity.conf` (or JSON) for later display.
 
@@ -156,7 +156,7 @@ From the main menu, user selects **“Production Setup Wizard”** (or similar).
      - PHP‑FPM versions installed (if selected).
      - DB server running (if installed).
    - Show a summary screen with next recommended actions:
-     - Use Node.js / 9router menus to create services.
+     - Use Node.js / CLIProxyAPI menus to create services.
      - Use Domain & SSL menus to attach domains.
 
 The wizard should be re‑runnable; subsequent runs should detect existing state and ask before changing configs.
@@ -197,7 +197,7 @@ After reboot and first stable login on the new port, users typically:
 
 1. Use **Node.js Services** menu to:
    - Create or import Node.js apps.
-   - Deploy and manage 9router.
+   - Deploy and manage CLIProxyAPI.
 2. Use **Domains & Nginx** menu to:
    - Add domains.
    - Attach them to Node/PHP apps.

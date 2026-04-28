@@ -6,7 +6,7 @@ Phase overview — mục tiêu, entry conditions, và "done" criteria mỗi phas
 
 ---
 
-## Phase 0 — Legacy 9router VPS kit
+## Phase 0 - Legacy provider VPS kit
 
 Status: **Deprecated — removed from active architecture.**
 
@@ -32,14 +32,14 @@ Goal: VPS production stack trên Ubuntu 22.04/24.04 với:
 - MariaDB (default)
 - Certbot SSL
 - Basic monitoring
-- 9router management
+- CLIProxyAPI management
 - Codex CLI + Claude Code CLI integration
 
 "Done" criteria:
 - Fresh Ubuntu 22.04/24.04 VPS: chạy installer one-liner, login admin user, thấy dashboard, mở menu.
 - Chạy production wizard thành công.
 - Tạo được Node service và PHP site.
-- Install và expose 9router qua Nginx.
+- Install và expose CLIProxyAPI qua Nginx.
 - Cấp SSL qua Certbot.
 
 Detailed spec: `docs/dev/PHASE-01-IMPLEMENTATION-SPEC.md`

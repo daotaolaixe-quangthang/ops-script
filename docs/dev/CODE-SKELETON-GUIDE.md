@@ -314,7 +314,7 @@ source "$OPS_ROOT/modules/setup-wizard.sh"
 source "$OPS_ROOT/modules/security.sh"
 source "$OPS_ROOT/modules/nginx.sh"
 source "$OPS_ROOT/modules/node.sh"
-source "$OPS_ROOT/modules/nine-router.sh"
+source "$OPS_ROOT/modules/cli-proxy-api.sh"
 source "$OPS_ROOT/modules/php.sh"
 source "$OPS_ROOT/modules/database.sh"
 source "$OPS_ROOT/modules/monitoring.sh"
@@ -328,7 +328,7 @@ main_menu() {
         echo "  2) Node.js Services"
         echo "  3) Domains & Nginx"
         echo "  4) SSL Management"
-        echo "  5) 9router Management"
+        echo "  5) CLIProxyAPI Management"
         echo "  6) PHP / PHP-FPM Management"
         echo "  7) Database Management"
         echo "  8) AI Agent Integration"
@@ -342,7 +342,7 @@ main_menu() {
             2) menu_node           ;;
             3) menu_nginx          ;;
             4) menu_ssl            ;;
-            5) menu_nine_router    ;;
+            5) menu_cliproxyapi    ;;
             6) menu_php            ;;
             7) menu_database       ;;
             8) menu_ai_agent       ;;

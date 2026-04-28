@@ -38,7 +38,7 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
 ## 3) Nginx la public entrypoint duy nhat
 
 - **Pattern**:
-  - Node app hoac 9router bi expose thang ra public
+  - Node app hoac CLIProxyAPI bi expose thang ra public
 - **Rui ro**:
   - bo qua TLS, rate limit, host validation, default deny
 - **Safe action**:
@@ -131,27 +131,28 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
 - **Safe action**:
   - clone capability, source of truth, verify/rollback discipline
 
-## 13) 9router network posture va UFW check
+## 13) CLIProxyAPI network posture va UFW check
 
 - **Pattern**:
-  - doc note cu/ngoai repo roi "sua" 9router bind thanh `0.0.0.0`
-  - hoac thay 9router vhost khong co `limit_req` roi xoa ca global `limit_req_zone` / `limit_conn_zone`
-  - hoac ep buoc them `ufw deny 20128` du explicit deny khong can thiet
+  - doc note cu/ngoai repo roi "sua" provider bind thanh `0.0.0.0`
+  - hoac mo public port `8317`
+  - hoac bat `remote-management.allow-remote: true` ma khong co nhu cau ro rang
 - **Rui ro**:
-  - 9router bi expose sai posture, hoac lam vo baseline hardening cho cac vhost khac
-  - 9router co the bi false-positive `429` khi fast navigation / F5 neu them rate limit per-vhost
+  - CLIProxyAPI bi expose sai posture va bypass public edge policy cua Nginx
+  - management surface mo rong ngoai y muon
 - **Safe action**:
-  - 9router trong OPS hien tai BUOC PHAI bind `127.0.0.1:20128`
-  - Nginx la public entrypoint duy nhat cho 9router
-  - `ufw allow 20128` la sai; explicit `ufw deny 20128` khong bat buoc va stale deny co the xoa
-  - Global `limit_req_zone` / `limit_conn_zone` trong `nginx.conf` van phai giu; chi rieng vhost 9router khong enforce `limit_req` / `limit_conn`
-  - Source of truth: `ops/modules/nine-router.sh`, `ops/modules/nginx.sh`, `ops/modules/verify.sh`, `ops/modules/templates/nginx/nine-router.vhost.conf.tpl`, `ops/modules/templates/pm2/nine-router.ecosystem.config.js.tpl`
-  - Luon verify: `ufw status | grep 20128` khong duoc co `ALLOW`; `curl http://127.0.0.1:20128/v1/models` phai truy cap duoc local; public path phai di qua Nginx
+  - CLIProxyAPI trong OPS hien tai BUOC PHAI bind `127.0.0.1:8317`
+  - Nginx la public entrypoint duy nhat cho CLIProxyAPI
+  - `ufw allow 8317` la sai
+  - `remote-management.allow-remote` mac dinh phai la `false`
+  - `pprof.enable` mac dinh phai la `false`
+  - Source of truth: `ops/modules/cli-proxy-api.sh`, `ops/modules/nginx.sh`, `ops/modules/verify.sh`, `ops/modules/templates/nginx/cli-proxy-api.vhost.conf.tpl`
+  - Luon verify: `ufw status | grep 8317` khong duoc co `ALLOW`; `curl http://127.0.0.1:8317/v1/models` phai truy cap duoc local; public path phai di qua Nginx
 
 ## 14) Secret files permissions drift
 
 - **Pattern**:
-  - `/etc/ops/.nine-router-password`, `/etc/ops/.db-root-password`, `/etc/ops/.codex-api-key`
+  - `/etc/ops/.cli-proxy-api-key`, `/etc/ops/.db-root-password`, `/etc/ops/.codex-api-key`
     bi su dung trong script va vu tinh doi permission hoac owned by root
 - **Rui ro**:
   - admin user khong doc duoc secret, hoac secret bi lo neu group-readable
@@ -248,7 +249,7 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
 
 ## 21) PM2 log filenames get -0 suffix when merge_logs missing
 
-- **Pattern**: Ecosystem config missing `merge_logs: true` → PM2 appends `-<instance_id>` to log filenames (e.g. `nine-router.err-0.log` instead of `nine-router.err.log`).
+- **Pattern**: Ecosystem config missing `merge_logs: true` -> PM2 appends `-<instance_id>` to log filenames (e.g. `app.err-0.log` instead of `app.err.log`).
 - **Risk**: Log rotation rules, monitoring scripts, and logrotate configs that reference the filename without suffix stop working.
 - **Safe action**: Always set `merge_logs: true` in all ecosystem configs. OPS templates include this by default.
 

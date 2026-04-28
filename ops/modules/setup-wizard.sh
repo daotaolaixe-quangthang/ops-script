@@ -507,7 +507,7 @@ _wizard_print_summary() {
     echo "    • Add PHP sites        → Main menu → PHP / PHP-FPM"
     echo "    • Configure domains    → Main menu → Domains & Nginx"
     echo "    • Issue SSL certs      → Main menu → SSL Management"
-    echo "    • Deploy 9router       → Main menu → 9router Management"
+    echo "    - Deploy CLIProxyAPI   -> Main menu -> CLIProxyAPI Management"
     echo "    • Finalise SSH port    → Main menu → Security (close old SSH port)"
     echo ""
     print_ok "Wizard complete. Server is ready for production setup."

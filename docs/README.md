@@ -32,8 +32,8 @@ For AI agents and maintainers writing or reviewing code. Authority sources.
 | [SOURCE-TO-RUNTIME-TRACE.md](reference/SOURCE-TO-RUNTIME-TRACE.md) | Menu/module -> runtime state -> service -> verify -> rollback map |
 | [KNOWN-RISKS-PATTERNS.md](reference/KNOWN-RISKS-PATTERNS.md) | Recurring risk patterns — check before any review or fix |
 | [BUG-TRIAGE-INDEX.md](reference/BUG-TRIAGE-INDEX.md) | Fast entry points for bug triage by symptom |
-| [NINE-ROUTER-SPEC.md](reference/NINE-ROUTER-SPEC.md) | 9router install, env, PM2, Nginx vhost, secrets, verify, rollback |
-| [CODEX-CLI-SPEC.md](reference/CODEX-CLI-SPEC.md) | Codex CLI install, configure (9router mode), secrets, menu actions |
+| [CLI-PROXY-API-SPEC.md](reference/CLI-PROXY-API-SPEC.md) | CLIProxyAPI install, `config.yaml`, systemd, Nginx vhost, secrets, verify, rollback |
+| [CODEX-CLI-SPEC.md](reference/CODEX-CLI-SPEC.md) | Codex CLI install, configure (CLIProxyAPI mode), secrets, menu actions |
 | [CLAUDE-CODE-SPEC.md](reference/CLAUDE-CODE-SPEC.md) | Claude Code CLI, Vietnamese fix, Telegram bot, config paths, security, rollback |
 | [FEATURE-EXPANSION-SPEC.md](reference/FEATURE-EXPANSION-SPEC.md) | Feature extension map: phase, menu, state, verify, rollback |
 
@@ -50,7 +50,7 @@ For AI agents and maintainers writing or reviewing code. Authority sources.
 9. `dev/CODE-SKELETON-GUIDE.md` — read before writing any module
 
 Then the relevant spec for the task:
-- 9router work: `reference/NINE-ROUTER-SPEC.md`
+- CLIProxyAPI work: `reference/CLI-PROXY-API-SPEC.md`
 - Codex CLI: `reference/CODEX-CLI-SPEC.md`
 - Claude Code CLI / Telegram bot: `reference/CLAUDE-CODE-SPEC.md`
 - Phase implementation: `dev/PHASE-0N-IMPLEMENTATION-SPEC.md`

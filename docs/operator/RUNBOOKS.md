@@ -108,25 +108,26 @@ chown -R ${ADMIN_USER}:${ADMIN_USER} /home/${ADMIN_USER}/.ssh
   - restore build/env/config cu
   - tra Nginx ve target cu neu da doi
 
-## 4. 9router deploy or relink
+## 4. CLIProxyAPI deploy or relink
 
 - **Pre-check**:
-  - xac nhan 9router chi bind `127.0.0.1:20128`
-  - xac nhan domain router neu co se di qua Nginx
+  - xac nhan CLIProxyAPI chi bind `127.0.0.1:8317`
+  - xac nhan domain proxy neu co se di qua Nginx
+  - xac nhan runtime user co HOME hop le de login providers
 - **Change**:
-  - download/extract archive `vpswork.tar.gz` vao `/opt/9router`
-  - preserve `.env` va `/var/lib/9router`, chown app dir cho runtime user, `npm install && npm run build`
-  - quan ly bang PM2 nhu Node service khac
-  - wire Nginx route
+  - tai binary release vao `/opt/cli-proxy-api`
+  - ghi `config.yaml`, tao `cli-proxy-api.service`, start bang systemd
+  - bootstrap auth bang `--claude-login`, `--codex-login`, hoac `--login`
+  - wire Nginx route toi `127.0.0.1:8317`
 - **Verify**:
-  - `pm2 status`
-  - direct external access vao `:20128` that bai
-  - domain router hoat dong qua Nginx
-  - neu dung Cloudflare Access, private browser van bi challenge
+  - `systemctl status cli-proxy-api --no-pager`
+  - `curl http://127.0.0.1:8317/v1/models`
+  - direct external access vao `:8317` that bai
+  - domain proxy hoat dong qua Nginx
 - **Rollback**:
-  - stop PM2 process moi
+  - `systemctl stop cli-proxy-api`
   - remove route moi
-  - khoi phuc target cu
+  - khoi phuc config/state cu neu can
 
 ## 5. PHP version or PHP-FPM pool changes
 

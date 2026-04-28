@@ -5,8 +5,8 @@ These rules define how this project should evolve. Human contributors and AI age
 ### 1. Scope and philosophy
 
 - OPS exists to:
-  - Turn a fresh Ubuntu VPS into a **secure, production‑ready** stack.
-  - Provide a **menu‑driven interface** to manage Node.js apps, 9router, PHP, and DB.
+  - Turn a fresh Ubuntu VPS into a **secure, production-ready** stack.
+  - Provide a **menu-driven interface** to manage Node.js apps, CLIProxyAPI, PHP, and DB.
   - Remain **lighter and simpler** than full control panels.
 - OPS favours:
   - **Security and correctness over convenience**.

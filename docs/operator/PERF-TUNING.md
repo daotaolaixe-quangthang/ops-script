@@ -137,7 +137,7 @@ OPS must not oversubscribe memory; values must remain conservative by default.
 
 ### 5. Node.js and PM2
 
-For Node.js services (including 9router):
+For Node.js services (CLIProxyAPI is managed separately by systemd):
 
 - **Process count**:
   - Start with a single process per app unless:

@@ -135,8 +135,8 @@ _vs_check_ufw() {
         return 0
     fi
 
-    if printf '%s\n' "$status_output" | grep -Eq "20128/tcp[[:space:]]+ALLOW"; then
-        _vs_fail "UFW" "9router port 20128 is publicly allowed" "remove allow rule and keep only nginx public"
+    if printf '%s\n' "$status_output" | grep -Eq "8317/tcp[[:space:]]+ALLOW"; then
+        _vs_fail "UFW" "CLIProxyAPI port 8317 is publicly allowed" "remove allow rule and keep only nginx public"
         _vs_set_result fail
         return 0
     fi
@@ -159,7 +159,7 @@ _vs_check_ufw() {
         return 0
     fi
 
-    _vs_pass "UFW" "active, managed SSH/http/https rules present, 20128 not exposed"
+    _vs_pass "UFW" "active, managed SSH/http/https rules present, 8317 not exposed"
     _vs_set_result pass
     return 0
 }
@@ -309,38 +309,54 @@ _vs_check_pm2() {
     return 0
 }
 
-_vs_check_nine_router() {
-    if ! command -v pm2 >/dev/null 2>&1; then
-        _vs_set_result pass
+_vs_check_cliproxyapi() {
+    if ! systemctl list-unit-files 2>/dev/null | grep -q '^cli-proxy-api\.service'; then
+        _vs_warn "CLIProxyAPI" "service cli-proxy-api is not installed" "deploy via OPS: CLIProxyAPI Management"
+        _vs_set_result warn
         return 0
     fi
-    local status listening_public
-    status=$(_vs_run_as_runtime_user pm2 jlist 2>/dev/null | ops_pm2_process_status_from_json "nine-router" 2>/dev/null || echo "error")
-    listening_public=$(ss -tln 2>/dev/null | awk '$4 ~ /:20128$/ {print $4}' | grep -E '(^0\.0\.0\.0:20128$|^\[::\]:20128$)' || true)
+
+    local status listening_public listening_local api_key api_header response
+    status=$(systemctl is-active cli-proxy-api 2>/dev/null || echo "inactive")
+    listening_public=$(ss -tln 2>/dev/null | awk '$4 ~ /:8317$/ {print $4}' | grep -E '(^0\.0\.0\.0:8317$|^\[::\]:8317$)' || true)
+    listening_local=$(ss -tln 2>/dev/null | awk '$4 ~ /:8317$/ {print $4}' | grep -E '(^127\.0\.0\.1:8317$|^\[::1\]:8317$)' || true)
+
     case "$status" in
-        online)
+        active)
             if [[ -n "$listening_public" ]]; then
-                _vs_warn "9router" "PM2 online and binding publicly on 20128 (${listening_public})" "verify UFW deny rule and keep nginx as sole public entrypoint"
+                _vs_warn "CLIProxyAPI" "service is binding publicly on 8317 (${listening_public})" "verify UFW deny rule and keep nginx as sole public entrypoint"
                 _vs_set_result warn
                 return 0
             fi
-            if curl -sf --max-time 2 "http://127.0.0.1:20128" >/dev/null 2>&1 || \
-               curl -sf --max-time 2 "http://127.0.0.1:20128/health" >/dev/null 2>&1; then
-                _vs_pass "9router" "online, localhost 20128 reachable"
+            if [[ -z "$listening_local" ]]; then
+                _vs_fail "CLIProxyAPI" "service is not listening on loopback 8317" "systemctl status cli-proxy-api to diagnose"
+                _vs_set_result fail
+                return 0
+            fi
+
+            api_header=()
+            if [[ "$(ops_conf_get "cli-proxy-api.conf" "CLIPROXYAPI_REQUIRE_API_KEY" 2>/dev/null || true)" == "yes" ]] && [[ -f "${OPS_CONFIG_DIR}/.cli-proxy-api-key" ]]; then
+                api_key=$(tr -d '\r\n' < "${OPS_CONFIG_DIR}/.cli-proxy-api-key")
+                [[ -n "$api_key" ]] && api_header=(-H "Authorization: Bearer ${api_key}")
+            fi
+
+            response=$(curl -fsS --max-time 3 "${api_header[@]}" "http://127.0.0.1:8317/v1/models" 2>/dev/null || true)
+            if [[ -n "$response" ]] && printf '%s' "$response" | grep -qE '^[[:space:]]*[\[{]'; then
+                _vs_pass "CLIProxyAPI" "active, loopback 8317 reachable, /v1/models returned JSON"
             else
-                _vs_pass "9router" "online (localhost health probe inconclusive)"
+                _vs_warn "CLIProxyAPI" "active, loopback 8317 reachable, /v1/models probe inconclusive" "complete provider auth bootstrap and re-run verify"
             fi
             _vs_set_result pass
             return 0
             ;;
-        not-found)
-            _vs_warn "9router" "not registered in PM2" "deploy via OPS: 9router Management"
-            _vs_set_result warn
+        inactive|failed|activating|deactivating)
+            _vs_fail "CLIProxyAPI" "systemd status: ${status}" "systemctl status cli-proxy-api to diagnose"
+            _vs_set_result fail
             return 0
             ;;
         *)
-            _vs_fail "9router" "PM2 status: ${status}" "pm2 logs nine-router to diagnose"
-            _vs_set_result fail
+            _vs_warn "CLIProxyAPI" "systemd status: ${status}" "verify service installation"
+            _vs_set_result warn
             return 0
             ;;
     esac
@@ -629,7 +645,7 @@ verify_stack() {
     _vs_run _vs_check_nginx
     _vs_run _vs_check_pm2
     _vs_run _vs_check_runtime_user
-    _vs_run _vs_check_nine_router
+    _vs_run _vs_check_cliproxyapi
     _vs_run _vs_check_php_fpm
     _vs_run _vs_check_mariadb
     _vs_run _vs_check_ssl

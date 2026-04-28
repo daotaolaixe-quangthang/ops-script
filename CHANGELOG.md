@@ -28,27 +28,28 @@ This release completes Phase 1 (core stack) and Phase 2 (advanced features).
 - `core/system.sh` — wrappers for apt, systemctl, ufw, pm2
 
 **Modules**
-- `modules/setup-wizard.sh` — orchestrates first-time production stack setup
-- `modules/security.sh` — SSH hardening, UFW, fail2ban (`menu_security` via `s` key)
-- `modules/nginx.sh` — Nginx mainline install, vhost management, Advanced Web Controls (7 actions)
-- `modules/node.sh` — Node.js LTS + PM2, Node service management
-- `modules/nine-router.sh` — 9router install/update/link/lifecycle
-- `modules/php.sh` — multi-PHP (7.4 / 8.1 / 8.2 / 8.3 via ondrej/php), PHP-FPM pools
-- `modules/database.sh` — MariaDB install/secure/tune, DB+user management; `bind-address=127.0.0.1` enforced
-- `modules/monitoring.sh` — system overview, service status, Telegram notifications, Netdata opt-in, self-upgrade via tarball
-- `modules/checks.sh` — scheduled checks (cron + systemd OnFailure dropins), Telegram alerts per threshold
-- `modules/backup.sh` — DB dump (single/all), config archive; `/var/backups/ops/`
-- `modules/codex-cli.sh` — Codex CLI install/configure/test
-- `modules/ai-agent.sh` — AI Agent Integration umbrella; Claude Code CLI install/configure/test/Vietnamese-fix; Claude Telegram Bot install/configure/start/stop/status
+- `modules/setup-wizard.sh` - orchestrates first-time production stack setup
+- `modules/security.sh` - SSH hardening, UFW, fail2ban (`menu_security` via `s` key)
+- `modules/nginx.sh` - Nginx mainline install, vhost management, Advanced Web Controls (7 actions)
+- `modules/node.sh` - Node.js LTS + PM2, Node service management
+- `modules/cli-proxy-api.sh` - CLIProxyAPI install/update/link/lifecycle (legacy file path, new provider contract)
+- `modules/php.sh` - multi-PHP (7.4 / 8.1 / 8.2 / 8.3 via ondrej/php), PHP-FPM pools
+- `modules/database.sh` - MariaDB install/secure/tune, DB+user management; `bind-address=127.0.0.1` enforced
+- `modules/monitoring.sh` - system overview, service status, Telegram notifications, Netdata opt-in, self-upgrade via tarball
+- `modules/checks.sh` - scheduled checks (cron + systemd OnFailure dropins), Telegram alerts per threshold
+- `modules/backup.sh` - DB dump (single/all), config archive; `/var/backups/ops/`
+- `modules/codex-cli.sh` - Codex CLI install/configure/test
+- `modules/ai-agent.sh` - AI Agent Integration umbrella; Claude Code CLI install/configure/test/Vietnamese-fix; Claude Telegram Bot install/configure/start/stop/status
 
 **Nginx templates**
 - `node_vhost.conf.tpl`, `php_vhost.conf.tpl`, `static_vhost.conf.tpl`
-- `nine-router.vhost.conf.tpl` — SSE proxy; no per-vhost rate limiting (intentional — Cloudflare edge handles it)
-- `default-deny.conf.tpl` — `server_name _;` + `return 444`; blocks direct IP access automatically
+- `cli-proxy-api.vhost.conf.tpl` - CLIProxyAPI proxy template; `proxy_buffering off`; no public backend exposure
+- `default-deny.conf.tpl` - `server_name _;` + `return 444`; blocks direct IP access automatically
 - `cloudflare-real-ip.conf.tpl`, `custom-powered-by.conf.tpl`
 
 **PM2 templates**
-- `ecosystem.config.js.tpl`, `nine-router.ecosystem.config.js.tpl`
+- `ecosystem.config.js.tpl`
+- legacy provider PM2 artefact retained for older installs, not used by CLIProxyAPI
 
 **Install**
 - `install/ops-install.sh` — one-line curl installer; tarball download (no git on VPS); SSH+UFW+admin-user setup
@@ -57,12 +58,12 @@ This release completes Phase 1 (core stack) and Phase 2 (advanced features).
 
 ### Architecture decisions
 
-- Install uses GitHub tarball, not git clone — VPS stays git-free
+- Install uses GitHub tarball, not git clone - VPS stays git-free
 - Self-upgrade (`ops -> 9 -> 16`) uses same tarball mechanism + bash -n syntax check before apply
 - Telegram config stored in `/etc/ops/notifications.conf` (TELEGRAM_ENABLED, TELEGRAM_CHAT_ID); token at `/etc/ops/.telegram-bot-token` (0600)
-- Claude Code API key stored in `~/.bashrc` of admin user — NOT in `/etc/ops/` (no centralised secret exposure)
+- Claude Code API key stored in `~/.bashrc` of admin user - NOT in `/etc/ops/` (no centralised secret exposure)
 - Login hook uses `SSH_CONNECTION` guard (not `SSH_TTY`) in `~/.bash_profile`
-- 9router binds `127.0.0.1:20128` only; Nginx is sole public entrypoint
+- CLIProxyAPI binds `127.0.0.1:8317` only, runs under systemd, and keeps Nginx as the sole public entrypoint
 - All `menu_*` functions return 0 at boundary; action functions may return non-zero for soft errors
 
 ---
@@ -72,7 +73,7 @@ This release completes Phase 1 (core stack) and Phase 2 (advanced features).
 - All secret files `0600` owned by admin user (see RUNTIME-ARTEFACT-INVENTORY.md section 8.0)
 - `bind-address = 127.0.0.1` always set for MariaDB; root password at `/etc/ops/.db-root-password` (0600), never printed to terminal
 - UFW deny-all inbound by default; only SSH port + 80 + 443 allowed
-- 9router secrets auto-generated via `openssl rand` on first install
+- CLIProxyAPI backend port `8317` is never opened publicly; local API key material stays in restricted files only
 
 ---
 

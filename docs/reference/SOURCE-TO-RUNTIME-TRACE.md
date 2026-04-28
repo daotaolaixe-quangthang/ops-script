@@ -51,35 +51,34 @@ Model chung:
 - **Rollback**:
   - revert menu mapping
 
-### Node.js services
+### Node.js services and CLIProxyAPI
 
 - **Modules du kien**:
   - `modules/node.sh`
-  - `modules/nine-router.sh`
-- **Runtime state — Node apps**:
+  - `modules/cli-proxy-api.sh`
+- **Runtime state - Node apps**:
   - app directories
   - `.env` (0600)
   - PM2 process list and ecosystem config
   - `/etc/ops/apps/*.conf` neu tao state file
-- **Runtime state — 9router specific**:
-  - `/opt/9router/` (source + build)
-  - `/opt/9router/.env` (0600: JWT_SECRET, INITIAL_PASSWORD, API keys)
-  - `/var/lib/9router/db.json` (providers, combos, API keys)
-  - `/etc/ops/nine-router.conf` (OPS state: installed, domain, ssl flag)
-  - `/etc/ops/.nine-router-password` (0600: dashboard password)
-  - `~/.9router/usage.json` (usage stats)
-  - `/var/log/ops/nine-router.{out,err}.log`
+- **Runtime state - CLIProxyAPI specific**:
+  - `/opt/cli-proxy-api/cli-proxy-api`
+  - `/opt/cli-proxy-api/config.yaml`
+  - `~/.cli-proxy-api/`
+  - `/etc/ops/cli-proxy-api.conf`
+  - `/etc/ops/.cli-proxy-api-key`
+  - `cli-proxy-api.service`
 - **Public path**:
-  - Nginx reverse proxy -> localhost:20128 (9router)
+  - Nginx reverse proxy -> localhost:8317 (CLIProxyAPI)
   - Nginx reverse proxy -> localhost:<port> (Node apps)
 - **Verify**:
   - `pm2 status`
-  - `curl -s http://127.0.0.1:20128/v1/models` (9router)
-  - `ufw status | grep 20128` (must return empty)
+  - `systemctl is-active cli-proxy-api`
+  - `curl -s http://127.0.0.1:8317/v1/models`
+  - `ufw status | grep 8317` (must return empty)
   - domain proxy request
 - **Rollback**:
   - revert ecosystem/service config, rollback Nginx target
-
 
 ### Domains & Nginx
 
@@ -173,7 +172,7 @@ Model chung:
   - quick logs menu
   - service status screen
   - `codex --version`
-  - `curl -s http://127.0.0.1:20128/v1/models` (neu dung 9router mode)
+  - `curl -s http://127.0.0.1:8317/v1/models` (neu dung CLIProxyAPI mode)
 - **Rollback**:
   - `disable_codex_auto_env` de xoa export OPENAI_API_KEY khoi ~/.bash_profile
   - `rm ~/.codex/config.toml /etc/ops/.codex-api-key`
@@ -232,10 +231,10 @@ Model chung:
 | `/etc/ops/ops.conf` | installer, `ops-setup.sh`, global architecture |
 | `~/.bash_profile` (login hook) | dashboard/login flow, security/user experience |
 | `/etc/nginx/sites-available/*` | Domains & Nginx, SSL |
-| PM2 app state | Node.js Services, 9router (`nine-router`) |
-| `/opt/9router/.env` | nine-router.sh install flow |
-| `/var/lib/9router/db.json` | 9router dashboard state |
-| `/etc/ops/.nine-router-password` | nine-router.sh install (0600) |
+| PM2 app state | Node.js Services |
+| `cli-proxy-api.service` | CLIProxyAPI provider lifecycle |
+| `/opt/cli-proxy-api/config.yaml` | provider config rendered by `modules/cli-proxy-api.sh` |
+| `/etc/ops/.cli-proxy-api-key` | local client key for CLIProxyAPI (0600) |
 | `/etc/ops/.db-root-password` | database.sh install (0600) |
 | `/etc/ops/.codex-api-key` | codex-cli.sh configure (0600) |
 | `~/.codex/config.toml` | codex-cli.sh configure (0600) |

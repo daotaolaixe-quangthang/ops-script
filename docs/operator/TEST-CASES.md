@@ -66,7 +66,7 @@ Toi thieu phai cover cac matrix sau:
 | ENV-03 | da cai OPS, rerun wizard/module | idempotence |
 | ENV-04 | stdin redirect / non-interactive shell | bat bug TTY, prompt, spin loop |
 | ENV-05 | host co Node app + PHP site + MariaDB + Nginx | cross-module regression |
-| ENV-06 | host co 9router + SSL + PM2 | network posture, Nginx, PM2, secret contract |
+| ENV-06 | host co CLIProxyAPI + SSL + systemd | network posture, Nginx, systemd, secret contract |
 
 Khuyen nghi:
 
@@ -113,7 +113,7 @@ Khuyen nghi:
 | SEC-03 | SSH transition mo ca 2 port | Dang doi port SSH | Chay flow doi port | Port moi va port transition cung hoat dong truoc khi finalize |
 | SEC-04 | Finalize SSH khong lockout | Da dang nhap duoc qua port moi | Dong 22/finalize | Van SSH duoc bang port moi |
 | SEC-05 | UFW baseline mo dung port | Da harden xong | Kiem tra `ufw status` | Chi mo SSH managed port, `80`, `443`, va transition port neu con |
-| SEC-06 | 20128 khong public allow | 9router da cai | Kiem tra UFW | Khong co `ALLOW 20128` |
+| SEC-06 | 8317 khong public allow | CLIProxyAPI da cai | Kiem tra UFW | Khong co `ALLOW 8317` |
 | SEC-07 | fail2ban sshd jail dung port | Doi SSH port | Chay verify | jail `sshd` map dung port theo OPS state |
 | SEC-08 | Root login bi khoa | Hardening xong | Kiem tra `sshd -T` | `PermitRootLogin no` |
 | SEC-09 | Forwarding flags bi tat | Hardening xong | Kiem tra `sshd -T` | `x11forwarding no`, `allowtcpforwarding no`, `allowagentforwarding no` |
@@ -130,8 +130,8 @@ Khuyen nghi:
 | WEB-06 | Reload bi chan khi config loi | Co vhost loi cu phap | Chay test/reload | `nginx -t` fail thi khong reload |
 | WEB-07 | SSL issue thanh cong | Domain tro dung DNS | Issue cert | Cert duoc tao, vhost SSL hoat dong |
 | WEB-08 | SSL status hien dung domain het han/khong co cert | Co domain co va khong co cert | Chay status | Hien du expiry/status ro rang |
-| WEB-09 | 9router vhost khong them per-vhost rate limit | 9router domain da link | Inspect vhost | Khong co `limit_req`/`limit_conn` per-vhost, nhung global zone van con |
-| WEB-10 | Nginx van la public entrypoint duy nhat | 9router/Node app da chay | Test public va local binding | Backend bind localhost, public truy cap qua Nginx |
+| WEB-09 | CLIProxyAPI vhost giu `proxy_buffering off` | CLIProxyAPI domain da link | Inspect vhost | Co `proxy_buffering off`, proxy toi `127.0.0.1:8317` |
+| WEB-10 | Nginx van la public entrypoint duy nhat | CLIProxyAPI/Node app da chay | Test public va local binding | Backend bind localhost, public truy cap qua Nginx |
 
 ### 4.5 Node.js va PM2
 
@@ -148,18 +148,18 @@ Khuyen nghi:
 | NODE-09 | Co `pm2-logrotate` sau install PM2 | PM2 da cai | Kiem tra module PM2 | Log rotation da duoc cai |
 | NODE-10 | `max_memory_restart` di kem `node_args` phu hop | Ecosystem co memory limit | Inspect ecosystem | Giam nguy co OOM truoc nguong restart |
 
-### 4.6 9router
+### 4.6 CLIProxyAPI
 
 | ID | Test case | Preconditions | Steps | Expected result |
 |---|---|---|---|---|
-| NINE-01 | Install 9router | Node/PM2 san sang | Chay install 9router | Source vao `/opt/9router`, build ok, PM2 online |
-| NINE-02 | 9router bind localhost only | 9router da cai | Kiem tra port listen | Chi bind `127.0.0.1:20128` |
-| NINE-03 | Secret files dung permission | 9router da cai | Kiem tra `/etc/ops/.nine-router-password` | File `0600`, owner admin user |
-| NINE-04 | Link 9router vao domain | Domain san DNS | Chay link domain | Nginx proxy `127.0.0.1:20128`, `proxy_buffering off` |
-| NINE-05 | Verify 9router khi local ok, public qua nginx | 9router va nginx active | Chay verify + curl local/public | `/v1/models` tra JSON local, public di qua Nginx |
-| NINE-06 | Toggle API key requirement | 9router da cai | Enable/Disable API key requirement | `.env` va `/etc/ops/nine-router.conf` cap nhat dung, PM2 restart |
-| NINE-07 | Update 9router giu `.env` va data | 9router da co du lieu | Chay update | App duoc cap nhat, secret/data duoc preserve |
-| NINE-08 | SSL auto-set `AUTH_COOKIE_SECURE=true` | Domain 9router da co SSL | Link/reissue SSL | `.env` duoc cap nhat va restart |
+| CPA-01 | Install CLIProxyAPI | Host co curl/tar, systemd san sang | Chay install CLIProxyAPI | Binary vao `/opt/cli-proxy-api`, service online |
+| CPA-02 | CLIProxyAPI bind localhost only | CLIProxyAPI da cai | Kiem tra port listen | Chi bind `127.0.0.1:8317` |
+| CPA-03 | Secret files dung permission | CLIProxyAPI da cai | Kiem tra `/etc/ops/.cli-proxy-api-key` | File `0600`, owner admin user |
+| CPA-04 | Link CLIProxyAPI vao domain | Domain san DNS | Chay link domain | Nginx proxy `127.0.0.1:8317`, `proxy_buffering off` |
+| CPA-05 | Verify CLIProxyAPI khi local ok, public qua nginx | CLIProxyAPI va nginx active | Chay verify + curl local/public | `/v1/models` tra JSON local, public di qua Nginx |
+| CPA-06 | Toggle API key requirement | CLIProxyAPI da cai | Enable/Disable API key requirement | `config.yaml` va `/etc/ops/cli-proxy-api.conf` cap nhat dung, service restart |
+| CPA-07 | Update CLIProxyAPI giu config va state | CLIProxyAPI da co du lieu | Chay update | Binary duoc cap nhat, config/state duoc preserve |
+| CPA-08 | SSL re-render vhost | Domain CLIProxyAPI da co SSL | Link/reissue SSL | Vhost duoc re-render, Nginx tiep tuc proxy HTTPS -> localhost |
 
 ### 4.7 PHP / PHP-FPM
 
@@ -214,12 +214,12 @@ Day la nhom bug phai retest moi khi co thay doi lien quan, vi da xuat hien hoac 
 | REG-03 | Verify action FAIL lam thoat menu | sua monitoring/verify/checks |
 | REG-04 | SSH lockout do disable password auth khi chua co key | sua installer, security, setup wizard |
 | REG-05 | Login hook pha shell non-interactive | sua `ops-dashboard`, hook shell, `ops-setup.sh` |
-| REG-06 | 9router bi expose cong khai | sua nine-router, nginx, ufw, verify |
+| REG-06 | CLIProxyAPI bi expose cong khai | sua module provider, nginx, ufw, verify |
 | REG-07 | PM2 startup chay root | sua node install, PM2 integration |
 | REG-08 | `pm2 list` false empty do sai runtime user | sua node menu, runtime wrappers |
 | REG-09 | Secret permission drift | sua module ghi file secret |
 | REG-10 | Config rewrite duplicate/sai vi tri lam vo syntax | sua logic `sed`, append, template rendering |
-| REG-11 | Nginx 9router vhost lam mat global `limit_req_zone` | sua nginx hardening/template |
+| REG-11 | Nginx CLIProxyAPI vhost vo `proxy_buffering off` hoac proxy sai port | sua nginx hardening/template |
 | REG-12 | Log grow vo han / filename suffix drift | sua PM2 ecosystem, logrotate |
 
 ## 6. Quy trinh test khi them/chinh sua 1 chuc nang moi
@@ -245,7 +245,7 @@ Day la nhom bug phai retest moi khi co thay doi lien quan, vi da xuat hien hoac 
 - Khong co secret hard-code trong repo, log, docs.
 - Secret files moi co `chmod 600` va `chown` dung user.
 - Node services van di qua PM2, khong drift sang wrapper tu phat.
-- 9router van bind `127.0.0.1:20128`, khong public allow UFW.
+- CLIProxyAPI van bind `127.0.0.1:8317`, khong public allow UFW.
 - Domain remove khong xoa web root.
 - Login dashboard chi hien trong interactive SSH session.
 
@@ -291,12 +291,12 @@ Bat buoc chay:
 - `SEC-01` den `SEC-09`
 - `REG-04`, `REG-09`, `REG-10`
 
-### 9.3 Neu sua Nginx/domain/SSL/9router
+### 9.3 Neu sua Nginx/domain/SSL/CLIProxyAPI
 
 Bat buoc chay:
 
 - `WEB-01` den `WEB-10`
-- `NINE-02`, `NINE-04`, `NINE-05`, `NINE-08`
+- `CPA-02`, `CPA-04`, `CPA-05`, `CPA-08`
 - `REG-06`, `REG-10`, `REG-11`
 
 ### 9.4 Neu sua Node/PM2
@@ -339,7 +339,7 @@ Pham vi cover hien tai:
 
 - `TUI-01..TUI-10`
 - `REG-01..REG-15`
-- contract/static coverage cho `SEC-01..SEC-09`, `INS-01..INS-09`, `WEB-01..WEB-10`, `NODE-01..NODE-10`, `PHP-01..PHP-06`, `DB-01..DB-06`, `NINE-01..NINE-08`, `MON-01..MON-05`, `FILE-01..FILE-04`
+- contract/static coverage cho `SEC-01..SEC-09`, `INS-01..INS-09`, `WEB-01..WEB-10`, `NODE-01..NODE-10`, `PHP-01..PHP-06`, `DB-01..DB-06`, `CPA-01..CPA-08`, `MON-01..MON-05`, `FILE-01..FILE-04`
 
 Muc dich:
 

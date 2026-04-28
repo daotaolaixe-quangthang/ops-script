@@ -34,7 +34,7 @@ Chi nen bat dau Phase 2 khi:
    - node + PM2
    - php
    - db
-   - 9router
+   - CLIProxyAPI
 3. Co it nhat 1 VPS test hoac staging de thu runtime artefacts that.
 4. `RUNBOOKS.md` va `RUNTIME-ARTEFACT-INVENTORY.md` da phan anh toi thieu Phase 1.
 
@@ -63,7 +63,7 @@ Tat ca implementers phai coi nhung diem sau la fixed contract:
 - menu advanced monitoring opt-in
 - alerts, scheduled checks, va threshold scripts nhe
 - unified verify stack action
-- deeper service checks cho Nginx, Node/PM2, PHP-FPM, DB, SSL, 9router
+- deeper service checks cho Nginx, Node/PM2, PHP-FPM, DB, SSL, CLIProxyAPI
 
 Cu the phai cover:
 
@@ -284,7 +284,7 @@ Ly do:
    - SSH state sanity
    - Nginx syntax + active
    - Node/PM2 services
-   - 9router local binding + route
+   - CLIProxyAPI local binding + route
    - PHP-FPM active pools
    - DB active
    - SSL cert status

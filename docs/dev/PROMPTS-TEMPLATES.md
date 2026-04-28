@@ -196,7 +196,7 @@ Task P1-04: Implement modules/security.sh
 Requirements:
 1. SSH hardening: disable root login, configure new port, PasswordAuthentication handling.
 2. UFW setup: allow only SSH port(s) + 80 + 443. DENY everything else.
-   Never open port 20128 (9router) — this is a hard constraint.
+   Never open port 8317 (CLIProxyAPI) - this is a hard constraint.
 3. fail2ban: install, enable for sshd, create /etc/fail2ban/jail.local.
 4. Close port 22 flow (offered after setup verified):
    - Remove port 22 from UFW
@@ -219,7 +219,7 @@ Read first (mandatory):
 - docs/operator/MENU-REFERENCE.md section 5 (SSL Management)
 - docs/operator/SECURITY-RULES.md sections 2, 3
 - docs/operator/PERF-TUNING.md section 2 (Nginx)
-- docs/reference/NINE-ROUTER-SPEC.md section 2.5 (Nginx vhost — no rate limiting, Cloudflare handles it)
+- docs/reference/CLI-PROXY-API-SPEC.md section 2.5 (Nginx vhost — no rate limiting, Cloudflare handles it)
 - docs/dev/CODE-SKELETON-GUIDE.md
 
 Task P1-05: Implement modules/nginx.sh
@@ -246,97 +246,86 @@ Requirements:
    - Never delete web root. Never delete SSL certs.
 
 5. issue_ssl <domain>: certbot --nginx -d <domain> via snap install.
-   After cert issued for 9router domain: sed AUTH_COOKIE_SECURE=false→true in
-   /opt/9router/.env and pm2 restart nine-router.
+   After cert issued for the CLIProxyAPI domain: re-render the provider vhost so HTTPS continues to terminate at Nginx while proxying to `127.0.0.1:8317`.
 
 Verify: nginx -t, curl -I https://<domain>, certbot certificates.
 ```
 
 ---
 
-#### P1-06: 9router module
+#### P1-06: CLIProxyAPI module
 
 ```text
 Repo: E:\2WEBApp\ops-script
 
-Read first (mandatory — entire files):
-- docs/reference/NINE-ROUTER-SPEC.md    ← source of truth for all 9router implementation
+Read first (mandatory - entire files):
+- docs/reference/CLI-PROXY-API-SPEC.md    <- source of truth for all CLIProxyAPI implementation
 - docs/operator/SECURITY-RULES.md sections 2, 3
 - docs/reference/KNOWN-RISKS-PATTERNS.md patterns #13, #14
-- ops/modules/nine-router.sh
+- ops/modules/cli-proxy-api.sh
 - ops/modules/nginx.sh
 - ops/modules/verify.sh
-- ops/modules/templates/nginx/nine-router.vhost.conf.tpl
-- ops/modules/templates/pm2/nine-router.ecosystem.config.js.tpl
+- ops/modules/templates/nginx/cli-proxy-api.vhost.conf.tpl
 - docs/dev/CODE-SKELETON-GUIDE.md
 
-Task P1-06: Implement modules/nine-router.sh
+Task P1-06: Implement modules/cli-proxy-api.sh
 
-Source archive authority:
-  https://github.com/daotaolaixe-quangthang/9routervps/archive/refs/heads/vpswork.tar.gz
+Release authority:
+  https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest
 
-Functions to implement (follow NINE-ROUTER-SPEC exactly):
+Functions to implement (follow CLI-PROXY-API-SPEC exactly):
 
-1. install_nine_router:
-   - Download/extract branch `vpswork` archive to /opt/9router
-   - chown app dir to runtime user before dependency install
-   - run `npm install` and `npm run build` as runtime user
-   - prompt_secret "Enter 9router dashboard initial password"
-      → save to /etc/ops/.nine-router-password (chmod 600, chown $ADMIN_USER)
-   - Generate: JWT_SECRET=$(openssl rand -hex 32), API_KEY_SECRET, MACHINE_ID_SALT
-   - Create /opt/9router/.env (chmod 600) with all vars from NINE-ROUTER-SPEC section 2.3
-   - mkdir -p /var/lib/9router; chown runtime user; chmod 750
-   - Register PM2 process nine-router; pm2 save; pm2 startup
+1. install_cliproxyapi:
+   - Download the latest Linux release asset and install it under `/opt/cli-proxy-api`
+   - Write `/opt/cli-proxy-api/config.yaml`
+   - Create `cli-proxy-api.service`
+   - Ensure the service runs as the runtime user with `HOME=<runtime_home>`
+   - Keep provider auth state in `~/.cli-proxy-api`
 
-1b. update_nine_router:
-   - Compare local version vs remote package.json from branch `vpswork`
-   - stop PM2 process, re-download/extract archive into /opt/9router
-   - preserve `/opt/9router/.env` and `/var/lib/9router`
-   - run npm install/build as runtime user, re-create standalone symlinks, re-render PM2 config
-   - PM2 reload existing process with updated env, or start from ecosystem config, then pm2 save
+1b. update_cliproxyapi:
+   - Compare installed version vs latest release metadata
+   - Stop the systemd service
+   - Replace the binary under `/opt/cli-proxy-api`
+   - Preserve `config.yaml` and `~/.cli-proxy-api`
+   - Restart `cli-proxy-api.service`
 
-2. link_nine_router_domain <domain>:
-    - Render nine-router.vhost.conf.tpl (proxy to 127.0.0.1:20128, buffering off,
-      proxy_connect_timeout 10s, proxy_read_timeout 120s, proxy_send_timeout 60s)
-    - NO per-vhost rate limiting for 9router (domain runs through Cloudflare which handles it)
-    - Do NOT remove global nginx `limit_req_zone` / `limit_conn_zone`; those remain in `http {}` for other vhosts
+2. link_cliproxyapi_domain <domain>:
+   - Render `cli-proxy-api.vhost.conf.tpl` (proxy to `127.0.0.1:8317`, buffering off,
+     `proxy_connect_timeout 10s`, `proxy_read_timeout 120s`, `proxy_send_timeout 60s`)
+   - Nginx remains the only public entrypoint
    - nginx -t && enable && reload
-   - If domain already has SSL cert: set AUTH_COOKIE_SECURE=true in /opt/9router/.env
-     then pm2 restart nine-router
-   - Save /etc/ops/nine-router.conf NINE_ROUTER_DOMAIN
+   - Save `/etc/ops/cli-proxy-api.conf` state
 
-3. toggle_require_api_key <on|off>:
-   - sed -i 's/REQUIRE_API_KEY=.*/REQUIRE_API_KEY=true|false/' /opt/9router/.env
-   - pm2 restart nine-router
-   - ops_conf_set nine-router.conf NINE_ROUTER_REQUIRE_API_KEY "yes"|"no"
+3. toggle_cliproxyapi_api_key <on|off>:
+   - Rewrite the `api-keys:` section in `config.yaml`
+   - Store the generated local client key in `/etc/ops/.cli-proxy-api-key`
+   - Restart `cli-proxy-api.service`
 
-4. verify_nine_router:
-   - pm2 status | grep nine-router → must be online
-   - curl -s http://127.0.0.1:20128/v1/models → must return JSON
-   - ufw status | grep 20128 → MUST be empty (port not open)
+4. verify_cliproxyapi:
+   - `systemctl is-active cli-proxy-api` must be `active`
+   - `curl -s http://127.0.0.1:8317/v1/models` must return JSON
+   - `ufw status | grep 8317` must be empty
 
 Security invariants:
-- HOSTNAME=127.0.0.1 in .env and PM2 env is REQUIRED
-- UFW must NOT open port 20128 — verify every time
-- Explicit `ufw deny 20128` is not required; stale deny rules may be cleaned up
-- Nginx is the only public entrypoint for 9router
-- Distinguish global zone definitions from per-vhost enforcement: 9router skips per-vhost `limit_req`/`limit_conn`, but nginx global `limit_req_zone`/`limit_conn_zone` must remain
-- All secrets auto-generated, never hard-coded
+- `host: "127.0.0.1"` is required in `config.yaml`
+- UFW must NOT open port `8317`
+- `remote-management.allow-remote` must stay `false` by default
+- `pprof.enable` must stay `false` by default
+- Nginx is the only public entrypoint for CLIProxyAPI
 ```
 
-Use this note in any 9router/networking prompt when ambiguity exists:
+Use this note in any CLIProxyAPI/networking prompt when ambiguity exists:
 
 ```text
 Authority note:
-- For 9router network posture and rate limiting, source-of-truth is the live OPS implementation in:
-  - ops/modules/nine-router.sh
+- For CLIProxyAPI network posture and Nginx proxying, source-of-truth is the live OPS implementation in:
+  - ops/modules/cli-proxy-api.sh
   - ops/modules/nginx.sh
   - ops/modules/verify.sh
-  - ops/modules/templates/nginx/nine-router.vhost.conf.tpl
-  - ops/modules/templates/pm2/nine-router.ecosystem.config.js.tpl
-- Do not "fix" 9router by switching it back to 0.0.0.0.
-- Do not describe 9router install/update as git clone/git pull; OPS deploys from the `vpswork.tar.gz` archive.
-- Do not "fix" nginx by removing global limit_req_zone/limit_conn_zone just because the 9router vhost does not enforce them.
+  - ops/modules/templates/nginx/cli-proxy-api.vhost.conf.tpl
+- Do not "fix" CLIProxyAPI by switching it to `0.0.0.0`.
+- Do not expose `8317` publicly.
+- Do not move CLIProxyAPI back under PM2.
 ```
 
 ---
@@ -430,7 +419,7 @@ Task: Implement modules/codex-cli.sh
 
 Follow docs/reference/CODEX-CLI-SPEC.md exactly:
 - Section 2: install via npm install -g @openai/codex
-- Section 3.1: configure with 9router (recommended)
+- Section 3.1: configure with CLIProxyAPI (recommended)
 - Section 3.2: configure with OpenAI API key
 - Section 3.3: ChatGPT OAuth flow (OPS only installs, user authenticates manually)
 - Section 4: all 4 menu actions with exact code from spec

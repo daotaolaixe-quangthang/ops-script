@@ -6,7 +6,7 @@ Phase 1 chi tap trung vao:
 
 - Ubuntu 22.04 / 24.04
 - Nginx la public entrypoint duy nhat
-- Node.js apps va 9router dung PM2
+- Node.js apps dung PM2; CLIProxyAPI dung systemd
 - PHP la backend phu qua PHP-FPM
 - MySQL/MariaDB
 - docs-first, verify-first, rollback-aware
@@ -28,7 +28,7 @@ Truoc khi code, tat ca implementers phai coi nhung diem sau la "fixed contract":
 1. `install/ops-install.sh` phai nho, audit duoc, khong chua business logic lon.
 2. `bin/ops` chi dong vai tro menu dispatcher.
 3. `core/*.sh` chua helpers dung chung, khong chua module business logic.
-4. Node services va 9router deu dung PM2.
+4. Node services dung PM2; CLIProxyAPI dung systemd.
 5. Nginx la public entrypoint duy nhat.
 6. State production phai huong toi `/etc/ops/*` lam source-of-truth.
 7. Moi task config quan trong phai co:
@@ -47,7 +47,7 @@ Truoc khi code, tat ca implementers phai coi nhung diem sau la "fixed contract":
 | Certbot | **snap primary**, apt fallback | EFF recommend; auto-renewal built-in |
 | Login hook | **`~/.bash_profile`** của admin user | Chỉ áp dụng admin, dễ rollback, không ảnh hưởng scp/non-interactive |
 | `/etc/ops/*.conf` format | **Bash key=value** shell-sourceable | Không cần parser ngoài, source trực tiếp trong script |
-| 9router install | **archive download/extract (`vpswork`) + runtime-user npm install/build + PM2** | Chi tiết: `docs/reference/NINE-ROUTER-SPEC.md` |
+| CLIProxyAPI install | **release download + `config.yaml` + systemd** | Chi tiết: `docs/reference/CLI-PROXY-API-SPEC.md` |
 | Codex CLI install | **npm install -g @openai/codex** | Consistent với Node ecosystem đã có |
 
 **Code skeleton reference**: `docs/dev/CODE-SKELETON-GUIDE.md` — đọc trước khi viết bất kỳ module nào.
@@ -72,7 +72,7 @@ Phase 1 duoc coi la xong khi repo co du cac nhom deliverables sau:
 - `modules/security.sh`
 - `modules/nginx.sh`
 - `modules/node.sh`
-- `modules/nine-router.sh`
+- `modules/cli-proxy-api.sh`
 - `modules/php.sh`
 - `modules/database.sh`
 - `modules/monitoring.sh`
@@ -90,12 +90,12 @@ Templates are located under `ops/modules/templates/` (NOT a root-level `template
 - `ops/modules/templates/nginx/node_vhost.conf.tpl`
 - `ops/modules/templates/nginx/php_vhost.conf.tpl`
 - `ops/modules/templates/nginx/static_vhost.conf.tpl`
-- `ops/modules/templates/nginx/nine-router.vhost.conf.tpl`
+- `ops/modules/templates/nginx/cli-proxy-api.vhost.conf.tpl`
 - `ops/modules/templates/nginx/default-deny.conf.tpl`
 - `ops/modules/templates/nginx/cloudflare-real-ip.conf.tpl`
 - `ops/modules/templates/nginx/custom-powered-by.conf.tpl`
 - `ops/modules/templates/pm2/ecosystem.config.js.tpl`
-- `ops/modules/templates/pm2/nine-router.ecosystem.config.js.tpl`
+- legacy provider PM2 template (deprecated, unused)
 - `ops/modules/templates/logrotate/` (logrotate configs)
 
 ### C. Runtime-state contract
@@ -114,7 +114,7 @@ Templates are located under `ops/modules/templates/` (NOT a root-level `template
 - Node.js Services
 - Domains & Nginx
 - SSL Management
-- 9router Management
+- CLIProxyAPI Management
 - PHP / PHP-FPM Management
 - Database Management
 - AI Agent Integration  (item 8 — covers Codex CLI + Claude Code CLI + Telegram bot)
@@ -128,7 +128,7 @@ Templates are located under `ops/modules/templates/` (NOT a root-level `template
 3. chay wizard thanh cong
 4. tao 1 Node app mau
 5. tao 1 PHP site mau
-6. deploy 9router
+6. deploy CLIProxyAPI
 7. issue SSL
 8. tat port 22 sau verify
 
@@ -148,7 +148,7 @@ Lam theo thu tu nay, khong nen nhay co module:
 8. `P1-07` php module
 9. `P1-08` database module
 10. `P1-09` setup wizard orchestration
-11. `P1-10` 9router module
+11. `P1-10` CLIProxyAPI module
 12. `P1-11` monitoring module
 13. `P1-12` codex-cli module
 14. `P1-13` end-to-end verification and docs sync
@@ -158,7 +158,7 @@ Ly do:
 - phai co core va runtime conventions truoc
 - security + nginx la nen public edge
 - node/php/db phai co truoc wizard
-- 9router phai dung lai primitives cua node + nginx
+- CLIProxyAPI phai dung lai primitives cua nginx, security, va runtime helpers
 
 ---
 
@@ -697,37 +697,41 @@ DB_INSTALL_DATE=""
 
 ---
 
-### P1-10 9router module
+### P1-10 CLIProxyAPI module
 
 **Muc tieu**
 
-- Deploy va quan ly 9router nhu 1 Node service dac biet
+- Deploy va quan ly CLIProxyAPI nhu 1 provider service chay bang systemd
 
 **Tasks**
 
-1. download/extract 9router source archive tu branch `vpswork`
-2. preserve runtime state, install dependencies/build bang runtime user
-3. tao PM2 process config rieng
-4. force bind `127.0.0.1:20128`
+1. download release CLIProxyAPI va cai vao `/opt/cli-proxy-api`
+2. preserve `config.yaml` va auth state `~/.cli-proxy-api` qua update
+3. tao systemd unit `cli-proxy-api.service`
+4. force bind `127.0.0.1:8317`
 5. helpers:
    - install
    - link domain
    - start/stop/restart
    - logs
+   - verify local endpoint
 
 **Output**
 
-- 9router chay local va vao duoc qua Nginx
+- CLIProxyAPI chay local va vao duoc qua Nginx
 
 **Verify**
 
-- `pm2 status`
-- direct public access vao `:20128` that bai
+- `systemctl is-active cli-proxy-api`
+- `curl -s http://127.0.0.1:8317/v1/models`
+- direct public access vao `:8317` that bai
 - route domain ok
 
 **Review checklist**
 
-- 9router khong co duong public bypass Nginx
+- CLIProxyAPI khong co duong public bypass Nginx
+- UFW khong duoc allow `8317`
+- `config.yaml` giu `remote-management.allow-remote: false`
 
 ---
 
@@ -805,7 +809,7 @@ DB_INSTALL_DATE=""
 3. wizard test
 4. Node sample deploy test
 5. PHP sample deploy test
-6. 9router test
+6. CLIProxyAPI test
 7. SSL test
 8. SSH finalisation test
 9. cap nhat docs neu implementation lech spec
@@ -863,7 +867,7 @@ Dung bang nay de review nhanh task nao phai chay test nao trong `docs/TEST-CASES
 | `modules/php.sh` | `P1-07` | `PHP-01..PHP-06`, `REG-09`, `REG-10` |
 | `modules/database.sh` | `P1-08` | `DB-01..DB-06`, `REG-09`, `REG-10` |
 | `modules/setup-wizard.sh` | `P1-09` | `INS-05`, `SEC-01..SEC-04`, `WEB-01`, `NODE-01`, `PHP-01`, `DB-01`, `REG-04`, `REG-10` |
-| `modules/nine-router.sh` | `P1-10` | `NINE-01..NINE-08`, `WEB-09`, `WEB-10`, `REG-06`, `REG-11` |
+| `modules/cli-proxy-api.sh` | `P1-10` | `CPA-01..CPA-08`, `WEB-09`, `WEB-10`, `REG-06`, `REG-11` |
 | `modules/monitoring.sh`, `modules/verify.sh` | `P1-11` | `MON-01..MON-05`, `TUI-05`, `TUI-06`, `REG-02`, `REG-03` |
 | `modules/codex-cli.sh` | `P1-12` | `FILE-01..FILE-03`, `FILE-02`, plus module-specific smoke verify |
 | End-to-end release gate | `P1-13` | `ops/tests/regression/run-all.sh` + full smoke/integration suite theo impact layer |

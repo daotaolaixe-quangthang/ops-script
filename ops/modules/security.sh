@@ -95,8 +95,8 @@ security_validate_ssh_port() {
         return 1
     fi
 
-    if (( port == 20128 )); then
-        print_error "Port 20128 is forbidden (reserved security constraint for 9router hardening)."
+    if (( port == 8317 )); then
+        print_error "Port 8317 is forbidden (reserved security constraint for CLIProxyAPI hardening)."
         return 1
     fi
 }
@@ -443,7 +443,7 @@ security_reconcile_ufw_rules() {
 
     for port in "${existing_ports[@]}"; do
         # Always keep: standard web ports and OPS reserved deny port
-        if [[ "$port" == "80" || "$port" == "443" || "$port" == "20128" ]]; then
+        if [[ "$port" == "80" || "$port" == "443" || "$port" == "8317" ]]; then
             continue
         fi
 
@@ -493,8 +493,8 @@ security_reconcile_ufw_rules() {
         fi
     done
 
-    ufw delete allow 20128/tcp > /dev/null 2>&1 || true
-    ufw deny   20128/tcp       > /dev/null 2>&1 || true
+    ufw delete allow 8317/tcp > /dev/null 2>&1 || true
+    ufw deny   8317/tcp       > /dev/null 2>&1 || true
     ufw --force enable         > /dev/null 2>&1 || true
     ufw reload                 > /dev/null 2>&1 || true
 }

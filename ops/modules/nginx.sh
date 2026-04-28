@@ -112,10 +112,10 @@ _nginx_ensure_default_tls_cert() {
     log_info "Generated default deny self-signed cert for Nginx."
 }
 
-# _nginx_ensure_nine_router_rate_zone removed:
-# 9router domain runs behind Cloudflare which handles rate limiting at the edge.
+# _nginx_ensure_cliproxyapi_rate_zone removed:
+# CLIProxyAPI runs behind Cloudflare, which handles rate limiting at the edge.
 # nginx-level limit_req caused false-positive 429 on fast page navigation.
-# The function was removed as it's no longer needed and caused issues.
+# The helper was removed because it is no longer needed.
 
 # _nginx_add_official_repo
 # Adds nginx.org mainline apt repo so we always install >= 1.24 instead of the
@@ -859,7 +859,7 @@ _rebuild_domain_vhost() {
 }
 
 _sync_all_managed_vhosts() {
-    local state_file domain nine_router_domain
+    local state_file domain cliproxyapi_domain
 
     ensure_dir "$OPS_DOMAINS_DIR"
 
@@ -875,10 +875,10 @@ _sync_all_managed_vhosts() {
         done
     fi
 
-    nine_router_domain=$(ops_conf_get "nine-router.conf" "NINE_ROUTER_DOMAIN" || true)
-    if [[ -n "$nine_router_domain" ]] && declare -F link_nine_router_domain >/dev/null 2>&1; then
-        log_info "Re-syncing nine-router vhost for ${nine_router_domain}"
-        link_nine_router_domain "$nine_router_domain"
+    cliproxyapi_domain=$(ops_conf_get "cli-proxy-api.conf" "CLIPROXYAPI_DOMAIN" || true)
+    if [[ -n "$cliproxyapi_domain" ]] && declare -F link_cliproxyapi_domain >/dev/null 2>&1; then
+        log_info "Re-syncing CLIProxyAPI vhost for ${cliproxyapi_domain}"
+        link_cliproxyapi_domain "$cliproxyapi_domain"
     fi
 }
 
@@ -1785,11 +1785,11 @@ issue_ssl() {
     log_info "issue_ssl: SSL issued for ${domain} — syncing managed vhosts"
     _rebuild_domain_vhost "$domain"
 
-    local nine_router_domain
-    nine_router_domain=$(ops_conf_get "nine-router.conf" "NINE_ROUTER_DOMAIN" || true)
-    if [[ "$domain" == "$nine_router_domain" ]] && declare -F link_nine_router_domain >/dev/null 2>&1; then
-        log_info "Re-rendering nine-router vhost after SSL issuance for ${domain}."
-        link_nine_router_domain "$domain"
+    local cliproxyapi_domain
+    cliproxyapi_domain=$(ops_conf_get "cli-proxy-api.conf" "CLIPROXYAPI_DOMAIN" || true)
+    if [[ "$domain" == "$cliproxyapi_domain" ]] && declare -F link_cliproxyapi_domain >/dev/null 2>&1; then
+        log_info "Re-rendering CLIProxyAPI vhost after SSL issuance for ${domain}."
+        link_cliproxyapi_domain "$domain"
     fi
 
     # P-03 fix: _nginx_test_and_reload already prints error and returns 1 on failure;
@@ -1847,7 +1847,7 @@ ssl_install_certbot() { _install_certbot_snap; }
 # Populate the caller's 'domains' array with all known domains.
 # Sources (deduplicated, sorted):
 #   1. /etc/ops/domains/*.conf  — OPS-managed domains (add_domain)
-#   2. /etc/nginx/sites-available/*  — all nginx vhosts incl. nine-router
+#   2. /etc/nginx/sites-available/*  - all nginx vhosts incl. cli-proxy-api
 # Excludes: 00-default-deny, *.bak.* backup files, and directories.
 _ssl_collect_domains() {
     local -A _seen=()
@@ -1865,7 +1865,7 @@ _ssl_collect_domains() {
         done
     fi
 
-    # Source 2: nginx sites-available (catches nine-router and manual vhosts)
+    # Source 2: nginx sites-available (catches cli-proxy-api and manual vhosts)
     if [[ -d "$NGINX_SITES_AVAILABLE" ]]; then
         local _f _name
         for _f in "${NGINX_SITES_AVAILABLE}"/*; do
@@ -1874,8 +1874,8 @@ _ssl_collect_domains() {
             # Skip default deny and backup files
             [[ "$_name" == "${NGINX_DEFAULT_DENY_NAME}" ]] && continue
             [[ "$_name" == *.bak.* ]] && continue
-            # Extract domain: strip leading nine-router. prefix if present
-            local _d="${_name#nine-router.}"
+            # Extract domain: strip leading cli-proxy-api. prefix if present
+            local _d="${_name#cli-proxy-api.}"
             if _domain_is_valid "$_d" && [[ -z "${_seen[$_d]:-}" ]]; then
                 domains+=("$_d")
                 _seen[$_d]=1
@@ -2246,12 +2246,12 @@ ssl_issue_cf_origin_cert() {
 
     # ── Step 5: Update nginx vhost to use CF origin cert ─────────────────────
     local vhost_avail="${NGINX_SITES_AVAILABLE}/${domain}"
-    local nine_router_vhost="/etc/nginx/sites-available/nine-router.${domain}"
+    local cliproxyapi_vhost="/etc/nginx/sites-available/cli-proxy-api.${domain}"
 
-    # Determine which vhost file to patch (ops-managed or nine-router)
+    # Determine which vhost file to patch (ops-managed or cli-proxy-api)
     local vhost_to_patch=""
-    [[ -f "$vhost_avail" ]]      && vhost_to_patch="$vhost_avail"
-    [[ -f "$nine_router_vhost" ]] && vhost_to_patch="$nine_router_vhost"
+    [[ -f "$vhost_avail" ]]       && vhost_to_patch="$vhost_avail"
+    [[ -f "$cliproxyapi_vhost" ]] && vhost_to_patch="$cliproxyapi_vhost"
 
     if [[ -n "$vhost_to_patch" ]]; then
         backup_file "$vhost_to_patch" >/dev/null || true

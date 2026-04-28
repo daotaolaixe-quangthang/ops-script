@@ -28,17 +28,17 @@ OPS is split into three layers:
      - `core/utils.sh` – safe file writes, backups, logging, idempotence helpers.
      - `core/system.sh` – wrappers around apt, systemctl, ufw, etc.
 
-3. **Module layer** (feature‑oriented scripts)
+3. **Module layer** (feature-oriented scripts)
    - Each module lives under `modules/` and exposes functions that the menu calls:
-     - `modules/setup-wizard.sh` – first‑time production wizard.
-     - `modules/security.sh` – SSH hardening, firewall, fail2ban.
-     - `modules/nginx.sh` – Nginx install, global tuning, vhost management, SSL helpers.
-     - `modules/node.sh` – Node.js LTS install, PM2 setup, Node service management.
-     - `modules/nine-router.sh` – 9router install, PM2 service, domain integration.
-     - `modules/php.sh` – multi‑PHP (7.4, 8.1, 8.2, 8.3) install and PHP‑FPM tuning.
-     - `modules/database.sh` – MySQL/MariaDB install, secure setup, tuning, DB/user management.
-     - `modules/monitoring.sh` – basic + optional advanced monitoring.
-     - `modules/codex-cli.sh` – Codex CLI install and configuration.
+     - `modules/setup-wizard.sh` - first-time production wizard.
+     - `modules/security.sh` - SSH hardening, firewall, fail2ban.
+     - `modules/nginx.sh` - Nginx install, global tuning, vhost management, SSL helpers.
+     - `modules/node.sh` - Node.js LTS install, PM2 setup, Node service management.
+     - `modules/cli-proxy-api.sh` - CLIProxyAPI install, systemd lifecycle, and domain integration. The file path is legacy, but the runtime contract is CLIProxyAPI.
+     - `modules/php.sh` - multi-PHP (7.4, 8.1, 8.2, 8.3) install and PHP-FPM tuning.
+     - `modules/database.sh` - MySQL/MariaDB install, secure setup, tuning, DB/user management.
+     - `modules/monitoring.sh` - basic + optional advanced monitoring.
+     - `modules/codex-cli.sh` - Codex CLI install and configuration.
     - Modules should be **stateless** where possible, deriving state from:
       - System inspection (systemctl, ps, config files).
       - A small set of config files under `/etc/ops/` (see below).
@@ -90,7 +90,7 @@ Expected layout inside this repo under `ops/`:
   - `security.sh`
   - `nginx.sh`
   - `node.sh`
-  - `nine-router.sh`
+  - `cli-proxy-api.sh`
   - `php.sh`
   - `database.sh`
   - `monitoring.sh`
@@ -99,14 +99,14 @@ Expected layout inside this repo under `ops/`:
     - `nginx/`
       - `node_vhost.conf.tpl`
       - `php_vhost.conf.tpl`
-      - `nine-router.vhost.conf.tpl`    # SSE proxy; intentionally no per-vhost limit_req/limit_conn
+      - `cli-proxy-api.vhost.conf.tpl`    # SSE proxy; intentionally no per-vhost limit_req/limit_conn
       - `static_vhost.conf.tpl`
       - `default-deny.conf.tpl`
       - `cloudflare-real-ip.conf.tpl`
       - `custom-powered-by.conf.tpl`
     - `pm2/`
       - `ecosystem.config.js.tpl`
-      - `nine-router.ecosystem.config.js.tpl`
+      - legacy provider PM2 template (deprecated, unused)
 - `docs/`
   - (this file and other documentation)
 - `rules/`
@@ -137,17 +137,17 @@ To keep the production control plane maintainable, OPS should add explicit state
 - `/etc/ops/apps/<app>.conf` - Node app manifests
 - `/etc/ops/domains/<domain>.conf` - domain to backend mapping
 - `/etc/ops/php-sites/<site>.conf` - PHP site metadata
-- `/etc/ops/nine-router.conf` - 9router state (NINE_ROUTER_INSTALLED, DOMAIN, SSL, REQUIRE_API_KEY)
+- `/etc/ops/cli-proxy-api.conf` - CLIProxyAPI state (`CLIPROXYAPI_INSTALLED`, domain, SSL, API key mode, request logs)
 - `/etc/ops/codex-cli.conf` - Codex CLI state
 - `/etc/ops/database.conf` - DB engine (MariaDB default), version
 - `/etc/ops/notifications.conf` - Telegram CHAT_ID, TELEGRAM_ENABLED
 
-**Secret files (0600, owned by admin user — NEVER in config files above):**
-- `/etc/ops/.nine-router-password` - 9router dashboard initial password
+**Secret files (0600, owned by admin user - NEVER in config files above):**
+- `/etc/ops/.cli-proxy-api-key` - local client key for CLIProxyAPI when API key mode is enabled
 - `/etc/ops/.db-root-password` - MariaDB root password
 - `/etc/ops/.codex-api-key` - Codex CLI API key
 - `/etc/ops/.telegram-bot-token` - Telegram bot token
-- `/opt/9router/.env` - 9router runtime secrets (JWT_SECRET, API keys)
+- `/opt/cli-proxy-api/config.yaml` - CLIProxyAPI runtime config (contains endpoint and auth toggles; keep root-readable only as required by the service setup)
 
 If some of these are not implemented in Phase 1, they still remain the target architecture.
 
@@ -189,24 +189,24 @@ AI agents must **not** hard-code additional runtime paths without updating this 
 
 - Fresh or lightly customised Ubuntu 22.04 / 24.04 with `systemd`.
 - Nginx used as the only public HTTP(S) entrypoint.
-- 9router runs on `127.0.0.1:20128` and is never exposed directly to the public internet.
+- CLIProxyAPI runs on `127.0.0.1:8317` and is never exposed directly to the public internet.
 
-### 6. 9router and Nginx authority boundaries
+### 6. CLIProxyAPI and Nginx authority boundaries
 
-- Source of truth for 9router network posture is the implementation, not older prose:
-  - `ops/modules/nine-router.sh`
+- Source of truth for CLIProxyAPI network posture is the implementation, not older prose:
+  - `ops/modules/cli-proxy-api.sh`
   - `ops/modules/nginx.sh`
   - `ops/modules/verify.sh`
-  - `ops/modules/templates/nginx/nine-router.vhost.conf.tpl`
-  - `ops/modules/templates/pm2/nine-router.ecosystem.config.js.tpl`
+  - `ops/modules/templates/nginx/cli-proxy-api.vhost.conf.tpl`
 - Required posture:
-  - 9router binds `127.0.0.1:20128` only.
-  - Nginx is the only public entrypoint for 9router.
-  - UFW must not have `ALLOW 20128`; explicit `DENY 20128` is optional and stale deny rules may be removed.
-- Nginx rate limiting has two layers that must not be conflated:
-  - Global baseline in `http {}`: `limit_req_zone` and `limit_conn_zone` remain defined.
-  - Per-vhost enforcement: standard vhosts may use `limit_req` / `limit_conn`, but the 9router vhost intentionally does not.
-- Rationale: 9router relies on Cloudflare edge handling there, and nginx per-vhost rate limiting caused false-positive `429` on fast navigation / F5.
+  - CLIProxyAPI binds `127.0.0.1:8317` only.
+  - Nginx is the only public entrypoint for CLIProxyAPI.
+  - UFW must not have `ALLOW 8317`.
+  - CLIProxyAPI is managed by systemd, not PM2.
+- Vhost rule:
+  - the provider vhost must keep `proxy_buffering off`.
+  - TLS terminates at Nginx, not inside CLIProxyAPI.
+- Rationale: CLIProxyAPI is a loopback-only local provider service, and the public edge policy belongs to Nginx.
 
 If future work adds support for other OSes or init systems, update this file first.
 

@@ -14,7 +14,7 @@
 6. [Node.js Services](#6-nodejs-services)
 7. [Domains & Nginx](#7-domains--nginx)
 8. [SSL Management](#8-ssl-management)
-9. [9router Management](#9-9router-management)
+9. [CLIProxyAPI Management](#9-cliproxyapi-management)
 10. [PHP / PHP-FPM Management](#10-php--php-fpm-management)
 11. [Database Management](#11-database-management)
 12. [Codex CLI Integration](#12-codex-cli-integration)
@@ -129,7 +129,7 @@ ops
   2) Node.js Services
   3) Domains & Nginx
   4) SSL Management
-  5) 9router Management
+  5) CLIProxyAPI Management
   6) PHP / PHP-FPM Management
   7) Database Management
   8) AI Agent Integration
@@ -225,29 +225,47 @@ OPS xoá Nginx config và state file. **Web root `/var/www/<domain>` KHÔNG bị
 
 **Công cụ:** Certbot (snap). SSL được tích hợp tự động vào Nginx vhost.
 
-**Auto-action:** Sau khi cấp SSL cho domain 9router → tự set `AUTH_COOKIE_SECURE=true` trong `/opt/9router/.env` và restart.
+**Auto-action:** Sau khi cấp SSL cho domain CLIProxyAPI -> tự re-render CLIProxyAPI vhost để Nginx dùng HTTPS và tiếp tục proxy về `127.0.0.1:8317`.
 
 ---
 
-## 9. 9router Management
+## 9. CLIProxyAPI Management
 
-**`ops → 5`**
+**`ops -> 5`**
 
-9router là reverse proxy + auth layer viết bằng Node.js, bind tại `127.0.0.1:20128`.
+CLIProxyAPI là local LLM proxy/API gateway chạy native bằng Go + systemd, bind tại `127.0.0.1:8317`, public qua Nginx.
 
 | Menu | Chức năng |
 |---|---|
-| 1) Install 9router | Clone, build, đăng ký PM2 |
-| 2) Update 9router | `git pull` + `npm build` + PM2 restart |
-| 3) Link to domain | Tạo Nginx vhost với `proxy_buffering off` (bắt buộc cho SSE) |
-| 4/5/6) Start/Stop/Restart | PM2 lifecycle |
-| 7) View logs | PM2 logs |
-| 8) Enable API key | `REQUIRE_API_KEY=true` → restart |
-| 9) Disable API key | `REQUIRE_API_KEY=false` → restart |
+| 1) Install CLIProxyAPI | Tải binary release, ghi `config.yaml`, tạo `cli-proxy-api.service` |
+| 2) Update CLIProxyAPI | Tải release mới, giữ state/config, restart service |
+| 3) Link to domain | Tạo Nginx vhost `cli-proxy-api.<domain>` với `proxy_buffering off` |
+| 4/5/6) Start/Stop/Restart | systemd lifecycle |
+| 7) View logs | `journalctl -u cli-proxy-api -n 50` |
+| 8) Enable API key | Ghi `api-keys:` vào `config.yaml` rồi restart |
+| 9) Disable API key | Đặt `api-keys: []` rồi restart |
+| 10) Enable request logging | Bật `logging-to-file: true` rồi restart |
+| 11) Disable request logging | Tắt `logging-to-file` rồi restart |
+| 12) Verify CLIProxyAPI | Check systemd, loopback bind, `/v1/models`, UFW |
 
-**Secrets được tạo tự động khi install:**
-- `INITIAL_PASSWORD` → `/etc/ops/.nine-router-password` (0600)
-- `JWT_SECRET`, `API_KEY_SECRET`, `MACHINE_ID_SALT` → `openssl rand`
+**Runtime chính:**
+- Binary: `/opt/cli-proxy-api/cli-proxy-api`
+- Config: `/opt/cli-proxy-api/config.yaml`
+- State: `/etc/ops/cli-proxy-api.conf`
+- Local client key: `/etc/ops/.cli-proxy-api-key`
+- Auth dir: `~/.cli-proxy-api` của runtime user
+
+**Bootstrap auth sau khi install:**
+- Claude: `sudo -u <runtime_user> env HOME=<runtime_home> /opt/cli-proxy-api/cli-proxy-api --claude-login`
+- Codex/OpenAI: `sudo -u <runtime_user> env HOME=<runtime_home> /opt/cli-proxy-api/cli-proxy-api --codex-login`
+- Gemini: `sudo -u <runtime_user> env HOME=<runtime_home> /opt/cli-proxy-api/cli-proxy-api --login`
+
+**Mặc định bảo mật:**
+- Chỉ bind loopback `127.0.0.1:8317`
+- Không public trực tiếp port `8317`
+- `remote-management.allow-remote: false`
+- `remote-management.secret-key: ""`
+- `pprof.enable: false`
 
 ---
 
@@ -358,7 +376,7 @@ Kiểm tra toàn bộ stack, output ví dụ:
 [PASS] MariaDB        active
 [PASS] UFW            active
 [PASS] SSL            example.com — 45 days left
-[FAIL] 9router        process not found in PM2
+[FAIL] CLIProxyAPI    systemd status: inactive
 ```
 
 > Luôn return exit 0 — không làm menu thoát.

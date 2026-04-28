@@ -79,9 +79,9 @@ install_codex_cli() {
     _codex_set_state "CODEX_INSTALL_DATE" "$(date +%Y-%m-%d)"
 }
 
-configure_codex_with_9router() {
-    local api_key
-    read -r -s -p "Paste API key from 9router dashboard: " api_key
+configure_codex_with_cliproxyapi() {
+    local api_key model_name
+    read -r -s -p "Paste API key from CLIProxyAPI: " api_key
     echo
 
     if [[ -z "$api_key" ]]; then
@@ -89,22 +89,25 @@ configure_codex_with_9router() {
         return 1
     fi
 
+    read -r -p "Model name [if/kimi-k2-thinking]: " model_name
+    model_name="${model_name:-if/kimi-k2-thinking}"
+
     _codex_write_api_key_file "$api_key"
 
     _codex_write_config_toml "[model]
 provider = \"openai\"
-name     = \"if/kimi-k2-thinking\"
+name     = \"${model_name}\"
 
 [provider.openai]
-base_url = \"http://127.0.0.1:20128/v1\"
+base_url = \"http://127.0.0.1:8317/v1\"
 api_key  = \"${api_key}\""
 
-    _codex_set_state "CODEX_MODE" "9router"
-    _codex_set_state "CODEX_ENDPOINT" "http://127.0.0.1:20128/v1"
-    _codex_set_state "CODEX_MODEL" "if/kimi-k2-thinking"
+    _codex_set_state "CODEX_MODE" "cliproxyapi"
+    _codex_set_state "CODEX_ENDPOINT" "http://127.0.0.1:8317/v1"
+    _codex_set_state "CODEX_MODEL" "$model_name"
     _codex_set_state "CODEX_API_KEY_FILE" "$CODEX_API_KEY_FILE"
 
-    log_info "Codex CLI configured to use 9router"
+    log_info "Codex CLI configured to use CLIProxyAPI"
 }
 
 configure_codex_with_openai_api() {
@@ -193,7 +196,7 @@ configure_codex_cli() {
 
     while true; do
         print_section "Configure Codex for this server"
-        echo "  1) Use 9router endpoint (recommended)"
+        echo "  1) Use CLIProxyAPI endpoint (recommended)"
         echo "  2) Use OpenAI API key"
         echo "  3) ChatGPT OAuth (manual login)"
         echo "  4) Custom endpoint (enter Base URL / API Key / Model)"
@@ -202,7 +205,7 @@ configure_codex_cli() {
         read -r -p "Select: " choice
 
         case "$choice" in
-            1) _configure_codex_menu_run configure_codex_with_9router; return 0 ;;
+            1) _configure_codex_menu_run configure_codex_with_cliproxyapi; return 0 ;;
             2) _configure_codex_menu_run configure_codex_with_openai_api; return 0 ;;
             3) _configure_codex_menu_run configure_codex_chatgpt_oauth; return 0 ;;
             4) _configure_codex_menu_run configure_codex_custom; return 0 ;;
@@ -282,8 +285,8 @@ test_codex_cli() {
     echo "Version: $(codex --version 2>/dev/null || echo 'NOT FOUND')"
     echo "Config:  $(ls "$(_codex_config_file)" 2>/dev/null || echo 'NOT CONFIGURED')"
 
-    if [[ "${CODEX_MODE:-}" == "9router" ]]; then
-        echo "9router endpoint reachable: $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:20128/v1/models)"
+    if [[ "${CODEX_MODE:-}" == "cliproxyapi" ]]; then
+        echo "CLIProxyAPI endpoint reachable: $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8317/v1/models)"
     fi
 }
 
