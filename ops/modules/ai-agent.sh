@@ -113,6 +113,11 @@ configure_claude_cli() {
             [[ "${cont_ans,,}" == "y" ]] || return 0
         fi
 
+        # Auto-generate CLIProxyAPI client key if not yet created
+        if declare -F _cliproxyapi_ensure_client_key >/dev/null; then
+            _cliproxyapi_ensure_client_key > /dev/null
+        fi
+
         if [[ -f "${OPS_CONFIG_DIR}/.cli-proxy-api-key" ]]; then
             api_key=$(tr -d '\r\n' < "${OPS_CONFIG_DIR}/.cli-proxy-api-key")
             log_info "Using CLIProxyAPI key from ${OPS_CONFIG_DIR}/.cli-proxy-api-key"

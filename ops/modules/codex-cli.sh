@@ -86,6 +86,11 @@ configure_codex_with_cliproxyapi() {
     admin_home="${admin_home:-/home/$ADMIN_USER}"
     admin_bashrc="${admin_home}/.bashrc"
 
+    # Auto-generate CLIProxyAPI client key if not yet created
+    if declare -F _cliproxyapi_ensure_client_key >/dev/null; then
+        _cliproxyapi_ensure_client_key > /dev/null
+    fi
+
     # Auto-read CLIProxyAPI key if available
     if [[ -f "$cpa_key_file" ]]; then
         api_key=$(tr -d '\r\n' < "$cpa_key_file")
