@@ -64,6 +64,7 @@ After this step, installer:
    - `/usr/local/bin/ops-dashboard` → `/opt/ops/bin/ops-dashboard`
 2. Wires login hook:
    - When an interactive shell starts for the admin user, run `ops-dashboard`.
+   - The hook is display-only; it must not mutate SSH/firewall state.
    - After showing the dashboard, print a prompt like:
 
      ```text

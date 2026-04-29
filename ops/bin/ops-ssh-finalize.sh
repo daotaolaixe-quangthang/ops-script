@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 # ============================================================
 # ops/bin/ops-ssh-finalize.sh
-# Purpose:  Automatically close the SSH transition port (port 22)
-#           after admin user successfully logs in on the new SSH port.
+# Purpose:  Close the old SSH transition port (typically port 22)
+#           after the operator has verified the new SSH port.
 # Part of:  OPS — VPS Production Setup & Manager
 # ============================================================
-# Called by the login hook in ~/.bash_profile via:
-#   sudo /opt/ops/bin/ops-ssh-finalize.sh
+# Called from the Security menu (or manually as root) to close the
+# old SSH transition port after the operator has verified the new port.
 #
-# Prerequisites (set up by ops-setup.sh):
-#   /etc/sudoers.d/99-ops-ssh-finalize  — NOPASSWD rule for admin user
-#   /etc/ops/ops.conf                   — OPS_SSH_PORT + OPS_SSH_TRANSITION_PORT
+# Prerequisites:
+#   /etc/ops/ops.conf  — OPS_SSH_PORT + OPS_SSH_TRANSITION_PORT
 # ============================================================
 set -euo pipefail
 IFS=$'\n\t'
@@ -164,9 +163,9 @@ EOF
     # ── 4. Reload sshd ────────────────────────────────────────
     # F-09 fix: do NOT exit on reload failure. sshd -t already validated the config
     # (step 3), so the config is known-good. A reload failure is a transient system
-    # issue; exiting here would leave OPS_SSH_TRANSITION_PORT set in ops.conf, causing
-    # the login hook to re-trigger sudo on every subsequent SSH session (retry loop).
-    # Log the error prominently so the operator can manually reload; do not block finalize.
+    # issue; exiting here would leave OPS_SSH_TRANSITION_PORT set in ops.conf and keep
+    # OPS in a stale transition state. Log the error prominently so the operator can
+    # manually reload; do not block finalize state cleanup.
     local ssh_service
     ssh_service=$(detect_ssh_service)
     if systemctl reload "$ssh_service" > /dev/null 2>&1; then

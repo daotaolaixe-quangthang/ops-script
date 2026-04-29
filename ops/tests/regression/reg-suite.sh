@@ -193,21 +193,24 @@ case_sec_09_forwarding_disabled_contract_present() {
 }
 
 case_ins_01_02_installer_os_contract_present() {
-    local content
-    content="$(<"${OPS_ROOT}/install/ops-install.sh")"
+    local content legacy_content
+    content="$(<"${REPO_ROOT}/install/ops-install.sh")"
+    legacy_content="$(<"${REPO_ROOT}/ops/install/ops-install.sh")"
     test::assert_contains "$content" '22.04' 'Ubuntu 22.04 support contract missing' || return 1
     test::assert_contains "$content" '24.04' 'Ubuntu 24.04 support contract missing' || return 1
+    test::assert_contains "$legacy_content" 'Use install/ops-install.sh from the repo root.' 'legacy installer wrapper contract missing' || return 1
 }
 
 case_ins_03_unsupported_os_rejected_contract_present() {
     local content
-    content="$(<"${OPS_ROOT}/install/ops-install.sh")"
+    content="$(<"${REPO_ROOT}/install/ops-install.sh")"
     test::assert_contains "$content" 'Unsupported OS' 'unsupported OS rejection missing' || return 1
 }
 
 case_ins_04_existing_admin_user_contract_present() {
     local content
-    content="$(<"${OPS_ROOT}/install/ops-install.sh")"
+    content="$(<"${REPO_ROOT}/install/ops-install.sh")"
+    test::assert_contains "$content" 'OPS_ADMIN_USER' 'installer must reuse persisted OPS admin user when available' || return 1
     test::assert_contains "$content" 'id "$ADMIN_USER"' 'existing admin user detection missing' || return 1
 }
 
@@ -216,6 +219,8 @@ case_ins_05_rerun_setup_contract_present() {
     content="$(<"${OPS_ROOT}/bin/ops-setup.sh")"
     test::assert_contains "$content" 'ensure_dir "$OPS_CONFIG_DIR"' 'setup idempotent config dir contract missing' || return 1
     test::assert_contains "$content" 'safe_symlink' 'symlink idempotence contract missing' || return 1
+    test::assert_contains "$content" 'ops_conf_get "ops.conf" "OPS_ADMIN_USER"' 'ops-setup rerun must prefer persisted admin user' || return 1
+    test::assert_contains "$content" 'cleanup_legacy_ssh_finalize_sudoers' 'legacy auto-finalize sudoers cleanup missing' || return 1
 }
 
 case_ins_06_07_08_login_hook_contract_present() {
@@ -223,6 +228,8 @@ case_ins_06_07_08_login_hook_contract_present() {
     content="$(<"${OPS_ROOT}/bin/ops-setup.sh")"
     test::assert_contains "$content" 'SSH_CONNECTION' 'login hook must key off SSH_CONNECTION' || return 1
     test::assert_not_contains "$content" 'SSH_TTY' 'stale SSH_TTY-only login hook contract must stay absent' || return 1
+    test::assert_contains "$content" 'OPS_HOOK_V3' 'current login hook version marker missing' || return 1
+    test::assert_contains "$content" '# OPS login hook end' 'login hook end marker missing' || return 1
 }
 
 case_ins_09_installer_rollback_contract_present() {

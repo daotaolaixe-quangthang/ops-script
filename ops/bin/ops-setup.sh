@@ -30,11 +30,15 @@ source "$OPS_ROOT/core/system.sh"
 # ADMIN_USER may be passed from ops-install.sh or already in env.
 # Fallback: first sudo-group non-root user, then SUDO_USER, then fail.
 resolve_admin_user() {
-    # ADMIN_USER set by ops-install.sh takes priority
+    # ADMIN_USER set by ops-install.sh takes priority.
     : "${ADMIN_USER:=}"
 
     if [[ -z "$ADMIN_USER" ]]; then
-        # Try first non-root sudo user
+        ADMIN_USER="$(ops_conf_get "ops.conf" "OPS_ADMIN_USER" 2>/dev/null || true)"
+    fi
+
+    if [[ -z "$ADMIN_USER" ]]; then
+        # First-install fallback: first non-root sudo user.
         ADMIN_USER=$(getent group sudo 2>/dev/null \
             | cut -d: -f4 | tr ',' '\n' \
             | grep -v '^root$' | head -n1 || true)
@@ -108,15 +112,28 @@ setup_login_hook() {
 
     local profile="${admin_home}/.bash_profile"
     local hook_marker="# OPS login hook — do not remove"
+    local hook_end_marker="# OPS login hook end"
     # Versioned marker: bump version when hook content changes so re-install
     # rewrites stale hooks from older OPS versions automatically.
-    local hook_version="OPS_HOOK_V2"
+    local hook_version="OPS_HOOK_V3"
     local hook_version_marker="# ${hook_version}"
-    local hook_code
+    local hook_code legacy_hook_code
+
     # The guard ensures ops-dashboard only runs for interactive SSH sessions.
     # [[ $- == *i* ]] — shell is interactive
     # [[ -n $SSH_CONNECTION ]] — actual SSH login shell context
     read -r -d '' hook_code << 'HOOK' || true
+# OPS login hook — do not remove
+# OPS_HOOK_V3
+if [[ $- == *i* ]] && [[ -n "${SSH_CONNECTION:-}" ]]; then
+    if command -v ops-dashboard &>/dev/null; then
+        ops-dashboard || true
+    fi
+fi
+# OPS login hook end
+HOOK
+
+    read -r -d '' legacy_hook_code << 'HOOK' || true
 # OPS login hook — do not remove
 # OPS_HOOK_V2
 if [[ $- == *i* ]] && [[ -n "${SSH_CONNECTION:-}" ]]; then
@@ -139,22 +156,9 @@ if [[ $- == *i* ]] && [[ -n "${SSH_CONNECTION:-}" ]]; then
 fi
 HOOK
 
-    # Idempotent with version-awareness:
-    # - If current version marker present → already up-to-date, skip.
-    # - If old hook (marker present but wrong version) → remove and rewrite.
-    # - If no hook → install fresh.
-    if grep -q "$hook_version_marker" "$profile" 2>/dev/null; then
-        log_info "Login hook ${hook_version} already present in ${profile} — skipping."
-    else
-        # Remove stale OPS hook (any version) before writing new one
-        if grep -q "$hook_marker" "$profile" 2>/dev/null; then
-            log_info "Stale OPS login hook found in ${profile} — replacing with ${hook_version}."
-            sed -i '/# OPS login hook — do not remove/,$d' "$profile"
-        fi
-
-        # Ensure .bash_profile exists and sources .bashrc for interactive use
-        if [[ ! -f "$profile" ]]; then
-            cat > "$profile" <<'BASHPROFILE'
+    # Ensure .bash_profile exists and sources .bashrc for interactive use.
+    if [[ ! -f "$profile" ]]; then
+        cat > "$profile" <<'BASHPROFILE'
 # ~/.bash_profile — sourced on SSH login
 # Source .bashrc if it exists
 if [[ -f ~/.bashrc ]]; then
@@ -162,26 +166,56 @@ if [[ -f ~/.bashrc ]]; then
     source ~/.bashrc
 fi
 BASHPROFILE
-            chown "${ADMIN_USER}:${ADMIN_USER}" "$profile"
-        fi
-
-        if ! bash -n "$profile" 2>/dev/null; then
-            log_error "Refusing to append OPS login hook: ${profile} has invalid bash syntax"
-            return 1
-        fi
-
-        printf '\n%s\n' "$hook_code" >> "$profile"
-
-        if ! bash -n "$profile" 2>/dev/null; then
-            log_error "Login hook caused syntax failure in ${profile}. Rolling back."
-            sed -i '/# OPS login hook — do not remove/,$d' "$profile"
-            return 1
-        fi
-
         chown "${ADMIN_USER}:${ADMIN_USER}" "$profile"
-        print_ok "Login hook ${hook_version} installed in ${profile}"
-        ops_conf_set "setup.conf" "SETUP_LOGIN_HOOK" "installed"
     fi
+
+    if ! bash -n "$profile" 2>/dev/null; then
+        log_error "Refusing to update OPS login hook: ${profile} has invalid bash syntax"
+        return 1
+    fi
+
+    if grep -q "$hook_version_marker" "$profile" 2>/dev/null; then
+        log_info "Login hook ${hook_version} already present in ${profile} — skipping."
+        return 0
+    fi
+
+    local profile_backup="${profile}.bak.$(date +%Y%m%d_%H%M%S)"
+    cp "$profile" "$profile_backup"
+
+    if grep -q "$hook_marker" "$profile" 2>/dev/null; then
+        log_info "Stale OPS login hook found in ${profile} — replacing with ${hook_version}."
+        local content updated_content tmp
+        content="$(<"$profile")"
+
+        if [[ "$content" == *"$legacy_hook_code"* ]]; then
+            updated_content="${content/$legacy_hook_code/}"
+            printf '%s' "$updated_content" > "$profile"
+        elif [[ "$content" == *"$hook_end_marker"* ]]; then
+            tmp=$(mktemp)
+            awk -v start="$hook_marker" -v end="$hook_end_marker" '
+                $0 == start { skip=1; next }
+                skip && $0 == end { skip=0; next }
+                !skip { print }
+            ' "$profile" > "$tmp"
+            mv "$tmp" "$profile"
+        else
+            cp "$profile_backup" "$profile"
+            log_error "Refusing to rewrite unknown legacy OPS login hook in ${profile}. Review ${profile_backup} manually."
+            return 1
+        fi
+    fi
+
+    printf '\n%s\n' "$hook_code" >> "$profile"
+
+    if ! bash -n "$profile" 2>/dev/null; then
+        cp "$profile_backup" "$profile"
+        log_error "Login hook caused syntax failure in ${profile}. Restored backup ${profile_backup}."
+        return 1
+    fi
+
+    chown "${ADMIN_USER}:${ADMIN_USER}" "$profile"
+    print_ok "Login hook ${hook_version} installed in ${profile}"
+    ops_conf_set "setup.conf" "SETUP_LOGIN_HOOK" "installed"
 }
 
 # ── 4. Write /etc/ops/ops.conf ────────────────────────────────
@@ -207,7 +241,7 @@ setup_base_config() {
     ops_conf_set "ops.conf" "OPS_LOG_FILE" "$OPS_LOG_FILE"
     ops_conf_set "ops.conf" "OPS_ADMIN_USER" "$ADMIN_USER"
     # OPS_SSH_PORT / OPS_SSH_TRANSITION_PORT: set by ops-install.sh via env.
-    # OPS_SSH_TRANSITION_PORT is cleared by ops-ssh-finalize.sh after auto-finalize.
+    # OPS_SSH_TRANSITION_PORT is cleared by ops-ssh-finalize.sh after explicit finalization.
     ops_conf_set "ops.conf" "OPS_SSH_PORT"            "${OPS_SSH_PORT:-}"
     ops_conf_set "ops.conf" "OPS_SSH_TRANSITION_PORT" "${OPS_SSH_TRANSITION_PORT:-}"
     ops_conf_set "ops.conf" "OPS_INSTALL_DATE" "$install_date"
@@ -222,40 +256,22 @@ setup_base_config() {
     print_ok "Config written: ${conf} (mode 640, owner root:${ADMIN_USER})"
 }
 
-# ── 5. Sudoers rule for ops-ssh-finalize.sh ──────────────────
-# Grants $ADMIN_USER password-less sudo ONLY for ops-ssh-finalize.sh.
-# This is intentionally narrow-scoped: the script itself validates state.
+# ── 5. Cleanup legacy auto-finalize sudoers rule ─────────────
+# Older OPS builds granted NOPASSWD sudo for ops-ssh-finalize.sh so the
+# login hook could auto-close the transition port. Finalization is now an
+# explicit operator action from the Security menu, so this extra privilege
+# should be removed on re-run.
 
-setup_ssh_finalize_sudoers() {
+cleanup_legacy_ssh_finalize_sudoers() {
     local sudoers_file="/etc/sudoers.d/99-ops-ssh-finalize"
-    local finalize_bin="/opt/ops/bin/ops-ssh-finalize.sh"
-    local desired_rule
-    desired_rule="${ADMIN_USER} ALL=(root) NOPASSWD: ${finalize_bin}"
 
-    # Idempotent: only write/update if content differs
-    local current_rule
-    current_rule=$(cat "$sudoers_file" 2>/dev/null | grep -v '^#' | grep -v '^$' | head -n1 || true)
-    if [[ "$current_rule" == "$desired_rule" ]]; then
-        log_info "sudoers rule already correct for ${ADMIN_USER} — skipping."
+    if [[ ! -f "$sudoers_file" ]]; then
         return 0
     fi
 
-    {
-        echo "# Managed by OPS — do not edit manually."
-        echo "# Allows the OPS admin user to run ops-ssh-finalize.sh as root with no password."
-        echo "# This is used by the login hook to auto-close the SSH transition port."
-        echo "$desired_rule"
-    } > "$sudoers_file"
-    chmod 440 "$sudoers_file"
-
-    # Validate with visudo
-    if ! visudo -cf "$sudoers_file" > /dev/null 2>&1; then
-        log_error "Sudoers file failed validation — removing: ${sudoers_file}"
-        rm -f "$sudoers_file"
-        return 1
-    fi
-
-    print_ok "sudoers rule installed: ${ADMIN_USER} may run ops-ssh-finalize.sh without password."
+    backup_file "$sudoers_file" >/dev/null 2>&1 || true
+    rm -f "$sudoers_file"
+    print_ok "Removed legacy auto-finalize sudoers rule: ${sudoers_file}"
 }
 
 # ── 6. logrotate for /var/log/ops/ops.log ────────────────────
@@ -295,7 +311,7 @@ main() {
     setup_logrotate
     setup_symlinks
     setup_base_config
-    setup_ssh_finalize_sudoers
+    cleanup_legacy_ssh_finalize_sudoers
     setup_login_hook
 
     echo ""

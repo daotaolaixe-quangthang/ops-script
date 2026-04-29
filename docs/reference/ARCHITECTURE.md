@@ -72,41 +72,44 @@ menu_example() {
 
 ### 2. Directory layout (in repo)
 
-Expected layout inside this repo under `ops/`:
+Expected layout inside this repo:
 
-- `bin/`
-  - `ops`
-  - `ops-dashboard`
-  - `ops-setup.sh`
 - `install/`
-  - `ops-install.sh` – the script referenced in `curl && bash`.
-- `core/`
-  - `env.sh`
-  - `ui.sh`
-  - `utils.sh`
-  - `system.sh`
-- `modules/`
-  - `setup-wizard.sh`
-  - `security.sh`
-  - `nginx.sh`
-  - `node.sh`
-  - `cli-proxy-api.sh`
-  - `php.sh`
-  - `database.sh`
-  - `monitoring.sh`
-  - `codex-cli.sh`
-  - `templates/`
-    - `nginx/`
-      - `node_vhost.conf.tpl`
-      - `php_vhost.conf.tpl`
-      - `cli-proxy-api.vhost.conf.tpl`    # SSE proxy; intentionally no per-vhost limit_req/limit_conn
-      - `static_vhost.conf.tpl`
-      - `default-deny.conf.tpl`
-      - `cloudflare-real-ip.conf.tpl`
-      - `custom-powered-by.conf.tpl`
-    - `pm2/`
-      - `ecosystem.config.js.tpl`
-      - legacy provider PM2 template (deprecated, unused)
+  - `ops-install.sh` – canonical public bootstrap installer referenced in `curl && bash`.
+- `ops/`
+  - `bin/`
+    - `ops`
+    - `ops-dashboard`
+    - `ops-setup.sh`
+  - `install/`
+    - `ops-install.sh` – compatibility wrapper that points maintainers back to the repo-root installer
+  - `core/`
+    - `env.sh`
+    - `ui.sh`
+    - `utils.sh`
+    - `system.sh`
+  - `modules/`
+    - `setup-wizard.sh`
+    - `security.sh`
+    - `nginx.sh`
+    - `node.sh`
+    - `cli-proxy-api.sh`
+    - `php.sh`
+    - `database.sh`
+    - `monitoring.sh`
+    - `codex-cli.sh`
+    - `templates/`
+      - `nginx/`
+        - `node_vhost.conf.tpl`
+        - `php_vhost.conf.tpl`
+        - `cli-proxy-api.vhost.conf.tpl`    # SSE proxy; intentionally no per-vhost limit_req/limit_conn
+        - `static_vhost.conf.tpl`
+        - `default-deny.conf.tpl`
+        - `cloudflare-real-ip.conf.tpl`
+        - `custom-powered-by.conf.tpl`
+      - `pm2/`
+        - `ecosystem.config.js.tpl`
+        - legacy provider PM2 template (deprecated, unused)
 - `docs/`
   - (this file and other documentation)
 - `rules/`

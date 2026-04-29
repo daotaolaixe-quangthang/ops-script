@@ -66,6 +66,10 @@ preflight_check() {
         die "Unsupported Ubuntu version: ${os_ver}. Only Ubuntu 22.04 / 24.04 is supported."
     fi
 
+    if ! command -v systemctl > /dev/null 2>&1 || [[ ! -d /run/systemd/system ]]; then
+        die "Unsupported environment: systemd is required. OPS supports Ubuntu 22.04/24.04 with systemd only."
+    fi
+
     ok "OS check passed: Ubuntu ${os_ver}"
 }
 
@@ -74,7 +78,7 @@ preflight_check() {
 ensure_deps() {
     info "Checking required dependencies..."
     local missing=()
-    for cmd in curl tar awk nproc df ss; do
+    for cmd in curl tar awk nproc df ss rsync; do
         command -v "$cmd" &>/dev/null || missing+=("$cmd")
     done
 
@@ -167,13 +171,11 @@ detect_ssh_state() {
     fi
 
     # Safety guard: if sshd is running but we still cannot detect any port,
-    # skip reconfiguration to avoid an unexpected port change / lockout.
+    # abort rather than continue with unknown SSH/UFW state.
     if [[ -z "$port_source" ]] && pgrep -x sshd > /dev/null 2>&1; then
-        warn "Cannot determine active SSH port(s) — skipping automatic SSH reconfiguration."
+        warn "Cannot determine active SSH port(s)."
         warn "Check 'ss -tlnp' manually, then re-run: bash ops-install.sh"
-        SSH_ALREADY_CONFIGURED="yes"
-        export SSH_ALREADY_CONFIGURED
-        return 0
+        die "Aborting installation to avoid writing incorrect SSH state or UFW rules."
     fi
 
     local port
@@ -241,6 +243,28 @@ setup_ssh_port() {
 }
 
 # _configure_sshd_fresh: chỉ chạy khi fresh install (port 22 là duy nhất).
+detect_ssh_service() {
+    if systemctl list-unit-files 2>/dev/null | grep -q '^ssh\.service'; then
+        echo "ssh"
+    else
+        echo "sshd"
+    fi
+}
+
+_restore_sshd_include_backups() {
+    local backup_dir="$1"
+    local sshd_inc_dir="/etc/ssh/sshd_config.d"
+    local backup_path target_path
+
+    [[ -d "$backup_dir" ]] || return 0
+
+    for backup_path in "$backup_dir"/*.conf; do
+        [[ -f "$backup_path" ]] || continue
+        target_path="${sshd_inc_dir}/$(basename "$backup_path")"
+        cp "$backup_path" "$target_path"
+    done
+}
+
 _configure_sshd_fresh() {
     local sshd_conf="/etc/ssh/sshd_config"
     info "Configuring sshd: adding port ${NEW_SSH_PORT} (keeping port 22 during transition)..."
@@ -248,6 +272,9 @@ _configure_sshd_fresh() {
     local backup="${sshd_conf}.bak.$(date +%Y%m%d_%H%M%S)"
     cp "$sshd_conf" "$backup"
     info "sshd_config backup: $backup"
+
+    local include_backup_dir
+    include_backup_dir=$(mktemp -d /tmp/ops-sshd-includes-XXXXXX)
 
     local tmp
     tmp=$(mktemp)
@@ -262,9 +289,26 @@ _configure_sshd_fresh() {
     # cloud-init injects PasswordAuthentication yes and PermitRootLogin
     # into /etc/ssh/sshd_config.d/ — these must be removed so OPS can
     # write 99-ops-hardening.conf with the correct hardened values.
-    _strip_cloud_init_ssh_overrides
+    _strip_cloud_init_ssh_overrides "$include_backup_dir"
 
-    systemctl reload ssh 2>/dev/null || systemctl reload sshd
+    if ! sshd -t > /dev/null 2>&1; then
+        cp "$backup" "$sshd_conf"
+        _restore_sshd_include_backups "$include_backup_dir"
+        rm -rf "$include_backup_dir"
+        die "sshd -t failed after adding port ${NEW_SSH_PORT}. Restored previous SSH config."
+    fi
+
+    local ssh_service
+    ssh_service=$(detect_ssh_service)
+    if ! systemctl reload "$ssh_service" > /dev/null 2>&1; then
+        cp "$backup" "$sshd_conf"
+        _restore_sshd_include_backups "$include_backup_dir"
+        rm -rf "$include_backup_dir"
+        systemctl reload "$ssh_service" > /dev/null 2>&1 || true
+        die "SSH reload failed after adding port ${NEW_SSH_PORT}. Restored previous SSH config."
+    fi
+
+    rm -rf "$include_backup_dir"
     ok "sshd reloaded — now listening on ports 22 and ${NEW_SSH_PORT}."
 }
 
@@ -278,6 +322,7 @@ _configure_sshd_fresh() {
 # on 22, NEW_PORT, AND 5022 if this strip were not applied).
 # Idempotent: safe to call multiple times.
 _strip_cloud_init_ssh_overrides() {
+    local backup_dir="${1:-}"
     local sshd_inc_dir="/etc/ssh/sshd_config.d"
     [[ -d "$sshd_inc_dir" ]] || return 0
 
@@ -289,6 +334,9 @@ _strip_cloud_init_ssh_overrides() {
             '^[[:space:]]*(Port|PasswordAuthentication|PermitRootLogin|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|PermitTunnel)[[:space:]]+' \
             "$f" 2>/dev/null; then
             cp "$f" "${f}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+            if [[ -n "$backup_dir" ]]; then
+                cp "$f" "${backup_dir}/$(basename "$f")"
+            fi
             sed -i -E \
                 '/^[[:space:]]*(Port|PasswordAuthentication|PermitRootLogin|X11Forwarding|AllowTcpForwarding|AllowAgentForwarding|PermitTunnel)[[:space:]]+/d' \
                 "$f"
@@ -504,6 +552,18 @@ setup_admin_user() {
     echo ""
     echo -e "${CYN}${BLD}━━━ Admin User Setup ━━━${RST}"
 
+    if [[ -z "${ADMIN_USER:-}" && -f "${OPS_CONFIG_DIR}/ops.conf" ]]; then
+        ADMIN_USER=$(grep '^OPS_ADMIN_USER=' "${OPS_CONFIG_DIR}/ops.conf" 2>/dev/null | head -n1 | cut -d= -f2- | sed 's/^"//; s/"$//' || true)
+        if [[ -n "$ADMIN_USER" ]]; then
+            if id "$ADMIN_USER" &>/dev/null; then
+                info "Reusing existing OPS admin user from ops.conf: ${ADMIN_USER}"
+            else
+                warn "OPS admin user '${ADMIN_USER}' recorded in ops.conf does not exist — prompting for a username."
+                ADMIN_USER=""
+            fi
+        fi
+    fi
+
     # Nếu chưa biết ADMIN_USER (fresh install) → hỏi
     if [[ -z "${ADMIN_USER:-}" ]]; then
         echo "  A non-root admin user will be created for daily SSH access."
@@ -663,39 +723,45 @@ install_ops_core() {
         die "Missing ${OPS_SOURCE_SUBDIR}/bin/ inside tarball. Archive may be corrupted."
     fi
 
-    # ── Step 4: Apply to OPS_INSTALL_DIR
-    mkdir -p "$OPS_INSTALL_DIR"
+    # ── Step 4: Build a staged runtime tree first
+    local staged_root="${tmp_dir}/staged-root"
+    mkdir -p "$staged_root"
 
-    if command -v rsync >/dev/null 2>&1; then
-        rsync -a --exclude='*.log' \
-            "${source_ops}/" \
-            "${OPS_INSTALL_DIR}/" 2>&1 | grep -v '^sending\|^sent\|^total\|speedup' || true
-    else
-        cp -a "${source_ops}/." "${OPS_INSTALL_DIR}/"
-    fi
+    rsync -a --delete --exclude='*.log' \
+        "${source_ops}/" \
+        "${staged_root}/" 2>&1 | grep -v '^sending\|^sent\|^total\|speedup' || true
 
     # Also copy install/ docs/ rules/ agents/ from source root (outside ops/)
     for extra_dir in install docs rules agents; do
         if [[ -d "${source_root}/${extra_dir}" ]]; then
-            if command -v rsync >/dev/null 2>&1; then
-                rsync -a "${source_root}/${extra_dir}/" \
-                    "${OPS_INSTALL_DIR}/${extra_dir}/" 2>/dev/null || true
-            else
-                mkdir -p "${OPS_INSTALL_DIR}/${extra_dir}"
-                cp -a "${source_root}/${extra_dir}/." "${OPS_INSTALL_DIR}/${extra_dir}/"
-            fi
+            rsync -a --delete "${source_root}/${extra_dir}/" \
+                "${staged_root}/${extra_dir}/" 2>/dev/null || true
         fi
     done
 
-    # ── Step 5: Permissions
-    find "${OPS_INSTALL_DIR}/bin"     -type f             -exec chmod +x {} \;
-    find "${OPS_INSTALL_DIR}/modules" -type f -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
-    find "${OPS_INSTALL_DIR}/core"    -type f -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
-    find "${OPS_INSTALL_DIR}/install" -type f -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
+    # Validate staged shell entrypoints before touching the live tree.
+    local shell_script
+    while IFS= read -r -d '' shell_script; do
+        if ! bash -n "$shell_script"; then
+            rm -rf "$tmp_dir"
+            die "Syntax check failed for staged script: ${shell_script}"
+        fi
+    done < <(find "$staged_root" -type f -name '*.sh' -print0)
 
-    [[ -f "${OPS_INSTALL_DIR}/bin/ops-setup.sh" ]] \
+    # ── Step 5: Apply permissions in staging, then sync with delete semantics
+    find "${staged_root}/bin"     -type f             -exec chmod +x {} \;
+    find "${staged_root}/modules" -type f -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
+    find "${staged_root}/core"    -type f -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
+    find "${staged_root}/install" -type f -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
+
+    [[ -f "${staged_root}/bin/ops-setup.sh" ]] \
         || die "Missing bin/ops-setup.sh after install. Tarball may be incomplete."
-    chmod +x "${OPS_INSTALL_DIR}/bin/ops-setup.sh"
+    chmod +x "${staged_root}/bin/ops-setup.sh"
+
+    mkdir -p "$OPS_INSTALL_DIR"
+    rsync -a --delete --exclude='*.log' \
+        "${staged_root}/" \
+        "${OPS_INSTALL_DIR}/" 2>&1 | grep -v '^sending\|^sent\|^total\|speedup' || true
 
     # ── Step 6: Cleanup + ownership
     rm -rf "$tmp_dir"
@@ -720,7 +786,7 @@ install_ops_core() {
             chown -R "${ADMIN_USER}:${ADMIN_USER}" "${OPS_INSTALL_DIR}/${_data_dir}"
         fi
     done
-    unset _data_dir _exec_dir
+    unset _data_dir _exec_dir shell_script
 
     ok "OPS core installed at ${OPS_INSTALL_DIR} (from tarball — no git required)."
 }
@@ -757,12 +823,17 @@ run_setup() {
         die "ops-setup.sh not found at ${setup_script}. Install may have failed."
     fi
 
+    local transition_port=""
+    if [[ "${SSH_PORT_22_OPEN:-no}" == "yes" ]]; then
+        transition_port="22"
+    fi
+
     info "Running ops-setup.sh as root (will use ADMIN_USER=${ADMIN_USER})..."
-    # Pass SSH port state so ops-setup.sh can persist it in ops.conf
-    # OPS_SSH_TRANSITION_PORT is set to "22" only when port 22 was open at install time
+    # Pass SSH port state so ops-setup.sh can persist it in ops.conf.
+    # Record port 22 as transition only when it is actually still open.
     ADMIN_USER="$ADMIN_USER" \
     OPS_SSH_PORT="${NEW_SSH_PORT:-}" \
-    OPS_SSH_TRANSITION_PORT="${SSH_PORT_22_OPEN:+22}" \
+    OPS_SSH_TRANSITION_PORT="$transition_port" \
     bash "$setup_script"
 }
 
