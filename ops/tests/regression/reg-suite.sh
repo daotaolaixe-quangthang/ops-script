@@ -383,6 +383,9 @@ case_cpa_10_11_12_13_quota_helper_contracts_present() {
     menu_reference_content="$(<"${REPO_ROOT}/docs/operator/MENU-REFERENCE.md")"
 
     test::assert_contains "$cpa_content" 'CLIPROXYAPI_QUOTA_BASHRC_MARKER' 'Quota bashrc marker contract missing' || return 1
+    test::assert_contains "$cpa_content" '_cliproxyapi_install_quota_inspector_go || return 1' 'Quota install must ensure Go before resolving binary path' || return 1
+    test::assert_contains "$cpa_content" 'go_bin="$(_cliproxyapi_quota_inspector_go_binary)"' 'Quota install must resolve Go binary after ensure step' || return 1
+    test::assert_not_contains "$cpa_content" 'go_bin="$(_cliproxyapi_install_quota_inspector_go)"' 'Quota install must not capture installer log output into go binary path' || return 1
     test::assert_contains "$cpa_content" 'cpaq() {' 'Quota shortcut function contract missing' || return 1
     test::assert_contains "$cpa_content" 'CLIPROXYAPI_QUOTA_INSPECTOR_BINARY=' 'Quota shortcut binary constant missing' || return 1
     test::assert_contains "$cpa_content" 'cpa-quota-inspector' 'Quota shortcut binary name contract missing' || return 1

@@ -231,7 +231,6 @@ _cliproxyapi_install_quota_inspector_go() {
 
     go_bin="$(_cliproxyapi_quota_inspector_go_binary 2>/dev/null || true)"
     if [[ -n "$go_bin" ]]; then
-        printf '%s' "$go_bin"
         return 0
     fi
 
@@ -271,7 +270,7 @@ _cliproxyapi_install_quota_inspector_go() {
     mv "${temp_dir}/go" "$CLIPROXYAPI_QUOTA_INSPECTOR_GO_ROOT"
     rm -rf "$temp_dir"
 
-    printf '%s' "$CLIPROXYAPI_QUOTA_INSPECTOR_GO_BINARY"
+    return 0
 }
 
 _cliproxyapi_release_asset_url() {
@@ -650,7 +649,11 @@ install_cliproxyapi_quota_inspector() {
         apt_install git || return 1
     fi
 
-    go_bin="$(_cliproxyapi_install_quota_inspector_go)" || return 1
+    _cliproxyapi_install_quota_inspector_go || return 1
+    go_bin="$(_cliproxyapi_quota_inspector_go_binary)" || {
+        log_error "Go toolchain for Quota Inspector is not available after installation"
+        return 1
+    }
     mkdir -p "$CLIPROXYAPI_DIR"
 
     if [[ -d "${CLIPROXYAPI_QUOTA_INSPECTOR_DIR}/.git" ]]; then
