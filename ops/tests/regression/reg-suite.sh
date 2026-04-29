@@ -376,6 +376,50 @@ case_cpa_01_02_03_04_05_06_07_08_09_cliproxyapi_contracts_present() {
     test::assert_contains "$content" $'- name: "claude-sonnet-4-6"\n      alias: "claude-sonnet-4-6"' 'CLIProxyAPI antigravity self-alias contract missing' || return 1
 }
 
+case_cpa_10_11_12_13_quota_helper_contracts_present() {
+    local cpa_content user_guide_content menu_reference_content
+    cpa_content="$(<"${OPS_ROOT}/modules/cli-proxy-api.sh")"
+    user_guide_content="$(<"${REPO_ROOT}/USER_GUIDE.md")"
+    menu_reference_content="$(<"${REPO_ROOT}/docs/operator/MENU-REFERENCE.md")"
+
+    test::assert_contains "$cpa_content" 'CLIPROXYAPI_QUOTA_BASHRC_MARKER' 'Quota bashrc marker contract missing' || return 1
+    test::assert_contains "$cpa_content" 'cpaq() {' 'Quota shortcut function contract missing' || return 1
+    test::assert_contains "$cpa_content" 'CLIPROXYAPI_QUOTA_INSPECTOR_BINARY=' 'Quota shortcut binary constant missing' || return 1
+    test::assert_contains "$cpa_content" 'cpa-quota-inspector' 'Quota shortcut binary name contract missing' || return 1
+    test::assert_contains "$cpa_content" '--summary-only' 'Quota shortcut summary flag contract missing' || return 1
+    test::assert_contains "$cpa_content" '--no-progress' 'Quota shortcut no-progress flag contract missing' || return 1
+    test::assert_contains "$cpa_content" 'menu_cliproxyapi_bootstrap_auth()' 'CLIProxyAPI bootstrap submenu function missing' || return 1
+    test::assert_contains "$cpa_content" 'echo "  1) Antigravity"' 'CLIProxyAPI bootstrap submenu missing Antigravity entry' || return 1
+    test::assert_contains "$cpa_content" 'echo "  2) Gemini"' 'CLIProxyAPI bootstrap submenu missing Gemini entry' || return 1
+    test::assert_contains "$cpa_content" 'echo "  3) Claude Code"' 'CLIProxyAPI bootstrap submenu missing Claude Code entry' || return 1
+    test::assert_contains "$cpa_content" 'echo "  4) Codex"' 'CLIProxyAPI bootstrap submenu missing Codex entry' || return 1
+    test::assert_contains "$cpa_content" '--antigravity-login' 'CLIProxyAPI Antigravity auth flag contract missing' || return 1
+    test::assert_contains "$cpa_content" 'Launching Gemini provider login' 'CLIProxyAPI Gemini auth label contract missing' || return 1
+    test::assert_contains "$cpa_content" '--login' 'CLIProxyAPI Gemini auth flag contract missing' || return 1
+    test::assert_contains "$cpa_content" 'Launching Claude Code provider login' 'CLIProxyAPI Claude Code auth label contract missing' || return 1
+    test::assert_contains "$cpa_content" '--claude-login' 'CLIProxyAPI Claude Code auth flag contract missing' || return 1
+    test::assert_contains "$cpa_content" '--codex-login' 'CLIProxyAPI Codex auth flag contract missing' || return 1
+    test::assert_contains "$cpa_content" 'echo "  14) Check quota"' 'CLIProxyAPI menu quota entry missing' || return 1
+    test::assert_contains "$cpa_content" 'export CPA_MANAGEMENT_KEY' 'Quota management key warning contract missing' || return 1
+
+    test::assert_contains "$user_guide_content" '| 13) Bootstrap auth providers |' 'USER_GUIDE bootstrap auth menu doc missing' || return 1
+    test::assert_contains "$user_guide_content" 'Antigravity / Gemini / Claude Code / Codex' 'USER_GUIDE bootstrap auth submenu doc missing' || return 1
+    test::assert_contains "$user_guide_content" '--antigravity-login' 'USER_GUIDE Antigravity auth flag doc missing' || return 1
+    test::assert_contains "$user_guide_content" '--claude-login' 'USER_GUIDE Claude Code auth flag doc missing' || return 1
+    test::assert_contains "$user_guide_content" '| 14) Check quota |' 'USER_GUIDE check quota menu doc missing' || return 1
+    test::assert_contains "$user_guide_content" 'cpaq()' 'USER_GUIDE quota shortcut doc missing' || return 1
+
+    test::assert_contains "$menu_reference_content" '13. **Bootstrap auth providers**' 'MENU-REFERENCE bootstrap auth doc missing' || return 1
+    test::assert_contains "$menu_reference_content" 'Antigravity' 'MENU-REFERENCE bootstrap auth submenu missing Antigravity' || return 1
+    test::assert_contains "$menu_reference_content" 'Gemini' 'MENU-REFERENCE bootstrap auth submenu missing Gemini' || return 1
+    test::assert_contains "$menu_reference_content" 'Claude Code' 'MENU-REFERENCE bootstrap auth submenu missing Claude Code' || return 1
+    test::assert_contains "$menu_reference_content" 'Codex' 'MENU-REFERENCE bootstrap auth submenu missing Codex' || return 1
+    test::assert_contains "$menu_reference_content" '--antigravity-login' 'MENU-REFERENCE Antigravity auth flag doc missing' || return 1
+    test::assert_contains "$menu_reference_content" '--claude-login' 'MENU-REFERENCE Claude Code auth flag doc missing' || return 1
+    test::assert_contains "$menu_reference_content" '14. **Check quota**' 'MENU-REFERENCE quota menu doc missing' || return 1
+    test::assert_contains "$menu_reference_content" 'cpaq()' 'MENU-REFERENCE quota shortcut doc missing' || return 1
+}
+
 case_mon_01_02_03_04_05_monitoring_contracts_present() {
     local monitoring_content checks_content verify_content
     monitoring_content="$(<"${OPS_ROOT}/modules/monitoring.sh")"
@@ -474,6 +518,10 @@ test::run_case 'CPA-06' 'CLIProxyAPI API key toggle contract present' case_cpa_0
 test::run_case 'CPA-07' 'CLIProxyAPI update preserve-state contract present' case_cpa_01_02_03_04_05_06_07_08_09_cliproxyapi_contracts_present
 test::run_case 'CPA-08' 'CLIProxyAPI SSL/vhost re-render contract present' case_cpa_01_02_03_04_05_06_07_08_09_cliproxyapi_contracts_present
 test::run_case 'CPA-09' 'CLIProxyAPI schema contract present' case_cpa_01_02_03_04_05_06_07_08_09_cliproxyapi_contracts_present
+test::run_case 'CPA-10' 'Quota shortcut helper contract present' case_cpa_10_11_12_13_quota_helper_contracts_present
+test::run_case 'CPA-11' 'Quota shortcut defaults contract present' case_cpa_10_11_12_13_quota_helper_contracts_present
+test::run_case 'CPA-12' 'Quota management key warning contract present' case_cpa_10_11_12_13_quota_helper_contracts_present
+test::run_case 'CPA-13' 'CLIProxyAPI quota menu doc contract present' case_cpa_10_11_12_13_quota_helper_contracts_present
 test::run_case 'MON-01' 'verify exit-zero contract present' case_mon_01_02_03_04_05_monitoring_contracts_present
 test::run_case 'MON-02' 'quick logs contract present' case_mon_01_02_03_04_05_monitoring_contracts_present
 test::run_case 'MON-03' 'monitoring menu boundary contract present' case_mon_01_02_03_04_05_monitoring_contracts_present

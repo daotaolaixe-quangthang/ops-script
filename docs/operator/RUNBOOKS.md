@@ -117,7 +117,7 @@ chown -R ${ADMIN_USER}:${ADMIN_USER} /home/${ADMIN_USER}/.ssh
 - **Change**:
   - tai binary release vao `/opt/cli-proxy-api`
   - ghi `config.yaml`, tao `cli-proxy-api.service`, start bang systemd
-  - bootstrap auth bang `--claude-login`, `--codex-login`, hoac `--login`
+  - bootstrap auth bang `--antigravity-login`, `--login`, `--claude-login`, hoac `--codex-login`
   - wire Nginx route toi `127.0.0.1:8317`
 - **Verify**:
   - `systemctl status cli-proxy-api --no-pager`

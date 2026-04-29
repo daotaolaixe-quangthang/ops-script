@@ -242,6 +242,8 @@ CLIProxyAPI Management
 10. **Enable request logging**
 11. **Disable request logging**
 12. **Verify CLIProxyAPI** - systemd active, `/v1/models` returns JSON, UFW port 8317 closed
+13. **Bootstrap auth providers** - hien submenu chon `Antigravity` / `Gemini` / `Claude Code` / `Codex`
+14. **Check quota** - cai Quota Inspector neu thieu va chay quota summary nhanh
 0. **Back to main menu**
 
 Notes:
@@ -264,9 +266,17 @@ Notes:
   - Restart `cli-proxy-api.service`.
   - Local client key duoc luu tai `/etc/ops/.cli-proxy-api-key`.
 - **Bootstrap auth providers**:
-  - Claude: `sudo -u <runtime_user> env HOME=<runtime_home> /opt/cli-proxy-api/cli-proxy-api --claude-login`
-  - Codex/OpenAI: `sudo -u <runtime_user> env HOME=<runtime_home> /opt/cli-proxy-api/cli-proxy-api --codex-login`
+  - OPS hien submenu de chon account type `Antigravity` / `Gemini` / `Claude Code` / `Codex`.
+  - Antigravity: `sudo -u <runtime_user> env HOME=<runtime_home> /opt/cli-proxy-api/cli-proxy-api --antigravity-login`
   - Gemini: `sudo -u <runtime_user> env HOME=<runtime_home> /opt/cli-proxy-api/cli-proxy-api --login`
+  - Claude Code: `sudo -u <runtime_user> env HOME=<runtime_home> /opt/cli-proxy-api/cli-proxy-api --claude-login`
+  - Codex: `sudo -u <runtime_user> env HOME=<runtime_home> /opt/cli-proxy-api/cli-proxy-api --codex-login`
+- **Check quota**:
+  - Neu chua co Quota Inspector, OPS se hoi cai va build binary truoc.
+  - Sau khi cai, OPS tu quan ly block `cpaq()` trong `~/.bashrc` cua admin user.
+  - Menu `Check quota` cung se ensure block nay ton tai tren cac may da cai tu truoc.
+  - Reload shell bang `source ~/.bashrc`, sau do co the chay nhanh `cpaq`.
+  - Neu CPA bat management auth, operator tu export `CPA_MANAGEMENT_KEY` truoc khi check quota.
 
 CLIProxyAPI implementation authority for future agents:
 - `ops/modules/cli-proxy-api.sh`

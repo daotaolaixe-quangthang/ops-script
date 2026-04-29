@@ -171,10 +171,17 @@ OPS does not copy provider credentials into `/etc/ops`.
 Auth bootstrap is done as the runtime user:
 
 ```bash
+sudo -u <runtime_user> env HOME=<runtime_home> /opt/cli-proxy-api/cli-proxy-api --antigravity-login
+sudo -u <runtime_user> env HOME=<runtime_home> /opt/cli-proxy-api/cli-proxy-api --login
 sudo -u <runtime_user> env HOME=<runtime_home> /opt/cli-proxy-api/cli-proxy-api --claude-login
 sudo -u <runtime_user> env HOME=<runtime_home> /opt/cli-proxy-api/cli-proxy-api --codex-login
-sudo -u <runtime_user> env HOME=<runtime_home> /opt/cli-proxy-api/cli-proxy-api --login
 ```
+
+In OPS menu, these are exposed via a submenu:
+- `Antigravity` -> `--antigravity-login`
+- `Gemini` -> `--login`
+- `Claude Code` -> `--claude-login`
+- `Codex` -> `--codex-login`
 
 These commands populate the auth directory at `~/.cli-proxy-api`.
 

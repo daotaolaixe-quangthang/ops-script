@@ -160,6 +160,12 @@ Khuyen nghi:
 | CPA-06 | Toggle API key requirement | CLIProxyAPI da cai | Enable/Disable API key requirement | `config.yaml` va `/etc/ops/cli-proxy-api.conf` cap nhat dung, service restart |
 | CPA-07 | Update CLIProxyAPI giu config va state | CLIProxyAPI da co du lieu | Chay update | Binary duoc cap nhat, config/state duoc preserve |
 | CPA-08 | SSL re-render vhost | Domain CLIProxyAPI da co SSL | Link/reissue SSL | Vhost duoc re-render, Nginx tiep tuc proxy HTTPS -> localhost |
+| CPA-09 | CLIProxyAPI schema contract | Co source module | Inspect `cli-proxy-api.sh` | `oauth-model-alias` va payload filter van duoc giu dung |
+| CPA-10 | Quota helper `cpaq` duoc quan ly idempotent | Quota Inspector duoc cai/re-cai | Inspect `~/.bashrc` admin | Chi co 1 block marker OPS cho `cpaq()` |
+| CPA-11 | Quota shortcut chay mac dinh gon | Quota Inspector da cai | Reload shell va chay `cpaq` | Su dung binary quota inspector voi `--summary-only --no-progress` |
+| CPA-12 | Management key van explicit | CPA bat management auth | Check flow + warning | OPS khong auto-persist `CPA_MANAGEMENT_KEY`; operator tu export khi can |
+| CPA-13 | Menu Check quota co san | Vao menu CLIProxyAPI | Xem submenu/chay option 14 | Co `14) Check quota`, neu thieu inspector thi OPS hoi cai truoc |
+| CPA-14 | Bootstrap auth co submenu account type | Vao menu CLIProxyAPI | Chon `13) Bootstrap auth providers` | Hien submenu `Antigravity` / `Gemini` / `Claude Code` / `Codex` va goi dung login flag |
 
 ### 4.7 PHP / PHP-FPM
 

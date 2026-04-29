@@ -247,33 +247,74 @@ CLAUDE_TG_SERVICE="claude-telegram-bot"
 
 _tg_dir() { echo "$(_claude_admin_home)/claude-telegram"; }
 _tg_env() { echo "$(_tg_dir)/.env"; }
+_tg_running_pids() {
+    local tg_dir tg_venv
+    tg_dir="$(_tg_dir)"
+    tg_venv="${tg_dir}/.venv"
+    ps -u "${ADMIN_USER}" -o pid=,args= | awk -v pat="${tg_venv}/bin/claude-telegram-bot" 'index($0, pat) && index($0, "bash -c") == 0 {print $1}'
+}
 
 install_claude_telegram_bot() {
     print_section "Install Claude Code Telegram Bot"
     echo ""
 
     local repo_url="https://github.com/daotaolaixe-quangthang/claude-code-telegram"
-    local tg_dir tg_env
+    local tg_dir tg_env tg_venv python_bin
     tg_dir="$(_tg_dir)"
     tg_env="$(_tg_env)"
-
-    log_info "Installing Python dependencies (pip3)..."
-    pip3 install --quiet git+"${repo_url}" 2>&1 || {
-        log_error "pip3 install failed. Trying with uv..."
-        if command -v uv &>/dev/null; then
-            uv tool install git+"${repo_url}"
-        else
-            log_error "Neither pip3 nor uv succeeded. Aborting."
-            return 1
-        fi
-    }
+    tg_venv="${tg_dir}/.venv"
 
     log_info "Cloning repo to ${tg_dir} for config templates..."
-    if [[ -d "${tg_dir}" ]]; then
-        git -C "${tg_dir}" pull --quiet 2>&1
+    if [[ -d "${tg_dir}/.git" ]]; then
+        git -C "${tg_dir}" pull --quiet 2>&1 || {
+            log_error "Failed to update existing Telegram bot repo."
+            return 1
+        }
+    elif [[ -d "${tg_dir}" ]]; then
+        log_error "${tg_dir} exists but is not a git repo. Remove it or choose another admin home."
+        return 1
     else
-        git clone --depth=1 "${repo_url}" "${tg_dir}" 2>&1
+        git clone --depth=1 "${repo_url}" "${tg_dir}" 2>&1 || {
+            log_error "Failed to clone Telegram bot repo."
+            return 1
+        }
     fi
+
+    if command -v python3.11 &>/dev/null; then
+        python_bin="$(command -v python3.11)"
+    elif command -v python3 &>/dev/null && python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+        python_bin="$(command -v python3)"
+    else
+        log_info "Python 3.11+ not found. Installing required packages..."
+        apt_update
+        apt_install python3.11 python3.11-venv || {
+            log_error "Failed to install Python 3.11 packages."
+            return 1
+        }
+        python_bin="$(command -v python3.11 || true)"
+        if [[ -z "${python_bin}" ]]; then
+            log_error "Python 3.11 installation finished, but python3.11 was not found in PATH."
+            return 1
+        fi
+    fi
+
+    log_info "Creating virtual environment with ${python_bin}..."
+    rm -rf "${tg_venv}"
+    "${python_bin}" -m venv "${tg_venv}" || {
+        log_error "Failed to create virtual environment at ${tg_venv}."
+        return 1
+    }
+
+    log_info "Installing Telegram bot Python package..."
+    "${tg_venv}/bin/pip" install --quiet --upgrade pip setuptools wheel || {
+        log_error "Failed to bootstrap pip inside ${tg_venv}."
+        return 1
+    }
+    "${tg_venv}/bin/pip" install --quiet "${tg_dir}" || {
+        log_error "Failed to install Telegram bot package into ${tg_venv}."
+        return 1
+    }
+
     chown -R "${ADMIN_USER}:${ADMIN_USER}" "${tg_dir}"
 
     # Copy .env.example if .env not yet present
@@ -348,9 +389,18 @@ configure_claude_telegram_bot() {
     # ── Auto-copy ANTHROPIC_* from Claude Code CLI bashrc ─────
     local api_key base_url model
     if [[ -f "$bashrc" ]]; then
-        api_key=$(grep  "^export ANTHROPIC_API_KEY="  "$bashrc" | tail -1 | cut -d= -f2-)
-        base_url=$(grep "^export ANTHROPIC_BASE_URL=" "$bashrc" | tail -1 | cut -d= -f2-)
+        api_key=$(grep  "^export ANTHROPIC_API_KEY="  "$bashrc" | tail -1 | cut -d= -f2- | tr -d '"')
+        base_url=$(grep "^export ANTHROPIC_BASE_URL=" "$bashrc" | tail -1 | cut -d= -f2- | tr -d '"')
         model=$(grep    "^export ANTHROPIC_MODEL="    "$bashrc" | tail -1 | cut -d= -f2- | tr -d '"')
+
+        if [[ "$api_key" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$ ]]; then
+            local api_key_ref api_key_resolved
+            api_key_ref="${BASH_REMATCH[1]}"
+            api_key_resolved=$(grep "^export ${api_key_ref}=" "$bashrc" | tail -1 | cut -d= -f2- | tr -d '"')
+            if [[ -n "$api_key_resolved" ]]; then
+                api_key="$api_key_resolved"
+            fi
+        fi
     fi
 
     echo ""
@@ -392,12 +442,19 @@ start_claude_telegram_bot() {
     print_section "Start Claude Code Telegram Bot"
     echo ""
 
-    local tg_dir tg_env
+    local tg_dir tg_env tg_venv log_file pid_file running_pids
     tg_dir="$(_tg_dir)"
     tg_env="$(_tg_env)"
+    tg_venv="${tg_dir}/.venv"
+    log_file="$(_claude_admin_home)/claude-telegram-bot.log"
+    pid_file="${tg_dir}/claude-telegram-bot.pid"
 
     if [[ ! -f "${tg_env}" ]]; then
         log_error ".env not found. Run Configure first."
+        return 1
+    fi
+    if [[ ! -x "${tg_venv}/bin/claude-telegram-bot" ]]; then
+        log_error "Bot executable not found. Run Install first."
         return 1
     fi
 
@@ -407,22 +464,20 @@ start_claude_telegram_bot() {
         return
     fi
 
-    # Fallback: run via nohup as admin user
-    local log_file
-    log_file="$(_claude_admin_home)/claude-telegram-bot.log"
-    local pid_file="/var/run/claude-telegram-bot.pid"
-
-    if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
-        log_warn "Bot is already running (PID $(cat "$pid_file"))"
+    running_pids="$(_tg_running_pids)"
+    if [[ -n "$running_pids" ]]; then
+        log_warn "Bot is already running (PIDs $(tr '\n' ' ' <<< "$running_pids"))"
         return
     fi
 
     log_info "Starting bot in background..."
     sudo -u "${ADMIN_USER}" bash -c \
-        "cd '${tg_dir}' && nohup python3 -m claude_code_telegram >> '${log_file}' 2>&1 & echo \$! > '${pid_file}'"
+        "cd '${tg_dir}' && nohup '${tg_venv}/bin/claude-telegram-bot' >> '${log_file}' 2>&1 < /dev/null & echo \$! > '${pid_file}'"
     sleep 1
-    if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
-        log_info "Bot started (PID $(cat "$pid_file")). Log: ${log_file}"
+
+    running_pids="$(_tg_running_pids)"
+    if [[ -n "$running_pids" ]]; then
+        log_info "Bot started (PIDs $(tr '\n' ' ' <<< "$running_pids")). Log: ${log_file}"
     else
         log_error "Bot failed to start. Check ${log_file}"
     fi
@@ -438,18 +493,22 @@ stop_claude_telegram_bot() {
         return
     fi
 
-    local pid_file="/var/run/claude-telegram-bot.pid"
-    if [[ -f "$pid_file" ]]; then
-        local pid
-        pid=$(cat "$pid_file")
-        if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" && log_info "Bot stopped (PID ${pid})" || log_error "Failed to kill PID ${pid}"
-        else
-            log_warn "PID ${pid} not running."
-        fi
+    local tg_dir pid_file running_pids pid
+    tg_dir="$(_tg_dir)"
+    pid_file="${tg_dir}/claude-telegram-bot.pid"
+    running_pids="$(_tg_running_pids)"
+
+    if [[ -n "$running_pids" ]]; then
+        while IFS= read -r pid; do
+            [[ -n "$pid" ]] || continue
+            if kill -0 "$pid" 2>/dev/null; then
+                kill "$pid" && log_info "Bot stopped (PID ${pid})" || log_error "Failed to kill PID ${pid}"
+            fi
+        done <<< "$running_pids"
         rm -f "$pid_file"
     else
-        log_warn "No PID file found. Bot may not be running."
+        log_warn "No running bot process found."
+        rm -f "$pid_file"
     fi
     echo ""
 }
@@ -465,15 +524,20 @@ status_claude_telegram_bot() {
         return
     fi
 
-    local pid_file="/var/run/claude-telegram-bot.pid"
-    if [[ -f "$pid_file" ]]; then
-        local pid
-        pid=$(cat "$pid_file")
-        if kill -0 "$pid" 2>/dev/null; then
-            echo "  Status : RUNNING (PID ${pid})"
-        else
-            echo "  Status : STOPPED (stale PID file)"
+    local tg_dir pid_file running_pids running_count tracked_pid
+    tg_dir="$(_tg_dir)"
+    pid_file="${tg_dir}/claude-telegram-bot.pid"
+    running_pids="$(_tg_running_pids)"
+
+    if [[ -n "$running_pids" ]]; then
+        running_count=$(wc -l <<< "$running_pids")
+        echo "  Status : RUNNING (PIDs $(tr '\n' ' ' <<< "$running_pids"))"
+        if (( running_count > 1 )); then
+            echo "  Warning: Multiple bot instances detected (${running_count})"
         fi
+    elif [[ -f "$pid_file" ]]; then
+        tracked_pid=$(cat "$pid_file")
+        echo "  Status : STOPPED (stale PID file: ${tracked_pid})"
     else
         echo "  Status : STOPPED"
     fi

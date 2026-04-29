@@ -247,6 +247,8 @@ CLIProxyAPI là local LLM proxy/API gateway chạy native bằng Go + systemd, b
 | 10) Enable request logging | Bật `logging-to-file: true` rồi restart |
 | 11) Disable request logging | Tắt `logging-to-file` rồi restart |
 | 12) Verify CLIProxyAPI | Check systemd, loopback bind, `/v1/models`, UFW |
+| 13) Bootstrap auth providers | Hiện submenu chọn OAuth account type: Antigravity / Gemini / Claude Code / Codex |
+| 14) Check quota | Cài Quota Inspector nếu thiếu và chạy check quota nhanh |
 
 **Runtime chính:**
 - Binary: `/opt/cli-proxy-api/cli-proxy-api`
@@ -256,9 +258,16 @@ CLIProxyAPI là local LLM proxy/API gateway chạy native bằng Go + systemd, b
 - Auth dir: `~/.cli-proxy-api` của runtime user
 
 **Bootstrap auth sau khi install:**
-- Claude: `sudo -u <runtime_user> env HOME=<runtime_home> /opt/cli-proxy-api/cli-proxy-api --claude-login`
-- Codex/OpenAI: `sudo -u <runtime_user> env HOME=<runtime_home> /opt/cli-proxy-api/cli-proxy-api --codex-login`
+- Antigravity: `sudo -u <runtime_user> env HOME=<runtime_home> /opt/cli-proxy-api/cli-proxy-api --antigravity-login`
 - Gemini: `sudo -u <runtime_user> env HOME=<runtime_home> /opt/cli-proxy-api/cli-proxy-api --login`
+- Claude Code: `sudo -u <runtime_user> env HOME=<runtime_home> /opt/cli-proxy-api/cli-proxy-api --claude-login`
+- Codex: `sudo -u <runtime_user> env HOME=<runtime_home> /opt/cli-proxy-api/cli-proxy-api --codex-login`
+
+**Quota shortcut sau khi cài Quota Inspector:**
+- OPS tự thêm/đồng bộ hàm `cpaq()` vào `~/.bashrc` của admin user khi cài hoặc dùng Check quota
+- Reload shell: `source ~/.bashrc`
+- Dùng nhanh: `cpaq`
+- Nếu CPA bật management auth, tự export `CPA_MANAGEMENT_KEY` trước khi chạy
 
 **Mặc định bảo mật:**
 - Chỉ bind loopback `127.0.0.1:8317`

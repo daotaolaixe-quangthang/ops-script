@@ -23,9 +23,26 @@ CLIPROXYAPI_PORT="8317"
 CLIPROXYAPI_PPROF_PORT="8316"
 CLIPROXYAPI_LOGS_DIR="${CLIPROXYAPI_DIR}/logs"
 CLIPROXYAPI_VHOST_TEMPLATE="${OPS_ROOT}/modules/templates/nginx/cli-proxy-api.vhost.conf.tpl"
+CLIPROXYAPI_QUOTA_INSPECTOR_REPO_URL="https://github.com/daotaolaixe-quangthang/CLIProxyAPI-Quota-Inspector"
+CLIPROXYAPI_QUOTA_INSPECTOR_DIR="${CLIPROXYAPI_DIR}/quota-inspector"
+CLIPROXYAPI_QUOTA_INSPECTOR_BINARY="${CLIPROXYAPI_QUOTA_INSPECTOR_DIR}/cpa-quota-inspector"
+CLIPROXYAPI_QUOTA_INSPECTOR_GO_VERSION="1.25.0"
+CLIPROXYAPI_QUOTA_INSPECTOR_GO_ROOT="/opt/ops-go/go${CLIPROXYAPI_QUOTA_INSPECTOR_GO_VERSION}"
+CLIPROXYAPI_QUOTA_INSPECTOR_GO_BINARY="${CLIPROXYAPI_QUOTA_INSPECTOR_GO_ROOT}/bin/go"
+CLIPROXYAPI_QUOTA_BASHRC_MARKER="# OPS: cliproxyapi quota inspector"
 
 _cliproxyapi_runtime_user() {
     ops_runtime_user
+}
+
+_cliproxyapi_admin_home() {
+    local admin_home
+    admin_home=$(getent passwd "$ADMIN_USER" | cut -d: -f6 || true)
+    echo "${admin_home:-/home/$ADMIN_USER}"
+}
+
+_cliproxyapi_admin_bashrc() {
+    echo "$(_cliproxyapi_admin_home)/.bashrc"
 }
 
 _cliproxyapi_runtime_home() {
@@ -59,6 +76,29 @@ _cliproxyapi_set_state() {
 _cliproxyapi_state_get() {
     local key="$1"
     ops_conf_get "cli-proxy-api.conf" "$key" 2>/dev/null || true
+}
+
+_cliproxyapi_write_quota_shell_block() {
+    local admin_bashrc
+    admin_bashrc="$(_cliproxyapi_admin_bashrc)"
+
+    touch "$admin_bashrc"
+    chown "$ADMIN_USER:$ADMIN_USER" "$admin_bashrc"
+    if grep -q "$CLIPROXYAPI_QUOTA_BASHRC_MARKER" "$admin_bashrc" 2>/dev/null; then
+        backup_file "$admin_bashrc" >/dev/null || true
+        sed -i "/^${CLIPROXYAPI_QUOTA_BASHRC_MARKER}$/,/^$/d" "$admin_bashrc"
+    else
+        backup_file "$admin_bashrc" >/dev/null || true
+    fi
+
+    cat >> "$admin_bashrc" <<EOF
+
+${CLIPROXYAPI_QUOTA_BASHRC_MARKER}
+cpaq() {
+  ${CLIPROXYAPI_QUOTA_INSPECTOR_BINARY} --summary-only --no-progress "\$@"
+}
+EOF
+    chown "$ADMIN_USER:$ADMIN_USER" "$admin_bashrc"
 }
 
 _cliproxyapi_generate_api_key() {
@@ -134,6 +174,104 @@ _cliproxyapi_release_arch() {
             return 1
             ;;
     esac
+}
+
+_cliproxyapi_version_at_least() {
+    local current="$1"
+    local required="$2"
+    [[ "$(printf '%s\n%s\n' "$required" "$current" | sort -V | tail -n1)" == "$current" ]]
+}
+
+_cliproxyapi_go_version() {
+    local go_bin="$1"
+    "$go_bin" version 2>/dev/null | awk '{print $3}' | sed 's/^go//'
+}
+
+_cliproxyapi_quota_inspector_go_arch() {
+    local machine
+    machine="$(uname -m)"
+    case "$machine" in
+        x86_64|amd64)
+            printf '%s' "amd64"
+            ;;
+        aarch64|arm64)
+            printf '%s' "arm64"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+_cliproxyapi_quota_inspector_go_binary() {
+    local go_bin version
+
+    if command -v go >/dev/null 2>&1; then
+        go_bin="$(command -v go)"
+        version="$(_cliproxyapi_go_version "$go_bin")"
+        if [[ -n "$version" ]] && _cliproxyapi_version_at_least "$version" "$CLIPROXYAPI_QUOTA_INSPECTOR_GO_VERSION"; then
+            printf '%s' "$go_bin"
+            return 0
+        fi
+    fi
+
+    if [[ -x "$CLIPROXYAPI_QUOTA_INSPECTOR_GO_BINARY" ]]; then
+        version="$(_cliproxyapi_go_version "$CLIPROXYAPI_QUOTA_INSPECTOR_GO_BINARY")"
+        if [[ -n "$version" ]] && _cliproxyapi_version_at_least "$version" "$CLIPROXYAPI_QUOTA_INSPECTOR_GO_VERSION"; then
+            printf '%s' "$CLIPROXYAPI_QUOTA_INSPECTOR_GO_BINARY"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+_cliproxyapi_install_quota_inspector_go() {
+    local go_bin arch archive download_url parent_dir temp_dir
+
+    go_bin="$(_cliproxyapi_quota_inspector_go_binary 2>/dev/null || true)"
+    if [[ -n "$go_bin" ]]; then
+        printf '%s' "$go_bin"
+        return 0
+    fi
+
+    if ! command -v curl >/dev/null 2>&1; then
+        apt_install curl || return 1
+    fi
+    if ! command -v tar >/dev/null 2>&1; then
+        apt_install tar || return 1
+    fi
+
+    arch="$(_cliproxyapi_quota_inspector_go_arch)" || {
+        log_error "Unsupported architecture for Go toolchain: $(uname -m)"
+        return 1
+    }
+
+    archive="go${CLIPROXYAPI_QUOTA_INSPECTOR_GO_VERSION}.linux-${arch}.tar.gz"
+    download_url="https://go.dev/dl/${archive}"
+    parent_dir="$(dirname "$CLIPROXYAPI_QUOTA_INSPECTOR_GO_ROOT")"
+    temp_dir="$(mktemp -d /tmp/ops-go-XXXXXX)"
+
+    mkdir -p "$parent_dir"
+    log_info "Installing Go ${CLIPROXYAPI_QUOTA_INSPECTOR_GO_VERSION} for Quota Inspector"
+
+    if ! curl -fsSL "$download_url" -o "${temp_dir}/${archive}"; then
+        rm -rf "$temp_dir"
+        log_error "Failed to download Go toolchain from ${download_url}"
+        return 1
+    fi
+
+    if ! tar -xzf "${temp_dir}/${archive}" -C "$temp_dir"; then
+        rm -rf "$temp_dir"
+        log_error "Failed to extract Go toolchain"
+        return 1
+    fi
+
+    rm -rf "$CLIPROXYAPI_QUOTA_INSPECTOR_GO_ROOT"
+    mv "${temp_dir}/go" "$CLIPROXYAPI_QUOTA_INSPECTOR_GO_ROOT"
+    rm -rf "$temp_dir"
+
+    printf '%s' "$CLIPROXYAPI_QUOTA_INSPECTOR_GO_BINARY"
 }
 
 _cliproxyapi_release_asset_url() {
@@ -491,13 +629,67 @@ _cliproxyapi_show_login_guidance() {
 
     echo ""
     echo "Next auth/bootstrap commands:"
-    echo "  sudo -u ${runtime_user} env HOME=${runtime_home} ${CLIPROXYAPI_BINARY} --claude-login"
-    echo "  sudo -u ${runtime_user} env HOME=${runtime_home} ${CLIPROXYAPI_BINARY} --codex-login"
-    echo "  sudo -u ${runtime_user} env HOME=${runtime_home} ${CLIPROXYAPI_BINARY} --login"
+    echo "  Antigravity : sudo -u ${runtime_user} env HOME=${runtime_home} ${CLIPROXYAPI_BINARY} --antigravity-login"
+    echo "  Gemini      : sudo -u ${runtime_user} env HOME=${runtime_home} ${CLIPROXYAPI_BINARY} --login"
+    echo "  Claude Code : sudo -u ${runtime_user} env HOME=${runtime_home} ${CLIPROXYAPI_BINARY} --claude-login"
+    echo "  Codex       : sudo -u ${runtime_user} env HOME=${runtime_home} ${CLIPROXYAPI_BINARY} --codex-login"
     echo ""
     echo "Source repo: ${CLIPROXYAPI_SOURCE_REPO_URL}"
     echo "Config file: ${CLIPROXYAPI_CONFIG_FILE}"
     echo "Local endpoint: http://127.0.0.1:${CLIPROXYAPI_PORT}/v1"
+}
+
+install_cliproxyapi_quota_inspector() {
+    print_section "Install CLIProxyAPI-Quota-Inspector"
+    require_root || return 1
+
+    local go_bin runtime_user
+    runtime_user="$(_cliproxyapi_runtime_user)"
+
+    if ! command -v git >/dev/null 2>&1; then
+        apt_install git || return 1
+    fi
+
+    go_bin="$(_cliproxyapi_install_quota_inspector_go)" || return 1
+    mkdir -p "$CLIPROXYAPI_DIR"
+
+    if [[ -d "${CLIPROXYAPI_QUOTA_INSPECTOR_DIR}/.git" ]]; then
+        log_info "Updating Quota Inspector repo..."
+        if ! git -C "$CLIPROXYAPI_QUOTA_INSPECTOR_DIR" pull --ff-only; then
+            log_error "Failed to update Quota Inspector repo"
+            return 1
+        fi
+    elif [[ -d "$CLIPROXYAPI_QUOTA_INSPECTOR_DIR" ]]; then
+        log_error "${CLIPROXYAPI_QUOTA_INSPECTOR_DIR} exists but is not a git repo"
+        return 1
+    else
+        log_info "Cloning Quota Inspector repo..."
+        if ! git clone --depth=1 "$CLIPROXYAPI_QUOTA_INSPECTOR_REPO_URL" "$CLIPROXYAPI_QUOTA_INSPECTOR_DIR"; then
+            log_error "Failed to clone Quota Inspector repo"
+            return 1
+        fi
+    fi
+
+    log_info "Building Quota Inspector binary..."
+    if ! (
+        cd "$CLIPROXYAPI_QUOTA_INSPECTOR_DIR" &&
+        GOTOOLCHAIN=local "$go_bin" build -o "$CLIPROXYAPI_QUOTA_INSPECTOR_BINARY" .
+    ); then
+        log_error "Failed to build Quota Inspector binary"
+        return 1
+    fi
+
+    chmod 755 "$CLIPROXYAPI_QUOTA_INSPECTOR_BINARY"
+    chown -R "$runtime_user:$runtime_user" "$CLIPROXYAPI_QUOTA_INSPECTOR_DIR"
+    _cliproxyapi_write_quota_shell_block
+
+    print_ok "CLIProxyAPI-Quota-Inspector installed"
+    echo "  Repo   : ${CLIPROXYAPI_QUOTA_INSPECTOR_DIR}"
+    echo "  Binary : ${CLIPROXYAPI_QUOTA_INSPECTOR_BINARY}"
+    echo "  Shell  : cpaq (installed into $(_cliproxyapi_admin_bashrc))"
+    echo "  Reload : source ~/.bashrc"
+    echo "  Run    : cpaq"
+    echo "  Note   : Nếu CPA bật management auth thì export CPA_MANAGEMENT_KEY rồi chạy lại"
 }
 
 install_cliproxyapi() {
@@ -544,6 +736,12 @@ install_cliproxyapi() {
     _cliproxyapi_assert_ufw_closed || return 1
     print_ok "CLIProxyAPI installed and registered in systemd"
     _cliproxyapi_show_login_guidance
+
+    if prompt_confirm "Cài thêm CLIProxyAPI-Quota-Inspector để check quota?"; then
+        if ! install_cliproxyapi_quota_inspector; then
+            print_warn "CLIProxyAPI đã cài xong nhưng Quota Inspector chưa cài được."
+        fi
+    fi
 }
 
 update_cliproxyapi() {
@@ -849,8 +1047,16 @@ bootstrap_cliproxyapi_auth() {
     fi
 
     case "$provider" in
-        claude)
-            log_info "Launching Claude provider login as ${runtime_user} ..."
+        antigravity)
+            log_info "Launching Antigravity provider login as ${runtime_user} ..."
+            _cliproxyapi_run_as_runtime_user bash -c "cd '${CLIPROXYAPI_DIR}' && '${CLIPROXYAPI_BINARY}' --antigravity-login"
+            ;;
+        gemini|login)
+            log_info "Launching Gemini provider login as ${runtime_user} ..."
+            _cliproxyapi_run_as_runtime_user bash -c "cd '${CLIPROXYAPI_DIR}' && '${CLIPROXYAPI_BINARY}' --login"
+            ;;
+        claude|claude-code)
+            log_info "Launching Claude Code provider login as ${runtime_user} ..."
             _cliproxyapi_run_as_runtime_user bash -c "cd '${CLIPROXYAPI_DIR}' && '${CLIPROXYAPI_BINARY}' --claude-login"
             ;;
         codex)
@@ -858,7 +1064,17 @@ bootstrap_cliproxyapi_auth() {
             _cliproxyapi_run_as_runtime_user bash -c "cd '${CLIPROXYAPI_DIR}' && '${CLIPROXYAPI_BINARY}' --codex-login"
             ;;
         all|*)
-            log_info "Launching Claude provider login as ${runtime_user} ..."
+            log_info "Launching Antigravity provider login as ${runtime_user} ..."
+            if ! _cliproxyapi_run_as_runtime_user bash -c "cd '${CLIPROXYAPI_DIR}' && '${CLIPROXYAPI_BINARY}' --antigravity-login"; then
+                all_ok=false
+            fi
+            echo ""
+            log_info "Launching Gemini provider login as ${runtime_user} ..."
+            if ! _cliproxyapi_run_as_runtime_user bash -c "cd '${CLIPROXYAPI_DIR}' && '${CLIPROXYAPI_BINARY}' --login"; then
+                all_ok=false
+            fi
+            echo ""
+            log_info "Launching Claude Code provider login as ${runtime_user} ..."
             if ! _cliproxyapi_run_as_runtime_user bash -c "cd '${CLIPROXYAPI_DIR}' && '${CLIPROXYAPI_BINARY}' --claude-login"; then
                 all_ok=false
             fi
@@ -875,6 +1091,73 @@ bootstrap_cliproxyapi_auth() {
         return 1
     fi
     log_info "Auth bootstrap complete. Auth stored at ${runtime_home}/.cli-proxy-api"
+}
+
+menu_cliproxyapi_bootstrap_auth() {
+    while true; do
+        print_section "Bootstrap auth providers"
+        echo "  1) Antigravity"
+        echo "  2) Gemini"
+        echo "  3) Claude Code"
+        echo "  4) Codex"
+        echo ""
+        echo "  Ghi chú:"
+        echo "    Antigravity = --antigravity-login"
+        echo "    Gemini      = --login"
+        echo "    Claude Code = --claude-login"
+        echo "    Codex       = --codex-login"
+        echo ""
+        echo "  0) Back"
+        echo ""
+        printf "  Select: " > /dev/tty
+        local choice
+        read -r choice < /dev/tty
+        case "$choice" in
+            1) bootstrap_cliproxyapi_auth antigravity; press_enter ;;
+            2) bootstrap_cliproxyapi_auth gemini; press_enter ;;
+            3) bootstrap_cliproxyapi_auth claude-code; press_enter ;;
+            4) bootstrap_cliproxyapi_auth codex; press_enter ;;
+            0) return 0 ;;
+            *) print_warn "Invalid option" ;;
+        esac
+    done
+}
+
+check_cliproxyapi_quota() {
+    print_section "Check CLIProxyAPI quota"
+    require_root || return 1
+
+    if [[ ! -x "$CLIPROXYAPI_BINARY" ]]; then
+        log_error "Install CLIProxyAPI first."
+        return 1
+    fi
+
+    if [[ ! -x "$CLIPROXYAPI_QUOTA_INSPECTOR_BINARY" ]]; then
+        print_warn "CLIProxyAPI-Quota-Inspector is not installed."
+        if ! prompt_confirm "Cài ngay bây giờ?"; then
+            return 0
+        fi
+        install_cliproxyapi_quota_inspector || return 1
+    fi
+
+    _cliproxyapi_write_quota_shell_block
+
+    if ! service_active "$CLIPROXYAPI_SERVICE_NAME"; then
+        print_warn "CLIProxyAPI service is not active. Kết quả có thể thất bại."
+    fi
+
+    if ! "$CLIPROXYAPI_QUOTA_INSPECTOR_BINARY" --summary-only --no-progress; then
+        log_error "Quota check failed"
+        if [[ -z "${CPA_MANAGEMENT_KEY:-}" && -z "${MANAGEMENT_PASSWORD:-}" ]]; then
+            print_warn "Nếu CPA bật management auth, hãy export CPA_MANAGEMENT_KEY rồi chạy lại."
+        fi
+        return 1
+    fi
+
+    echo ""
+    echo "  Gợi ý dùng nhanh:"
+    echo "  cpaq --filter-provider codex"
+    echo "  cpaq --filter-provider gemini-cli"
 }
 
 menu_cliproxyapi() {
@@ -898,7 +1181,8 @@ menu_cliproxyapi() {
         echo "  10) Enable request logging"
         echo "  11) Disable request logging"
         echo "  12) Verify CLIProxyAPI"
-        echo "  13) Bootstrap auth providers (--claude-login / --codex-login)"
+        echo "  13) Bootstrap auth providers"
+        echo "  14) Check quota"
         echo "  0) Back"
         echo ""
         printf "  Select: " > /dev/tty
@@ -917,7 +1201,8 @@ menu_cliproxyapi() {
             10) _cliproxyapi_menu_run toggle_cliproxyapi_request_logs on; press_enter ;;
             11) _cliproxyapi_menu_run toggle_cliproxyapi_request_logs off; press_enter ;;
             12) _cliproxyapi_menu_run verify_cliproxyapi; press_enter ;;
-            13) _cliproxyapi_menu_run bootstrap_cliproxyapi_auth all; press_enter ;;
+            13) _cliproxyapi_menu_run menu_cliproxyapi_bootstrap_auth ;;
+            14) _cliproxyapi_menu_run check_cliproxyapi_quota; press_enter ;;
             0)  return 0 ;;
             *)  print_warn "Invalid option" ;;
         esac
