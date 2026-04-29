@@ -166,12 +166,12 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
   - verify function (vi du `verify_stack`, `verify_service_health`) tra ve exit code khac 0 khi detect issue
   - caller menu dung `set -e` hoac khong guard return code neu function fail
 - **Rui ro**:
-  - Menu exit ngoai y muon sau khi user chon "Verify stack health" — da xay ra o Phase 1
+  - Menu exit ngoai y muon sau khi user chon "Verify stack health" — da xay ra tren stable line truoc do
   - User khong biet menu da thoat, tuong rang verify da pass
 - **Safe action**:
   - Moi verify function PHAI return 0 \u2014 in PASS/WARN/FAIL len screen, KHONG propagate exit code
   - Caller menu KHONG duoc dua vao `verify_stack || true` nhu cach sua tam
-  - Contract ro trong `P2-04`: PASS/WARN/FAIL deu exit 0; caller xu ly display, khong xu ly exit code
+  - Contract ro trong stable-line verify/menu boundary: PASS/WARN/FAIL deu exit 0; caller xu ly display, khong xu ly exit code
   - Dung wrapper menu-local de hap thu action-level non-zero:
     ```bash
     _monitoring_menu_run verify_stack; press_enter

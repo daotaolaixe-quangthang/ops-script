@@ -172,7 +172,7 @@ Nguyen tac:
 ### I. Notifications, alerts, hoac scheduled checks sai
 
 - **Doc truoc**:
-  - `FEATURE-EXPANSION-SPEC.md`
+  - `MENU-REFERENCE.md`
   - `RUNBOOKS.md`
   - `RUNTIME-ARTEFACT-INVENTORY.md`
 - **Runtime state can xem**:
@@ -191,7 +191,7 @@ Nguyen tac:
 ### J. Cloudflare real IP / direct IP block / custom header sai
 
 - **Doc truoc**:
-  - `FEATURE-EXPANSION-SPEC.md`
+  - `MENU-REFERENCE.md`
   - `SOURCE-TO-RUNTIME-TRACE.md`
   - `RUNBOOKS.md`
 - **Runtime state can xem**:

@@ -7,7 +7,7 @@
 # Called by bin/ops via menu dispatch.
 # Do NOT add set -euo pipefail here — inherited from bin/ops.
 #
-# Design contract (PHASE-01-IMPLEMENTATION-SPEC.md §P1-09):
+# Design contract (stable-line setup wizard):
 #   − Wizard ONLY orchestrates module functions; no business logic here.
 #   − Re-runnable: reads /etc/ops/ops.conf to detect prior runs.
 #   − Each step is independently skippable.

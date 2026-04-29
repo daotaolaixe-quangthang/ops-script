@@ -1,11 +1,15 @@
 ## OPS Code Skeleton Guide
 
-Mục tiêu: cung cấp skeleton thực tế (chạy được) cho AI Agent khi bắt đầu viết scripts.
-Đây là **starting point** — implement theo đúng pattern này, không tự bịa convention mới.
+Muc tieu: cung cap pattern guide sat voi implementation hien tai de AI Agent va human contributors sua scripts dung huong.
+Day khong con la guide "scaffold from scratch" cho repo trong trang thai rong. Hay coi no la **authoring guide** cho repo OPS hien tai.
 
 ---
 
-## A. Coding Spine (áp dụng cho mọi file)
+## A. Coding spine
+
+### 1) Executable scripts (`ops/bin/`, `install/`)
+
+Dung pattern nay cho entrypoints thuc thi that.
 
 ```bash
 #!/usr/bin/env bash
@@ -17,10 +21,9 @@ Mục tiêu: cung cấp skeleton thực tế (chạy được) cho AI Agent khi 
 set -euo pipefail
 IFS=$'\n\t'
 
-# Resolve OPS_ROOT to absolute path (works regardless of cwd)
 OPS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Source core helpers (always in this order)
+# Source core helpers in this order
 # shellcheck source=core/env.sh
 source "$OPS_ROOT/core/env.sh"
 # shellcheck source=core/utils.sh
@@ -31,343 +34,203 @@ source "$OPS_ROOT/core/ui.sh"
 source "$OPS_ROOT/core/system.sh"
 ```
 
----
-
-## B. `core/env.sh` — Skeleton
+### 2) Source-only module files (`ops/modules/*.sh`)
 
 ```bash
 #!/usr/bin/env bash
-# core/env.sh — Environment detection and global constants
-# Source this file; do not execute directly.
-set -euo pipefail
-
-# ── Runtime paths ────────────────────────────────────────────
-export OPS_ROOT="${OPS_ROOT:-/opt/ops}"
-export OPS_CONFIG_DIR="/etc/ops"
-export OPS_LOG_DIR="/var/log/ops"
-export OPS_LOG_FILE="$OPS_LOG_DIR/ops.log"
-
-# ── OS detection ─────────────────────────────────────────────
-detect_os() {
-    if [[ -f /etc/os-release ]]; then
-        # shellcheck source=/dev/null
-        source /etc/os-release
-        OS_ID="${ID:-unknown}"
-        OS_VERSION_ID="${VERSION_ID:-unknown}"
-    else
-        OS_ID="unknown"
-        OS_VERSION_ID="unknown"
-    fi
-    export OS_ID OS_VERSION_ID
-}
-
-# ── Resource detection ───────────────────────────────────────
-detect_resources() {
-    RAM_MB=$(awk '/MemTotal/ { printf "%d", $2/1024 }' /proc/meminfo)
-    CPU_CORES=$(nproc)
-    DISK_GB=$(df -BG / | awk 'NR==2 { gsub("G","",$4); print $4 }')
-    export RAM_MB CPU_CORES DISK_GB
-}
-
-# ── Tier mapping ─────────────────────────────────────────────
-# S: <1500MB RAM  M: 1500-5000MB  L: >5000MB
-detect_tier() {
-    detect_resources
-    if   (( RAM_MB < 1500 ));                      then OPS_TIER="S"
-    elif (( RAM_MB >= 1500 && RAM_MB < 5000 ));    then OPS_TIER="M"
-    else                                                 OPS_TIER="L"
-    fi
-    export OPS_TIER
-}
-
-# ── OPS config loader ────────────────────────────────────────
-# Usage: ops_load_conf <filename>  (e.g. ops_load_conf ops.conf)
-ops_load_conf() {
-    local conf_file="$OPS_CONFIG_DIR/$1"
-    [[ -f "$conf_file" ]] && source "$conf_file"
-}
-
-# ── OPS config writer ─────────────────────────────────────────
-# Usage: ops_conf_set <filename> <KEY> <VALUE>
-ops_conf_set() {
-    local conf_file="$OPS_CONFIG_DIR/$1"
-    local key="$2"
-    local value="$3"
-    ensure_dir "$OPS_CONFIG_DIR"
-    if grep -q "^${key}=" "$conf_file" 2>/dev/null; then
-        sed -i "s|^${key}=.*|${key}=\"${value}\"|" "$conf_file"
-    else
-        echo "${key}=\"${value}\"" >> "$conf_file"
-    fi
-}
-
-# Initialise on source
-detect_os
-detect_tier
+# ops/modules/<name>.sh
+# Called by ops/bin/ops via menu dispatch.
+# Do NOT add set -euo pipefail here — inherited from ops/bin/ops.
 ```
 
----
+### 3) Display-only exception: `ops-dashboard`
 
-## C. `core/utils.sh` — Skeleton
+`ops/bin/ops-dashboard` la exception co chu y:
 
-```bash
-#!/usr/bin/env bash
-# core/utils.sh — Safe file ops, logging, idempotence helpers
+- khong dung `set -e`
+- hien tai dung `set -uo pipefail`
+- ly do: dashboard chi render thong tin; 1 lenh loi khong duoc lam vo nửa man hinh dang hien
 
-# ── Logging ──────────────────────────────────────────────────
-log_info()  { echo "[INFO]  $(date '+%F %T') $*" | tee -a "$OPS_LOG_FILE"; }
-log_warn()  { echo "[WARN]  $(date '+%F %T') $*" | tee -a "$OPS_LOG_FILE" >&2; }
-log_error() { echo "[ERROR] $(date '+%F %T') $*" | tee -a "$OPS_LOG_FILE" >&2; }
-
-# ── Directory helpers ─────────────────────────────────────────
-ensure_dir() {
-    local dir="$1"
-    [[ -d "$dir" ]] || mkdir -p "$dir"
-}
-
-# ── File backup ───────────────────────────────────────────────
-# Usage: backup_file /path/to/file
-# Creates /path/to/file.bak.YYYYMMDD_HHMMSS
-backup_file() {
-    local file="$1"
-    if [[ -f "$file" ]]; then
-        local backup="${file}.bak.$(date +%Y%m%d_%H%M%S)"
-        cp "$file" "$backup"
-        log_info "Backup: $file → $backup"
-        echo "$backup"   # return path for reference
-    fi
-}
-
-# ── Atomic write ──────────────────────────────────────────────
-# Write to temp then move — avoids partial writes corrupting config files
-# Usage: write_file /path/to/file <<'EOF'
-#        content
-#        EOF
-write_file() {
-    local dest="$1"
-    local tmp
-    tmp=$(mktemp)
-    cat > "$tmp"
-    mv "$tmp" "$dest"
-    log_info "Wrote: $dest"
-}
-
-# ── Template renderer ─────────────────────────────────────────
-# Replaces {{VAR}} placeholders in a template file
-# Usage: render_template /path/to/tpl VAR1=val1 VAR2=val2
-render_template() {
-    local tpl="$1"
-    shift
-    local content
-    content=$(cat "$tpl")
-    for kv in "$@"; do
-        local key="${kv%%=*}"
-        local val="${kv#*=}"
-        content="${content//\{\{${key}\}\}/${val}}"
-    done
-    echo "$content"
-}
-
-# ── Idempotence check ─────────────────────────────────────────
-# Usage: is_installed nginx && echo "already installed"
-is_installed() { command -v "$1" &>/dev/null; }
-
-# Usage: service_active nginx && echo "running"
-service_active() { systemctl is-active --quiet "$1"; }
-```
+Neu co script display-only tuong tu, phai ghi ro exception nay trong header thay vi ngam dinh moi executable deu `set -euo pipefail`.
 
 ---
 
-## D. `core/ui.sh` — Skeleton
+## B. Repo layout va runtime layout
 
-```bash
-#!/usr/bin/env bash
-# core/ui.sh — Menu rendering, prompts, colours
+### 1) Layout trong repo
 
-# ── Colours ───────────────────────────────────────────────────
-RED='\033[0;31m'
-GRN='\033[0;32m'
-YLW='\033[1;33m'
-BLU='\033[0;34m'
-CYN='\033[0;36m'
-BLD='\033[1m'
-RST='\033[0m'
+Repo source tree hien tai:
 
-print_section() {
-    echo ""
-    echo -e "${CYN}${BLD}━━━ $* ━━━${RST}"
-    echo ""
-}
+- `install/ops-install.sh` — public bootstrap installer (`curl && bash`)
+- `ops/bin/` — runtime entrypoints
+  - `ops`
+  - `ops-dashboard`
+  - `ops-setup.sh`
+  - `ops-ssh-finalize.sh`
+- `ops/core/`
+  - `env.sh`
+  - `utils.sh`
+  - `ui.sh`
+  - `system.sh`
+- `ops/modules/`
+  - `setup-wizard.sh`
+  - `security.sh`
+  - `nginx.sh`
+  - `node.sh`
+  - `cli-proxy-api.sh`
+  - `php.sh`
+  - `database.sh`
+  - `monitoring.sh`
+  - `verify.sh`
+  - `checks.sh`
+  - `backup.sh`
+  - `codex-cli.sh`
+  - `ai-agent.sh`
+  - `templates/`
 
-print_ok()   { echo -e "  ${GRN}✓${RST} $*"; }
-print_warn() { echo -e "  ${YLW}⚠${RST} $*"; }
-print_err()  { echo -e "  ${RED}✗${RST} $*"; }
+### 2) Runtime tren VPS
 
-# ── Prompts ───────────────────────────────────────────────────
-# Usage: prompt_text "Enter domain" "example.com" → stored in REPLY
-prompt_text() {
-    local label="$1"
-    local default="${2:-}"
-    if [[ -n "$default" ]]; then
-        read -r -p "${label} [${default}]: " REPLY
-        REPLY="${REPLY:-$default}"
-    else
-        read -r -p "${label}: " REPLY
-    fi
-}
+Trong production, OPS duoc install tai:
 
-# Usage: confirm "Apply changes?" → returns 0 (yes) or 1 (no)
-confirm() {
-    local label="${1:-Are you sure?}"
-    read -r -p "${label} [y/N]: " ans
-    [[ "${ans,,}" == "y" ]]
-}
+- core install path: `/opt/ops`
+- state/config path: `/etc/ops/`
+- ops symlink path: `/usr/local/bin/ops`
+- log path: `/var/log/ops/ops.log`
 
-# Usage: prompt_secret "Enter password" → stored in SECRET (no echo)
-prompt_secret() {
-    local label="${1:-Enter secret}"
-    read -r -s -p "${label}: " SECRET
-    echo
-}
-
-# ── Menu helper ───────────────────────────────────────────────
-show_menu() {
-    local title="$1"
-    shift
-    print_section "$title"
-    local i=1
-    for item in "$@"; do
-        echo -e "  ${BLD}${i})${RST} $item"
-        (( i++ ))
-    done
-    echo -e "  ${BLD}0)${RST} Back / Exit"
-    echo ""
-    read -r -p "Select option: " MENU_CHOICE
-}
-```
+**Rule:**
+- Khi noi ve repo source tree, dung paths nhu `ops/bin/ops`, `ops/modules/nginx.sh`
+- Khi noi ve runtime tren VPS, dung paths nhu `/opt/ops/bin/ops`, `/etc/ops/ops.conf`
 
 ---
 
-## E. `core/system.sh` — Skeleton
+## C. Core helper map
 
-```bash
-#!/usr/bin/env bash
-# core/system.sh — Wrappers for apt, systemctl, ufw
+### `ops/core/env.sh`
 
-# ── apt wrappers ──────────────────────────────────────────────
-apt_install() {
-    log_info "apt install: $*"
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@"
-}
+Phu trach:
 
-apt_update() {
-    log_info "apt update"
-    apt-get update -qq
-}
+- detect OS / version
+- detect RAM / CPU / disk / tier
+- expose runtime paths
+- detect `ADMIN_USER` khi co the
+- `ops_conf_set` / `ops_conf_get` cho shell-sourceable OPS state files
 
-# ── systemctl wrappers ────────────────────────────────────────
-svc_enable()  { systemctl enable  "$1"; }
-svc_start()   { systemctl start   "$1"; }
-svc_restart() { systemctl restart "$1"; }
-svc_reload()  { systemctl reload  "$1"; }
-svc_status()  { systemctl status  "$1" --no-pager; }
-svc_is_active() { systemctl is-active --quiet "$1"; }
+**Pattern:**
+- dung `ops_conf_set` cho OPS-owned state duoi `/etc/ops/*.conf`
+- implementation hien tai da sanitize values va ghi qua temp-file swap; khong doc guide cu ma viet `sed -i` don gian cho state files
 
-# ── nginx helpers ─────────────────────────────────────────────
-nginx_validate() {
-    if ! nginx -t 2>/dev/null; then
-        log_error "Nginx config test failed — aborting reload"
-        return 1
-    fi
-}
+### `ops/core/utils.sh`
 
-nginx_reload() {
-    nginx_validate || return 1
-    systemctl reload nginx
-    log_info "Nginx reloaded"
-}
+Phu trach:
 
-# ── ufw wrappers ──────────────────────────────────────────────
-ufw_allow() { ufw allow "$1" comment "ops: $2"; }
-ufw_deny()  { ufw deny  "$1"; }
-ufw_status() { ufw status verbose; }
-```
+- `log_info`, `log_warn`, `log_error`
+- `ensure_dir`, `ensure_parent_dir`
+- `backup_file`
+- `write_file`
+- `safe_symlink`
+- `render_template`
+- `require_root`
+- idempotence helpers nhu `is_installed`, `service_active`, `file_contains`
+
+**Pattern:**
+- dung `write_file` cho generated files khi co the
+- dung `backup_file` truoc khi ghi de rollback de hon
+- `safe_symlink` cho managed symlinks
+
+### `ops/core/ui.sh`
+
+Phu trach:
+
+- `print_section`, `print_ok`, `print_warn`, `print_error`
+- `prompt_input`, `prompt_confirm`, `prompt_secret`
+- `press_enter`
+- `show_menu`
+
+**Pattern quan trong:**
+- interactive prompts hien tai ghi/doc qua `/dev/tty`
+- tranh phu thuoc vao stdin khi script dang chay trong nested shells, hooks, hoac command wrappers
+
+### `ops/core/system.sh`
+
+Phu trach:
+
+- `apt_update`, `apt_install`, `apt_remove`
+- `service_enable`, `service_start`, `service_restart`, `service_reload`, `service_stop`, `service_status`, `service_active`
+- aliases `svc_*` chi de compatibility, khong phai API uu tien
+- runtime-user helpers cho PM2/user-owned processes
+- `bash_validate`, `nginx_validate`, `nginx_reload`
+
+**Pattern quan trong:**
+- uu tien `service_*` thay vi `svc_*` trong code moi
+- `service_restart` hien tai co health check/backoff; khong rut gon thanh `systemctl restart` don thuan trong docs moi
 
 ---
 
-## F. `bin/ops` — Entry point skeleton
+## D. `ops/bin/ops` — current menu/runtime contract
+
+`ops/bin/ops` khong chi la dispatcher don gian nua. Hien tai no:
+
+- source core theo thu tu `env -> utils -> ui -> system`
+- source modules:
+  - `setup-wizard.sh`
+  - `security.sh`
+  - `nginx.sh`
+  - `node.sh`
+  - `cli-proxy-api.sh`
+  - `php.sh`
+  - `database.sh`
+  - `monitoring.sh`
+  - `verify.sh`
+  - `checks.sh`
+  - `backup.sh`
+  - `codex-cli.sh`
+  - `ai-agent.sh`
+- render main menu va banner thong tin he thong
+- read input tu `/dev/tty`
+- co timeout 300s de tranh spin neu SSH/TTY bien mat
+- co session lock de tranh 2 `ops` sessions cung sua shared state
+- reject non-interactive contexts truoc khi vao menu loop
+
+**Do not document `ops/bin/ops` as only:**
+- `while true; read -p ...`
+- source mot tap module nho hon hien tai
+- goi Codex truc tiep tu main menu ma bo qua `menu_ai_agent`
+
+Representative pattern:
 
 ```bash
-#!/usr/bin/env bash
-# bin/ops — OPS main menu dispatcher
-set -euo pipefail
-IFS=$'\n\t'
-
-OPS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "$OPS_ROOT/core/env.sh"
-source "$OPS_ROOT/core/utils.sh"
-source "$OPS_ROOT/core/ui.sh"
-source "$OPS_ROOT/core/system.sh"
-
-# Load all modules (sourced, not executed)
-source "$OPS_ROOT/modules/setup-wizard.sh"
-source "$OPS_ROOT/modules/security.sh"
-source "$OPS_ROOT/modules/nginx.sh"
-source "$OPS_ROOT/modules/node.sh"
-source "$OPS_ROOT/modules/cli-proxy-api.sh"
-source "$OPS_ROOT/modules/php.sh"
-source "$OPS_ROOT/modules/database.sh"
-source "$OPS_ROOT/modules/monitoring.sh"
-source "$OPS_ROOT/modules/codex-cli.sh"
-
 main_menu() {
     while true; do
         clear
         print_section "OPS — VPS Production Manager"
-        echo "  1) Production Setup Wizard"
-        echo "  2) Node.js Services"
-        echo "  3) Domains & Nginx"
-        echo "  4) SSL Management"
-        echo "  5) CLIProxyAPI Management"
-        echo "  6) PHP / PHP-FPM Management"
-        echo "  7) Database Management"
         echo "  8) AI Agent Integration"
         echo "  9) System & Monitoring"
         echo "  s) Security Management"
-        echo "  0) Exit"
-        echo ""
-        read -r -p "Select: " choice
+        printf "Select: " > /dev/tty
+        if ! read -r -t 300 choice < /dev/tty; then
+            echo "" >&2
+            exit 0
+        fi
         case "$choice" in
-            1) menu_setup_wizard   ;;
-            2) menu_node           ;;
-            3) menu_nginx          ;;
-            4) menu_ssl            ;;
-            5) menu_cliproxyapi    ;;
-            6) menu_php            ;;
-            7) menu_database       ;;
-            8) menu_ai_agent       ;;
-            9) menu_monitoring     ;;
-            s|S) menu_security     ;;
-            0) exit 0              ;;
+            8) menu_ai_agent   ;;
+            9) menu_monitoring ;;
+            s|S) menu_security ;;
+            0) exit 0          ;;
             *) print_warn "Invalid option" ;;
         esac
     done
 }
-
-main_menu
 ```
 
 ---
 
-## G. Module skeleton pattern
+## E. Module/menu pattern
+
+### 1) Menu boundary contract
+
+Pattern hien tai:
 
 ```bash
-#!/usr/bin/env bash
-# modules/<name>.sh — <Module name>
-# Called by bin/ops via menu dispatch
-# Do NOT add set -euo pipefail here — inherited from bin/ops
-
-# ── Public menu entry ─────────────────────────────────────────
 menu_<name>() {
     _<name>_menu_run() {
         "$@"
@@ -376,58 +239,110 @@ menu_<name>() {
 
     while true; do
         print_section "<Module> Management"
-        echo "  1) List ..."
-        echo "  2) Create ..."
-        echo "  3) ..."
+        echo "  1) ..."
         echo "  0) Back"
-        read -r -p "Select: " choice
+        printf "  Select: " > /dev/tty
+        local choice
+        read -r choice < /dev/tty
         case "$choice" in
-            1) _<name>_menu_run <name>_list; press_enter ;;
-            2) _<name>_menu_run <name>_create; press_enter ;;
-            0) return 0       ;;
-            *) print_warn "Invalid" ;;
+            1) _<name>_menu_run <name>_action ; press_enter ;;
+            0) return 0 ;;
+            *) print_warn "Invalid option" ;;
         esac
     done
 }
-
-# ── Actions ───────────────────────────────────────────────────
-<name>_list() {
-    print_section "List ..."
-    # implementation
-}
-
-<name>_create() {
-    print_section "Create ..."
-    # 1. Gather inputs
-    # 2. Backup affected configs
-    # 3. Apply change
-    # 4. Validate (nginx -t, systemctl check, etc.)
-    # 5. Reload/restart service
-    # 6. Verify
-    # 7. Log
-}
 ```
 
-**Menu review checklist:**
+**Rules:**
+- `menu_*` boundary phai `return 0` khi thoat binh thuong
+- action-level non-zero duoc hap thu boi wrapper `_menu_run`
+- parent menus va `ops/bin/ops` goi `menu_*` truc tiep, khong dung `menu_x || true` nhu workaround
+- verify/status actions cung theo contract nay: PASS/WARN/FAIL duoc render ra man hinh, nhung menu boundary van return `0`
 
-- `menu_*` boundary always ends with `return 0`, never bare `return` when exiting normally.
-- Action entries do not use `|| true` as a menu-level patch.
-- Action functions that may return non-zero are called through a menu-local wrapper like `_<name>_menu_run`.
-- Parent menus and `bin/ops` call `menu_*` directly, without `menu_x || true`.
-- Verify/status actions follow the same rule: render PASS/WARN/FAIL or error text, but the menu boundary still returns `0`.
+### 2) Prompt pattern
+
+- uu tien `prompt_input`, `prompt_confirm`, `prompt_secret`
+- neu can read custom, uu tien `/dev/tty`
+- chi goi `press_enter` sau cac action co output can operator xem; khong bat buoc cho moi action ngan gon
+
+### 3) Action pattern
+
+Action functions nen theo flow:
+
+1. gather inputs
+2. backup affected files/state
+3. apply change
+4. validate (`nginx -t`, `bash -n`, service checks, v.v.)
+5. reload/restart with helper phu hop
+6. verify observable result
+7. log
 
 ---
 
-## H. Convention cheat sheet
+## F. State, config, va secrets patterns
+
+### 1) OPS-owned state
+
+Dung `ops_conf_set` / `ops_conf_get` cho shell-sourceable state duoi `/etc/ops/*.conf`, vi du:
+
+- `/etc/ops/ops.conf`
+- `/etc/ops/capacity.conf`
+- `/etc/ops/cli-proxy-api.conf`
+- `/etc/ops/codex-cli.conf`
+- `/etc/ops/claude-code.conf`
+- `/etc/ops/notifications.conf`
+- `/etc/ops/database.conf`
+- `/etc/ops/apps/<app>.conf`
+- `/etc/ops/domains/<domain>.conf`
+- `/etc/ops/php-sites/<site>.conf`
+
+### 2) Service-native configs
+
+Khong phai moi file can di qua `ops_conf_set`.
+Voi service-native configs (Nginx, PHP ini/pools, sshd include files, systemd units, v.v.), dung pattern phu hop hon:
+
+- `backup_file` truoc khi sua
+- `write_file` / temp-file swap / focused edit tuy case
+- validate truoc reload/restart
+
+### 3) Secrets
+
+- khong inline secrets trong `.conf` shell-sourceable khi co the
+- uu tien file-based secrets voi permission hep
+- current implementation dung nhieu vi tri secrets khac nhau tuy module, vi du:
+  - `/etc/ops/.cli-proxy-api-key`
+  - `/etc/ops/.db-root-password`
+  - `/etc/ops/.codex-api-key`
+  - `/etc/ops/.telegram-bot-token`
+  - admin `~/.bashrc` export block cho Claude Code
+
+---
+
+## G. Convention cheat sheet
 
 | Rule | Detail |
 |---|---|
-| Source order | `env.sh` → `utils.sh` → `ui.sh` → `system.sh` |
-| Path variable | Always use `$OPS_ROOT`, `$OPS_CONFIG_DIR`, `$OPS_LOG_DIR` |
-| Config write | Always via `ops_conf_set`, never `echo > /etc/ops/foo.conf` directly |
-| File write | Always via `backup_file` + `write_file` for critical configs |
-| Service reload | Always `nginx_validate` before `nginx_reload` |
-| User input | `prompt_text`, `confirm`, `prompt_secret` from `ui.sh` |
-| Logging | `log_info`, `log_warn`, `log_error` — never bare `echo` for ops |
-| Idempotence | Check before creating: `is_installed`, `service_active`, `grep -q` |
-| Secrets | Never inline; always file-based at `/etc/ops/.<name>-secret` with `0600` |
+| Source order | `env.sh` -> `utils.sh` -> `ui.sh` -> `system.sh` |
+| Repo vs runtime path | Repo docs: `ops/...`; production docs: `/opt/ops/...` |
+| Menu input | Uu tien `/dev/tty` / UI helpers thay vi `read -p` don thuan |
+| Service API | Uu tien `service_*`; `svc_*` chi la compatibility aliases |
+| OPS state files | Dung `ops_conf_set` / `ops_conf_get` cho `/etc/ops/*.conf` shell-sourceable |
+| Generated files | Uu tien `backup_file` + `write_file` / temp-file swap |
+| Nginx reload | `nginx_validate` truoc `nginx_reload` |
+| Root guard | Dung `require_root` o dau action can root |
+| Logging | `log_info`, `log_warn`, `log_error` |
+| Verify contract | PASS/WARN/FAIL duoc render, nhung menu boundary van return `0` |
+| AI menu | Main menu item `8` la `AI Agent Integration`; Codex/Claude nam duoi submenu nay |
+
+---
+
+## H. Practical review checklist
+
+Khi review code moi, check nhanh:
+
+1. dang sua repo path hay runtime path? co dung namespace chua?
+2. code moi co reuse helper hien tai thay vi invent helper moi khong?
+3. menu/action co theo wrapper return-0 pattern khong?
+4. state moi nam trong runtime contract ro rang chua?
+5. service-native config co backup + validate + reload/restart co kiem soat khong?
+6. docs co dang mo ta implementation that, hay dang vo tinh ke lai skeleton cu?

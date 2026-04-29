@@ -86,6 +86,14 @@ configure_codex_with_cliproxyapi() {
     admin_home="${admin_home:-/home/$ADMIN_USER}"
     admin_bashrc="${admin_home}/.bashrc"
 
+    if ! systemctl is-active --quiet cli-proxy-api 2>/dev/null; then
+        print_warn "CLIProxyAPI service is not running. Install/start it from menu 5 before using Codex CLI."
+        printf "  Continue anyway? [y/N]: " > /dev/tty
+        local cont_ans
+        read -r cont_ans < /dev/tty
+        [[ "${cont_ans,,}" == "y" ]] || return 0
+    fi
+
     # Auto-generate CLIProxyAPI client key if not yet created
     if declare -F _cliproxyapi_ensure_client_key >/dev/null; then
         _cliproxyapi_ensure_client_key > /dev/null
@@ -109,6 +117,10 @@ configure_codex_with_cliproxyapi() {
     printf "  Default model [gpt-5.4]: " > /dev/tty
     read -r model_name < /dev/tty
     model_name="${model_name:-gpt-5.4}"
+
+    if declare -F _cliproxyapi_activate_api_key >/dev/null; then
+        _cliproxyapi_activate_api_key || return 1
+    fi
 
     # Write correct config.toml format (env_key style, no inline secret)
     local codex_env_key="CLI_PROXY_API_KEY"
@@ -149,11 +161,6 @@ ${codex_marker}
 export ${codex_env_key}=${api_key}
 EOF
     chown "$ADMIN_USER:$ADMIN_USER" "$admin_bashrc"
-
-    # If CLIProxyAPI module is loaded, ensure api-keys is enabled in config.yaml too.
-    if declare -F _cliproxyapi_activate_api_key >/dev/null; then
-        _cliproxyapi_activate_api_key
-    fi
 
     _codex_set_state "CODEX_MODE" "cliproxyapi"
     _codex_set_state "CODEX_ENDPOINT" "http://127.0.0.1:8317/v1"

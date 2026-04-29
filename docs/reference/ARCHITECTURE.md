@@ -149,7 +149,7 @@ To keep the production control plane maintainable, OPS should add explicit state
 - `/etc/ops/.telegram-bot-token` - Telegram bot token
 - `/opt/cli-proxy-api/config.yaml` - CLIProxyAPI runtime config (contains endpoint and auth toggles; keep root-readable only as required by the service setup)
 
-If some of these are not implemented in Phase 1, they still remain the target architecture.
+Neu module nao chua emit day du cac state file nay, docs cua module do phai ghi ro phan runtime truth hien tai thay vi invent them path moi.
 
 ### 3.2 Impact layers
 

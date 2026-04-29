@@ -14,8 +14,6 @@ For human operators managing a live VPS. Day-to-day reference.
 | [MENU-REFERENCE.md](operator/MENU-REFERENCE.md) | Every menu option with contract and notes |
 | [RUNBOOKS.md](operator/RUNBOOKS.md) | Pre-check -> change -> verify -> rollback for risky operations |
 | [SECURITY-RULES.md](operator/SECURITY-RULES.md) | Invariants that must never be broken |
-| [PERF-TUNING.md](operator/PERF-TUNING.md) | Tier S/M/L tuning decisions and thresholds |
-| [TEST-CASES.md](operator/TEST-CASES.md) | Regression test cases, smoke suite, acceptance gates |
 
 **Also see:** `USER_GUIDE.md` at repo root for the full end-user guide.
 
@@ -32,10 +30,11 @@ For AI agents and maintainers writing or reviewing code. Authority sources.
 | [SOURCE-TO-RUNTIME-TRACE.md](reference/SOURCE-TO-RUNTIME-TRACE.md) | Menu/module -> runtime state -> service -> verify -> rollback map |
 | [KNOWN-RISKS-PATTERNS.md](reference/KNOWN-RISKS-PATTERNS.md) | Recurring risk patterns — check before any review or fix |
 | [BUG-TRIAGE-INDEX.md](reference/BUG-TRIAGE-INDEX.md) | Fast entry points for bug triage by symptom |
+| [PERF-TUNING.md](reference/PERF-TUNING.md) | Tier S/M/L tuning decisions and thresholds |
 | [CLI-PROXY-API-SPEC.md](reference/CLI-PROXY-API-SPEC.md) | CLIProxyAPI install, `config.yaml`, systemd, Nginx vhost, secrets, verify, rollback |
 | [CODEX-CLI-SPEC.md](reference/CODEX-CLI-SPEC.md) | Codex CLI install, configure (CLIProxyAPI mode), secrets, menu actions |
 | [CLAUDE-CODE-SPEC.md](reference/CLAUDE-CODE-SPEC.md) | Claude Code CLI, Vietnamese fix, Telegram bot, config paths, security, rollback |
-| [FEATURE-EXPANSION-SPEC.md](reference/FEATURE-EXPANSION-SPEC.md) | Feature extension map: phase, menu, state, verify, rollback |
+| [TEST-CASES.md](reference/TEST-CASES.md) | Regression test cases, smoke suite, acceptance gates |
 
 ### Reading order for AI agents writing or maintaining code
 
@@ -43,7 +42,7 @@ For AI agents and maintainers writing or reviewing code. Authority sources.
 2. `operator/FLOW-INSTALL.md`
 3. `operator/MENU-REFERENCE.md`
 4. `operator/SECURITY-RULES.md`
-5. `operator/PERF-TUNING.md`
+5. `reference/PERF-TUNING.md`
 6. `reference/BUG-TRIAGE-INDEX.md`
 7. `reference/SOURCE-TO-RUNTIME-TRACE.md`
 8. `reference/KNOWN-RISKS-PATTERNS.md`
@@ -53,26 +52,17 @@ Then the relevant spec for the task:
 - CLIProxyAPI work: `reference/CLI-PROXY-API-SPEC.md`
 - Codex CLI: `reference/CODEX-CLI-SPEC.md`
 - Claude Code CLI / Telegram bot: `reference/CLAUDE-CODE-SPEC.md`
-- Phase implementation: `dev/PHASE-0N-IMPLEMENTATION-SPEC.md`
 
 ---
 
 ## Tier 3 — dev/
 
-Build-phase specs, AI agent prompts, porting guides, design patterns.
-Read when building a new phase or porting OPS to another stack.
+Production-freeze maintainer notes. Keep this tier minimal.
+Read it only when editing scripts in the current stable line.
 
 | File | Purpose |
 |---|---|
-| [PHASE-01-IMPLEMENTATION-SPEC.md](dev/PHASE-01-IMPLEMENTATION-SPEC.md) | Phase 1 task spec (core stack) — includes technology decisions |
-| [PHASE-02-IMPLEMENTATION-SPEC.md](dev/PHASE-02-IMPLEMENTATION-SPEC.md) | Phase 2 task spec (hardening + observability) |
-| [PHASE-03-IMPLEMENTATION-SPEC.md](dev/PHASE-03-IMPLEMENTATION-SPEC.md) | Phase 3 task spec (extensibility, multi-OS prep) |
-| [PHASE-04-IMPLEMENTATION-SPEC.md](dev/PHASE-04-IMPLEMENTATION-SPEC.md) | Phase 4 task spec (cloud integrations, AI-assisted runbooks) |
-| [CODE-SKELETON-GUIDE.md](dev/CODE-SKELETON-GUIDE.md) | Skeleton code, module pattern, convention cheat sheet |
-| [DESIGN-PATTERNS-EXTRACTED.md](dev/DESIGN-PATTERNS-EXTRACTED.md) | Reusable patterns for any new control plane |
-| [PLATFORM-AGNOSTIC-CAPABILITIES.md](dev/PLATFORM-AGNOSTIC-CAPABILITIES.md) | Capabilities abstracted from Node/PHP/Nginx syntax |
-| [PROMPTS-TEMPLATES.md](dev/PROMPTS-TEMPLATES.md) | Prompt templates for AI agent task execution |
-| [ROADMAP.md](dev/ROADMAP.md) | High-level phase overview and backlog |
+| [CODE-SKELETON-GUIDE.md](dev/CODE-SKELETON-GUIDE.md) | Current Bash/module authoring guide for safe bugfixes and maintenance |
 
 ---
 
@@ -81,11 +71,10 @@ Read when building a new phase or porting OPS to another stack.
 - Flow or architecture change -> update `reference/ARCHITECTURE.md` or `operator/FLOW-INSTALL.md`
 - Menu change -> update `operator/MENU-REFERENCE.md`
 - Security rule change -> update `operator/SECURITY-RULES.md` and `reference/KNOWN-RISKS-PATTERNS.md`
+- Tuning logic change -> update `reference/PERF-TUNING.md`
 - Runtime side-effect -> update `reference/SOURCE-TO-RUNTIME-TRACE.md`
 - New runtime artefact -> update `reference/RUNTIME-ARTEFACT-INVENTORY.md`
 - Bug triage path change -> update `reference/BUG-TRIAGE-INDEX.md`
-- Verify/regression/smoke change -> update `operator/TEST-CASES.md`
-- Phase task, order, acceptance change -> update `dev/PHASE-0N-IMPLEMENTATION-SPEC.md`, then `dev/ROADMAP.md`
+- Verify/regression/smoke change -> update `reference/TEST-CASES.md`
 - New module spec -> add to `reference/`, add row to this README
-
-If `dev/ROADMAP.md` and a phase spec conflict, the phase spec wins.
+- Chi them file moi vao `dev/` neu thuc su can cho bugfix/maintenance cua stable line

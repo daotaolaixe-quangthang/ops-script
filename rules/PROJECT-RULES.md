@@ -28,8 +28,8 @@ These rules define how this project should evolve. Human contributors and AI age
 - Supported OS: Ubuntu 22.04 and 24.04.
 - Scripts may detect and reject unsupported OSes with a clear message.
 - Any future OS additions must update:
-  - `docs/ARCHITECTURE.md`
-  - `docs/FLOW-INSTALL.md`
+  - `docs/reference/ARCHITECTURE.md`
+  - `docs/operator/FLOW-INSTALL.md`
   - Module implementations as needed.
 
 ### 4. Structure and separation of concerns
@@ -77,7 +77,7 @@ These rules define how this project should evolve. Human contributors and AI age
 ### 9. AI agent behaviour
 
 - AI agents working on this repo must:
-  - Read `docs/ARCHITECTURE.md`, `docs/FLOW-INSTALL.md`, `docs/SECURITY-RULES.md`, and this file before writing code.
+  - Read `docs/reference/ARCHITECTURE.md`, `docs/operator/FLOW-INSTALL.md`, `docs/operator/SECURITY-RULES.md`, and this file before writing code.
   - Respect existing structure and naming conventions.
   - Prefer **small, incremental changes** with clear commit messages (when applicable).
   - Avoid introducing new environment variables, paths, or conventions without documenting them.
@@ -88,14 +88,11 @@ These rules define how this project should evolve. Human contributors and AI age
   - Update relevant docs in `docs/` and rules in `rules/` **before** or together with code changes.
 - Documentation is part of the contract; code must match it.
 
-### 11. Phase execution source of truth
+### 11. Documentation source of truth in production freeze
 
-- `docs/ROADMAP.md` is the phase overview and backlog map.
-- `docs/PHASE-01-IMPLEMENTATION-SPEC.md` to `docs/PHASE-04-IMPLEMENTATION-SPEC.md` are the execution source of truth for:
-  - task IDs
-  - task order
-  - verify gates
-  - review checklists
-  - acceptance criteria
-- Contributors and AI agents must not invent alternate task numbering or execution order without updating the corresponding phase spec.
+- `docs/README.md` la docs map va reading order chinh.
+- `docs/reference/*` la source of truth cho architecture, runtime state, tuning, triage, verify, va runtime artefacts.
+- `docs/operator/*` chi ghi contract van hanh va menu hien tai cho operator.
+- `docs/dev/CODE-SKELETON-GUIDE.md` chi dung lam authoring guide khi sua stable-line scripts.
+- Contributors va AI agents khong duoc dua vao phase/roadmap cu da bi loai bo; neu thay doi hanh vi hien tai, phai cap nhat bo docs tren cung luc.
 

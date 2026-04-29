@@ -24,14 +24,13 @@ This README gives a high‑level overview for humans; detailed flows and rules f
 - `docs/operator/MENU-REFERENCE.md` - all menus and submenus, in English.
 - `docs/reference/ARCHITECTURE.md` - internal structure and module boundaries.
 - `docs/operator/SECURITY-RULES.md` - security invariants that must never be broken.
-- `docs/operator/PERF-TUNING.md` - RAM/CPU tuning tables for Nginx, PHP-FPM, DB, Node.
+- `docs/reference/PERF-TUNING.md` - RAM/CPU tuning tables for Nginx, PHP-FPM, DB, Node.
 - `docs/reference/BUG-TRIAGE-INDEX.md` - bug triage by impact layer.
 - `docs/reference/SOURCE-TO-RUNTIME-TRACE.md` - map from menus/modules to runtime state and rollback.
 - `docs/reference/KNOWN-RISKS-PATTERNS.md` - production risk patterns for reviews and bugfixes.
 - `docs/operator/RUNBOOKS.md` - rollback-first operational runbooks for risky changes.
 - `docs/reference/RUNTIME-ARTEFACT-INVENTORY.md` - expected runtime artefacts and source-of-truth targets.
-- `docs/dev/PLATFORM-AGNOSTIC-CAPABILITIES.md` - extracted capabilities independent of stack syntax.
-- `docs/dev/DESIGN-PATTERNS-EXTRACTED.md` - reusable control-plane patterns.
+- `docs/dev/CODE-SKELETON-GUIDE.md` - maintainer authoring guide for safe stable-line bugfixes.
 - `rules/` - coding & project rules for contributors and AI agents.
 - `agents/OPS-AI-GUIDE.md` - how AI agents should work on this project.
 

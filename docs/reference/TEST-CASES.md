@@ -232,7 +232,7 @@ Day la nhom bug phai retest moi khi co thay doi lien quan, vi da xuat hien hoac 
 6. Neu co config rewrite: verify syntax + backup + rollback.
 7. Neu co service/process: verify active state, port posture, log, restart path.
 8. Neu co secret: verify permission, ownership, khong leak output.
-9. Neu co docs/menu contract thay doi: cap nhat `docs/MENU-REFERENCE.md`, `docs/ARCHITECTURE.md`, docs lien quan.
+9. Neu co docs/menu contract thay doi: cap nhat `docs/operator/MENU-REFERENCE.md`, `docs/reference/ARCHITECTURE.md`, va docs lien quan.
 
 ## 7. Checklist review nhanh truoc merge
 
@@ -324,7 +324,7 @@ Khi OPS co automation test, tai lieu nay se la source de chuyen thanh:
 - VM snapshot acceptance tests
 - verify/health contract tests
 
-Trong luc chua co harness day du, `docs/TEST-CASES.md` la baseline review va QA gate bat buoc cho moi thay doi.
+Trong luc chua co harness day du, `docs/reference/TEST-CASES.md` la baseline review va QA gate bat buoc cho moi thay doi.
 
 ## 11. Shell regression harness
 

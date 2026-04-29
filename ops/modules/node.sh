@@ -7,7 +7,7 @@
 # Called by bin/ops via menu dispatch.
 # Do NOT add set -euo pipefail here — inherited from bin/ops.
 #
-# State contract (per PHASE-01-IMPLEMENTATION-SPEC.md §P1-06):
+# State contract (stable-line Node app registry):
 #   /etc/ops/apps/<appname>.conf  — per-app record
 #
 # Schema: APP_NAME APP_DIR APP_PORT APP_ENTRY APP_PM2_NAME

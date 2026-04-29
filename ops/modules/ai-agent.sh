@@ -154,6 +154,10 @@ configure_claude_cli() {
         model="${model:-claude-opus-4-5-20251101}"
     fi
 
+    if [[ "$mode_choice" == "1" ]] && declare -F _cliproxyapi_activate_api_key >/dev/null; then
+        _cliproxyapi_activate_api_key || return 1
+    fi
+
     echo ""
     log_info "Writing Claude config to $bashrc ..."
 
@@ -180,11 +184,6 @@ export ANTHROPIC_MODEL="${model}"
 EOF
 
     chown "$ADMIN_USER:$ADMIN_USER" "$bashrc"
-
-    # If CLIProxyAPI module is loaded and local mode is selected, ensure api-keys is enabled in config.yaml too.
-    if [[ "$mode_choice" == "1" ]] && declare -F _cliproxyapi_activate_api_key >/dev/null; then
-        _cliproxyapi_activate_api_key
-    fi
 
     _claude_set_state "CLAUDE_BASE_URL" "$base_url"
     _claude_set_state "CLAUDE_MODEL"    "$model"

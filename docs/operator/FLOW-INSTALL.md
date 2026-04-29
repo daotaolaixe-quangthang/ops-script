@@ -112,7 +112,7 @@ From the main menu, user selects **“Production Setup Wizard”** (or similar).
 
 3. **Nginx installation & tuning**
    - Install Nginx from nginx.org mainline repo (enforced by `_nginx_add_official_repo()`; Ubuntu distro package is rejected as it ships 1.18.0 with known CVEs).
-   - Apply tuning based on RAM/CPU via `PERF-TUNING.md`:
+   - Apply tuning based on RAM/CPU via `docs/reference/PERF-TUNING.md`:
      - `worker_processes`
      - `worker_connections`
      - keepalive, timeouts, gzip.
@@ -143,7 +143,7 @@ From the main menu, user selects **“Production Setup Wizard”** (or similar).
    - If yes:
      - Install MySQL or MariaDB (as default).
      - Run secure setup (root password, disable anonymous users, etc.).
-     - Apply tuning from `PERF-TUNING.md`.
+     - Apply tuning from `docs/reference/PERF-TUNING.md`.
 
 7. **Logging & basic monitoring**
    - Ensure `logrotate` rules for Nginx, PHP‑FPM, and Node/PM2 logs.

@@ -324,6 +324,8 @@ oauth-model-alias:
     - name: "claude-sonnet-4-6"
       alias: "claude-opus-4-7"
     - name: "claude-sonnet-4-6"
+      alias: "claude-sonnet-4-6"
+    - name: "claude-sonnet-4-6"
       alias: "claude-haiku-4-5-20251001"
 payload:
   filter:
@@ -621,6 +623,7 @@ link_cliproxyapi_domain() {
 }
 
 _cliproxyapi_activate_api_key() {
+    require_root || return 1
     if [[ ! -x "$CLIPROXYAPI_BINARY" ]]; then
         return 0
     fi
@@ -628,12 +631,13 @@ _cliproxyapi_activate_api_key() {
     _cliproxyapi_set_state "CLIPROXYAPI_REQUIRE_API_KEY" "yes"
     _cliproxyapi_write_config
     if service_active "$CLIPROXYAPI_SERVICE_NAME"; then
-        service_restart "$CLIPROXYAPI_SERVICE_NAME" 10 > /dev/null || true
+        service_restart "$CLIPROXYAPI_SERVICE_NAME" 10
         log_info "CLIProxyAPI reloaded with API key enabled"
     fi
 }
 
 toggle_cliproxyapi_api_key() {
+    require_root || return 1
     local mode="${1:-}"
     local state_value
 
@@ -753,12 +757,12 @@ cliproxyapi_start() {
     require_root || return 1
     service_start "$CLIPROXYAPI_SERVICE_NAME"
     sleep 2
-    if service_active "$CLIPROXYAPI_SERVICE_NAME"; then
-        print_ok "CLIProxyAPI is active"
-    else
-        log_warn "CLIProxyAPI is not active after start. Last journal entries:"
+    if ! service_active "$CLIPROXYAPI_SERVICE_NAME"; then
+        log_error "CLIProxyAPI is not active after start. Last journal entries:"
         journalctl -u "$CLIPROXYAPI_SERVICE_NAME" -n 20 --no-pager 2>/dev/null || true
+        return 1
     fi
+    print_ok "CLIProxyAPI is active"
     _cliproxyapi_assert_ufw_closed
 }
 
@@ -834,9 +838,10 @@ _cliproxyapi_show_status() {
 
 bootstrap_cliproxyapi_auth() {
     local provider="${1:-all}"
-    local runtime_user runtime_home
+    local runtime_user runtime_home all_ok
     runtime_user="$(_cliproxyapi_runtime_user)"
     runtime_home="$(_cliproxyapi_runtime_home)"
+    all_ok=true
 
     if [[ ! -x "$CLIPROXYAPI_BINARY" ]]; then
         log_error "CLIProxyAPI binary not found. Install first."
@@ -854,13 +859,21 @@ bootstrap_cliproxyapi_auth() {
             ;;
         all|*)
             log_info "Launching Claude provider login as ${runtime_user} ..."
-            _cliproxyapi_run_as_runtime_user bash -c "cd '${CLIPROXYAPI_DIR}' && '${CLIPROXYAPI_BINARY}' --claude-login" || true
+            if ! _cliproxyapi_run_as_runtime_user bash -c "cd '${CLIPROXYAPI_DIR}' && '${CLIPROXYAPI_BINARY}' --claude-login"; then
+                all_ok=false
+            fi
             echo ""
             log_info "Launching Codex provider login as ${runtime_user} ..."
-            _cliproxyapi_run_as_runtime_user bash -c "cd '${CLIPROXYAPI_DIR}' && '${CLIPROXYAPI_BINARY}' --codex-login" || true
+            if ! _cliproxyapi_run_as_runtime_user bash -c "cd '${CLIPROXYAPI_DIR}' && '${CLIPROXYAPI_BINARY}' --codex-login"; then
+                all_ok=false
+            fi
             ;;
     esac
     echo ""
+    if [[ "$all_ok" != "true" ]]; then
+        log_error "Auth bootstrap failed for one or more providers. Auth state is stored at ${runtime_home}/.cli-proxy-api"
+        return 1
+    fi
     log_info "Auth bootstrap complete. Auth stored at ${runtime_home}/.cli-proxy-api"
 }
 

@@ -93,22 +93,34 @@ streaming:
   bootstrap-retries: 3
 oauth-model-alias:
   codex:
-    claude-opus-4-5-20251101: gpt-5.4
-    claude-sonnet-4-6: gpt-5.4
-    claude-haiku-4-5-20251001: gpt-5.4-mini
-    claude-3-5-haiku-20241022: gpt-5.4-mini
-    claude-sonnet-4-5: gpt-5.3-codex
+    - name: "gpt-5.4"
+      alias: "claude-opus-4-5-20251101"
+    - name: "gpt-5.4"
+      alias: "claude-sonnet-4-6"
+    - name: "gpt-5.4-mini"
+      alias: "claude-haiku-4-5-20251001"
+    - name: "gpt-5.4-mini"
+      alias: "claude-3-5-haiku-20241022"
+    - name: "gpt-5.3-codex"
+      alias: "claude-sonnet-4-5"
   antigravity:
-    claude-opus-4-5-20251101: claude-sonnet-4-6
-    claude-opus-4-7: claude-sonnet-4-6
-    claude-sonnet-4-6: claude-sonnet-4-6
-    claude-haiku-4-5-20251001: claude-sonnet-4-6
+    - name: "claude-sonnet-4-6"
+      alias: "claude-opus-4-5-20251101"
+    - name: "claude-sonnet-4-6"
+      alias: "claude-opus-4-7"
+    - name: "claude-sonnet-4-6"
+      alias: "claude-sonnet-4-6"
+    - name: "claude-sonnet-4-6"
+      alias: "claude-haiku-4-5-20251001"
 payload:
   filter:
-    antigravity:
-      - propertyNames
-      - additionalProperties
-      - patternProperties
+    - models:
+        - name: "*"
+          protocol: "antigravity"
+      params:
+        - "tools.#.input_schema.propertyNames"
+        - "tools.#.input_schema.additionalProperties"
+        - "tools.#.input_schema.patternProperties"
 logging-to-file: false
 ```
 
@@ -117,8 +129,8 @@ Key production settings:
 - `passthrough-headers: true` - required for Claude Code CLI to work correctly (forwards full SDK request headers)
 - `session-affinity: true / 12h` - prevents "dot token" errors by keeping conversations on the same OAuth account
 - `streaming.keepalive-seconds: 30` - prevents proxy timeout on long streaming responses
-- `oauth-model-alias` - translates Claude model names to real provider model names for Codex (gpt-5.4 family) and Antigravity/Gemini (claude-sonnet-4-6)
-- `payload.filter.antigravity` - strips JSON Schema fields rejected by Gemini API (`propertyNames`, `additionalProperties`, `patternProperties`) to avoid 400 errors
+- `oauth-model-alias` - provider-scoped alias lists that translate Claude model names to real provider model names for Codex (gpt-5.4 family) and Antigravity/Gemini (`claude-sonnet-4-6`)
+- `payload.filter` - rule list that strips JSON Schema fields rejected by Gemini API for Antigravity traffic (`propertyNames`, `additionalProperties`, `patternProperties`) to avoid 400 errors
 
 Required posture:
 

@@ -259,7 +259,7 @@ chown -R ${ADMIN_USER}:${ADMIN_USER} /home/${ADMIN_USER}/.ssh
   - Hoac re-run installer voi tarball cu neu can.
   - restart khong can thiet (OPS la shell script, khong phai long-running service)
 
-## 12. Netdata advanced monitoring install / remove (P2-02)
+## 12. Netdata advanced monitoring install / remove
 
 - **Pre-check**:
   - xac nhan RAM con tu do: `free -m` — nen co > 512MB free
@@ -289,7 +289,7 @@ Muc tieu: moi release, update function, hoac fix bug deu phai chay qua cung 1 ga
 - **Gate 2 - shell regression**:
   - `bash ops/tests/regression/run-all.sh`
 - **Gate 3 - smoke suite theo impact layer**:
-  - chay test IDs duoc map trong `docs/TEST-CASES.md` va phase spec
+  - chay test IDs duoc map trong `docs/reference/TEST-CASES.md`
 - **Gate 4 - runtime acceptance**:
   - chay tren VM snapshot Ubuntu 22.04 hoac 24.04
   - verify file, service, port, permissions, rollback minimum
@@ -301,7 +301,7 @@ Muc tieu: moi release, update function, hoac fix bug deu phai chay qua cung 1 ga
   - chay them `TUI-*`, `REG-*`, `MON-01` neu co verify action
 - **Update function trong module**:
   - chay harness regression
-  - chay smoke suite cua module do theo `docs/TEST-CASES.md`
+  - chay smoke suite cua module do theo `docs/reference/TEST-CASES.md`
 - **Release**:
   - chay harness regression
   - chay full smoke suite cua cac module bi anh huong trong release note
@@ -374,7 +374,7 @@ Notes:
 - Khong duyet fix lien quan SSH/Nginx/DB neu chua co runtime acceptance tren snapshot.
 - Moi bug da fix phai duoc them vao regression mapping hoac harness neu co the tu dong hoa.
 
-## 14. Alerts scheduler — enable / disable (P2-03)
+## 14. Alerts scheduler — enable / disable
 
 - **Pre-check**:
   - xac nhan Telegram da config: `grep TELEGRAM_ENABLED /etc/ops/notifications.conf`
@@ -396,7 +396,7 @@ Notes:
   - `rm -f /tmp/ops-alert-*.cooldown` -> xoa cooldown files neu can reset
   - Khong co long-running process — chi cron entries
 
-## 15. Backup helpers — DB dump and config archive (P2-05)
+## 15. Backup helpers — DB dump and config archive
 
 - **Pre-check**:
   - Kiem tra disk space truoc: `df -h /var/backups`

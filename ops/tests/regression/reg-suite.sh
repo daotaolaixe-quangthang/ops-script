@@ -114,6 +114,24 @@ case_reg_15_runtime_user_check_present() {
     test::assert_contains "$content" 'OPS_RUNTIME_USER' 'ops.conf reference missing in runtime user check' || return 1
 }
 
+case_reg_16_local_client_setup_contracts_present() {
+    local cliproxyapi_content claude_content codex_content
+    cliproxyapi_content="$(<"${OPS_ROOT}/modules/cli-proxy-api.sh")"
+    claude_content="$(<"${OPS_ROOT}/modules/ai-agent.sh")"
+    codex_content="$(<"${OPS_ROOT}/modules/codex-cli.sh")"
+
+    test::assert_contains "$cliproxyapi_content" $'toggle_cliproxyapi_api_key() {\n    require_root || return 1' 'CLIProxyAPI API key toggle must require root' || return 1
+    test::assert_not_contains "$cliproxyapi_content" 'service_restart "$CLIPROXYAPI_SERVICE_NAME" 10 > /dev/null || true' 'CLIProxyAPI API key activation must not swallow restart failures' || return 1
+    test::assert_contains "$cliproxyapi_content" $'if ! service_active "$CLIPROXYAPI_SERVICE_NAME"; then\n        log_error "CLIProxyAPI is not active after start. Last journal entries:"' 'CLIProxyAPI start must fail when service stays inactive' || return 1
+    test::assert_contains "$cliproxyapi_content" $'journalctl -u "$CLIPROXYAPI_SERVICE_NAME" -n 20 --no-pager 2>/dev/null || true\n        return 1' 'CLIProxyAPI start failure path must return non-zero' || return 1
+    test::assert_not_contains "$cliproxyapi_content" '--claude-login" || true' 'CLIProxyAPI auth bootstrap must not swallow Claude login failures' || return 1
+    test::assert_not_contains "$cliproxyapi_content" '--codex-login" || true' 'CLIProxyAPI auth bootstrap must not swallow Codex login failures' || return 1
+    test::assert_contains "$cliproxyapi_content" 'Auth bootstrap failed for one or more providers' 'CLIProxyAPI auth bootstrap failure message missing' || return 1
+    test::assert_contains "$claude_content" '_cliproxyapi_activate_api_key || return 1' 'Claude local setup must fail when API key activation fails' || return 1
+    test::assert_contains "$codex_content" 'CLIProxyAPI service is not running. Install/start it from menu 5 before using Codex CLI.' 'Codex local setup must warn when CLIProxyAPI is inactive' || return 1
+    test::assert_contains "$codex_content" '_cliproxyapi_activate_api_key || return 1' 'Codex local setup must fail when API key activation fails' || return 1
+}
+
 case_sec_01_password_auth_guard_without_key_present() {
     local content
     content="$(<"${OPS_ROOT}/modules/security.sh")"
@@ -239,7 +257,7 @@ case_web_04_static_domain_contract_present() {
 
 case_web_05_remove_domain_keeps_root_contract_present() {
     local content
-    content="$(<"${REPO_ROOT}/docs/operator/TEST-CASES.md")"
+    content="$(<"${REPO_ROOT}/docs/reference/TEST-CASES.md")"
     test::assert_contains "$content" 'WEB-05' 'WEB-05 testcase missing' || return 1
     test::assert_contains "$content" 'giu `/var/www/<domain>`' 'web root preservation contract missing' || return 1
 }
@@ -316,7 +334,7 @@ case_php_02_03_php_pool_and_domain_contract_present() {
 
 case_php_04_05_06_php_override_contract_present() {
     local content
-    content="$(<"${REPO_ROOT}/docs/operator/TEST-CASES.md")"
+    content="$(<"${REPO_ROOT}/docs/reference/TEST-CASES.md")"
     test::assert_contains "$content" 'PHP-04' 'PHP regression testcase coverage missing' || return 1
     test::assert_contains "$content" 'PHP-06' 'PHP pool override testcase coverage missing' || return 1
 }
@@ -335,7 +353,7 @@ case_db_06_backup_helper_contract_present() {
     test::assert_contains "$content" '/var/backups/ops/db' 'DB backup output path missing' || return 1
 }
 
-case_cpa_01_02_03_04_05_06_07_08_cliproxyapi_contracts_present() {
+case_cpa_01_02_03_04_05_06_07_08_09_cliproxyapi_contracts_present() {
     local content
     content="$(<"${OPS_ROOT}/modules/cli-proxy-api.sh")"
     test::assert_contains "$content" 'CLIProxyAPI/releases/latest' 'CLIProxyAPI release install contract missing' || return 1
@@ -345,6 +363,10 @@ case_cpa_01_02_03_04_05_06_07_08_cliproxyapi_contracts_present() {
     test::assert_contains "$content" 'api-keys:' 'CLIProxyAPI API key toggle contract missing' || return 1
     test::assert_contains "$content" 'remote-management:' 'CLIProxyAPI remote management contract missing' || return 1
     test::assert_contains "$content" 'service_restart "$CLIPROXYAPI_SERVICE_NAME"' 'CLIProxyAPI service restart contract missing' || return 1
+    test::assert_contains "$content" 'oauth-model-alias:' 'CLIProxyAPI oauth model alias contract missing' || return 1
+    test::assert_contains "$content" 'payload:' 'CLIProxyAPI payload filter contract missing' || return 1
+    test::assert_contains "$content" 'tools.#.input_schema.propertyNames' 'CLIProxyAPI payload filter propertyNames path missing' || return 1
+    test::assert_contains "$content" $'- name: "claude-sonnet-4-6"\n      alias: "claude-sonnet-4-6"' 'CLIProxyAPI antigravity self-alias contract missing' || return 1
 }
 
 case_mon_01_02_03_04_05_monitoring_contracts_present() {
@@ -385,6 +407,7 @@ test::run_case 'REG-12' 'pm2 log contracts preserved' case_reg_12_pm2_logrotate_
 test::run_case 'REG-13' 'pm2 read helpers centralized' case_reg_13_pm2_read_helpers_centralized
 test::run_case 'REG-14' 'patch state check present in verify' case_reg_14_patch_state_check_present
 test::run_case 'REG-15' 'runtime user check present in verify' case_reg_15_runtime_user_check_present
+test::run_case 'REG-16' 'local client setup contracts present' case_reg_16_local_client_setup_contracts_present
 test::run_case 'SEC-01' 'password auth guard without key present' case_sec_01_password_auth_guard_without_key_present
 test::run_case 'SEC-02' 'disable password auth requires key contract present' case_sec_02_disable_password_auth_requires_key_contract_present
 test::run_case 'SEC-03' 'SSH transition keeps two ports contract present' case_sec_03_transition_keeps_two_ports_contract_present
@@ -435,14 +458,15 @@ test::run_case 'DB-03' 'DB secure setup contract present' case_db_01_02_03_04_05
 test::run_case 'DB-04' 'DB bind posture contract present' case_db_01_02_03_04_05_db_contracts_present
 test::run_case 'DB-05' 'DB create user/db contract present' case_db_01_02_03_04_05_db_contracts_present
 test::run_case 'DB-06' 'DB backup helper contract present' case_db_06_backup_helper_contract_present
-test::run_case 'CPA-01' 'CLIProxyAPI install contract present' case_cpa_01_02_03_04_05_06_07_08_cliproxyapi_contracts_present
-test::run_case 'CPA-02' 'CLIProxyAPI loopback bind contract present' case_cpa_01_02_03_04_05_06_07_08_cliproxyapi_contracts_present
-test::run_case 'CPA-03' 'CLIProxyAPI secret permission contract present' case_cpa_01_02_03_04_05_06_07_08_cliproxyapi_contracts_present
-test::run_case 'CPA-04' 'CLIProxyAPI domain link contract present' case_cpa_01_02_03_04_05_06_07_08_cliproxyapi_contracts_present
-test::run_case 'CPA-05' 'CLIProxyAPI verify contract present' case_cpa_01_02_03_04_05_06_07_08_cliproxyapi_contracts_present
-test::run_case 'CPA-06' 'CLIProxyAPI API key toggle contract present' case_cpa_01_02_03_04_05_06_07_08_cliproxyapi_contracts_present
-test::run_case 'CPA-07' 'CLIProxyAPI update preserve-state contract present' case_cpa_01_02_03_04_05_06_07_08_cliproxyapi_contracts_present
-test::run_case 'CPA-08' 'CLIProxyAPI SSL/vhost re-render contract present' case_cpa_01_02_03_04_05_06_07_08_cliproxyapi_contracts_present
+test::run_case 'CPA-01' 'CLIProxyAPI install contract present' case_cpa_01_02_03_04_05_06_07_08_09_cliproxyapi_contracts_present
+test::run_case 'CPA-02' 'CLIProxyAPI loopback bind contract present' case_cpa_01_02_03_04_05_06_07_08_09_cliproxyapi_contracts_present
+test::run_case 'CPA-03' 'CLIProxyAPI secret permission contract present' case_cpa_01_02_03_04_05_06_07_08_09_cliproxyapi_contracts_present
+test::run_case 'CPA-04' 'CLIProxyAPI domain link contract present' case_cpa_01_02_03_04_05_06_07_08_09_cliproxyapi_contracts_present
+test::run_case 'CPA-05' 'CLIProxyAPI verify contract present' case_cpa_01_02_03_04_05_06_07_08_09_cliproxyapi_contracts_present
+test::run_case 'CPA-06' 'CLIProxyAPI API key toggle contract present' case_cpa_01_02_03_04_05_06_07_08_09_cliproxyapi_contracts_present
+test::run_case 'CPA-07' 'CLIProxyAPI update preserve-state contract present' case_cpa_01_02_03_04_05_06_07_08_09_cliproxyapi_contracts_present
+test::run_case 'CPA-08' 'CLIProxyAPI SSL/vhost re-render contract present' case_cpa_01_02_03_04_05_06_07_08_09_cliproxyapi_contracts_present
+test::run_case 'CPA-09' 'CLIProxyAPI schema contract present' case_cpa_01_02_03_04_05_06_07_08_09_cliproxyapi_contracts_present
 test::run_case 'MON-01' 'verify exit-zero contract present' case_mon_01_02_03_04_05_monitoring_contracts_present
 test::run_case 'MON-02' 'quick logs contract present' case_mon_01_02_03_04_05_monitoring_contracts_present
 test::run_case 'MON-03' 'monitoring menu boundary contract present' case_mon_01_02_03_04_05_monitoring_contracts_present

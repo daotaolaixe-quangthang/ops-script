@@ -2,7 +2,7 @@
 
 Muc tieu: liet ke cac runtime artefacts ma OPS tao/quan ly de debug, verify, va rollback nhanh.
 
-Luu y: day la target inventory cho script production; mot so artefact se xuat hien day du hon khi implementation hoan chinh.
+Luu y: day la inventory cho feature hien tai cua stable line; neu runtime tao them artefact moi thi cap nhat file nay cung luc.
 
 ## 1. Core and global state
 
@@ -14,7 +14,7 @@ Luu y: day la target inventory cho script production; mot so artefact se xuat hi
 | `/etc/ops/ops.conf` | global config |
 | `/etc/ops/capacity.conf` or JSON | VPS capacity profile |
 | `/var/log/ops/ops.log` | high-level operations log |
-| `/etc/ops/notifications.conf` | global notification channels and policy (future optional) |
+| `/etc/ops/notifications.conf` | global notification channels and policy |
 
 ## 2. Login and operator access
 
@@ -117,12 +117,13 @@ Cac file sau phai luon co permission `0600` va owned by admin user:
 | `/etc/ops/.cli-proxy-api-key` | CLIProxyAPI local client key |
 | `/etc/ops/.db-root-password` | MariaDB/MySQL root password |
 | `/etc/ops/.codex-api-key` | Codex CLI API key |
+| `/etc/ops/.telegram-bot-token` | Telegram bot token |
 | `~/.codex/config.toml` | Codex CLI config with inline API key |
 
 > Bat co file nao trong danh sach tren bi set khac 0600 la bug bao mat.
 
 
-## 8.1 Advanced web controls (P2-03A)
+## 8.1 Advanced web controls
 
 | Artefact | Path | Source | Verify | Permission |
 |---|---|---|---|---|
@@ -132,15 +133,6 @@ Cac file sau phai luon co permission `0600` va owned by admin user:
 
 **Rollback:** remove snippet file, remove `include` line from site config, `nginx -t && systemctl reload nginx`.
 
-## 8.2 Future remote backup artefacts
-
-| Artefact | Muc dich |
-|---|---|
-| `/etc/ops/backups/telegram.conf` | Telegram Cloud backup transport config |
-| `/etc/ops/backups/uploads/*.conf` | uploads backup policies per app/site |
-| local backup staging dir | tao archive truoc khi upload |
-| backup metadata map | map local backup voi Telegram file/message identifiers |
-| auto-backup scheduler entries | lich chay uploads backup tu dong |
 
 ## 9. Codex CLI
 
@@ -163,7 +155,7 @@ Neu implementation tao artefact moi ma file nay khong cap nhat, docs dang khong 
 
 ---
 
-## 11. Scheduled check artefacts (P2-03)
+## 11. Scheduled check artefacts
 
 > Source: `modules/checks.sh` → `checks_install_cron`
 
@@ -180,7 +172,7 @@ Neu implementation tao artefact moi ma file nay khong cap nhat, docs dang khong 
 
 ---
 
-## 12. Backup artefacts (P2-05)
+## 12. Backup artefacts
 
 > Source: `modules/backup.sh`
 
@@ -196,7 +188,7 @@ Neu implementation tao artefact moi ma file nay khong cap nhat, docs dang khong 
 
 ---
 
-## 13. Advanced monitoring — Netdata opt-in (P2-02)
+## 13. Advanced monitoring — Netdata opt-in
 
 > Source: `modules/monitoring.sh` → `monitoring_install_netdata`
 

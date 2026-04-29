@@ -61,7 +61,7 @@ _checks_send_telegram() {
     local token_file="${OPS_CONFIG_DIR:-/etc/ops}/.telegram-bot-token"
     local chat_id tg_enabled
 
-    # Read from notifications.conf (chốt per ARCHITECTURE.md, FEATURE-EXPANSION-SPEC.md)
+    # Read from notifications.conf (chốt per ARCHITECTURE.md, RUNTIME-ARTEFACT-INVENTORY.md)
     chat_id=$(ops_conf_get "notifications.conf" "TELEGRAM_CHAT_ID" 2>/dev/null || true)
     tg_enabled=$(ops_conf_get "notifications.conf" "TELEGRAM_ENABLED" 2>/dev/null || echo "no")
 

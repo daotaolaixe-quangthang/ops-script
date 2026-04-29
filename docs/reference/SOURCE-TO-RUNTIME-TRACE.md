@@ -4,9 +4,9 @@ Muc tieu: map nhanh tu menu/module sang runtime files, service, verify, rollback
 
 Model chung:
 
-`installer/bin/ops` -> `core helpers` -> `modules/*` -> runtime files/services -> verify -> rollback
+`install/ops-install.sh` -> `ops/bin/ops` -> `core helpers` -> `modules/*` -> runtime files/services -> verify -> rollback
 
-## Runtime truth du kien
+## Runtime truth hien tai
 
 - Core install: `/opt/ops`
 - Config: `/etc/ops/*`
@@ -157,72 +157,73 @@ Model chung:
 - **Rollback**:
   - mo duong SSH truoc, revert security rules sau
 
-### Monitoring / logs / Codex CLI
+### Monitoring / logs / AI integration
 
 - **Modules du kien**:
   - `modules/monitoring.sh`
   - `modules/codex-cli.sh`
+  - `modules/ai-agent.sh`
 - **Runtime state**:
   - `/var/log/ops/ops.log`
   - logrotate rules
   - `/etc/ops/codex-cli.conf` (mode, endpoint, model, version)
   - `/etc/ops/.codex-api-key` (0600: API key)
   - `~/.codex/config.toml` (0600: endpoint + model config)
+  - `/etc/ops/claude-code.conf`
+  - admin `~/.bashrc` export block cho Claude Code
 - **Verify**:
   - quick logs menu
   - service status screen
   - `codex --version`
-  - `curl -s http://127.0.0.1:8317/v1/models` (neu dung CLIProxyAPI mode)
+  - Claude Code version / environment reachability
+  - `curl -s http://127.0.0.1:8317/v1/models` (neu Codex dung CLIProxyAPI mode)
 - **Rollback**:
   - `disable_codex_auto_env` de xoa export OPENAI_API_KEY khoi ~/.bash_profile
+  - go bo Claude Code export block khoi admin `~/.bashrc` neu can
   - `rm ~/.codex/config.toml /etc/ops/.codex-api-key`
   - `npm uninstall -g @openai/codex`
 
 
-### Notifications / scheduled checks (future optional)
+### Notifications / scheduled checks
 
 - **Modules du kien**:
-  - notification/check module hoac expansion trong `modules/monitoring.sh`
+  - `modules/monitoring.sh`
+  - `modules/checks.sh`
 - **Runtime state**:
   - `/etc/ops/notifications.conf`
-  - `/etc/ops/checks/*`
-  - scheduler artefacts
+  - `/etc/ops/.telegram-bot-token`
+  - `/etc/cron.d/ops-checks`
+  - `bin/ops-check`
+  - `/etc/ops/checks.conf`
+  - `/var/log/ops/checks.log`
+  - cooldown files `/tmp/ops-alert-<type>-<id>.cooldown`
 - **Verify**:
   - test notification
-  - scheduler state
+  - scheduler/cron file ton tai va khong duplicate
   - generated check output/logs
 - **Rollback**:
   - disable checks
-  - remove scheduler entries
+  - remove `/etc/cron.d/ops-checks`
+  - xoa cooldown files/config override neu can
 
-### Advanced web controls (future optional)
+### Advanced web controls
 
 - **Modules du kien**:
-  - `modules/nginx.sh` hoac module web-control tach rieng
+  - `modules/nginx.sh`
+  - `modules/php.sh`
 - **Runtime state**:
-  - Nginx snippets/site config
-  - PHP-secondary `.htaccess` file neu co
+  - `/etc/nginx/snippets/cloudflare-real-ip.conf`
+  - `/etc/nginx/snippets/custom-powered-by.conf`
+  - Nginx site configs co `include` snippet neu bat
+  - `.htaccess` backup files neu chay reset
 - **Verify**:
   - `nginx -t`
   - header/log/request behavior tests
+  - default deny van chan direct `http://IP`
 - **Rollback**:
   - revert snippets/config backups
+  - restore `.htaccess` backup neu da reset
 
-### Remote uploads backup transport (future optional)
-
-- **Modules du kien**:
-  - backup remote module trong Phase 4
-- **Runtime state**:
-  - `/etc/ops/backups/telegram.conf`
-  - `/etc/ops/backups/uploads/*`
-  - local staging and metadata files
-  - scheduler artefacts neu auto backup duoc bat
-- **Verify**:
-  - upload/download flow
-  - metadata state
-- **Rollback**:
-  - disable schedule
-  - remove local config/meta moi
 
 ## Fast trace by artefact
 

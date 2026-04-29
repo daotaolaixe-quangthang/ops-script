@@ -11,20 +11,14 @@ When a task involves the `ops/` directory, AI agents must first read:
 - `docs/reference/ARCHITECTURE.md`
 - `docs/operator/FLOW-INSTALL.md`
 - `docs/operator/SECURITY-RULES.md`
-- `docs/operator/PERF-TUNING.md`
+- `docs/reference/PERF-TUNING.md`
 - `docs/reference/BUG-TRIAGE-INDEX.md` when fixing bugs or reviewing risk
 - `docs/reference/SOURCE-TO-RUNTIME-TRACE.md` when touching runtime state/configs
 - `docs/reference/KNOWN-RISKS-PATTERNS.md` for production-safe changes
+- `docs/reference/TEST-CASES.md` when touching verify, regression, smoke gates, or release readiness
 - **`docs/dev/CODE-SKELETON-GUIDE.md`** before writing any module — contains coding spine, helpers pattern, convention cheat sheet
 - `rules/PROJECT-RULES.md`
 - `rules/BASH-STYLE.md`
-
-When the task is implementation planning or execution by phase, also read the corresponding phase spec:
-
-- `docs/dev/PHASE-01-IMPLEMENTATION-SPEC.md` — contains technology decisions (Node method, PHP PPA, Certbot, MariaDB, etc.)
-- `docs/dev/PHASE-02-IMPLEMENTATION-SPEC.md`
-- `docs/dev/PHASE-03-IMPLEMENTATION-SPEC.md`
-- `docs/dev/PHASE-04-IMPLEMENTATION-SPEC.md`
 
 When the task involves **CLIProxyAPI**, **Codex CLI**, or **Claude Code CLI**:
 
@@ -41,13 +35,13 @@ docs/
   README.md              <- index (read this first)
   operator/              <- human operators, day-to-day reference
   reference/             <- AI agents + maintainers, authority sources
-  dev/                   <- build-phase specs, prompts, porting guides
+  dev/                   <- minimal maintainer-only guide for stable-line bugfixes
 ```
 
 When updating docs after a code change, put the file in the correct tier:
 - Runtime contract or architecture change -> `reference/`
 - Operator-facing flow or security rule -> `operator/`
-- Phase spec or dev scaffold -> `dev/`
+- Maintainer authoring/convention note cho stable line -> `dev/`
 
 ## 3. Working with installer and setup wizard
 
@@ -84,15 +78,10 @@ When updating docs after a code change, put the file in the correct tier:
   - Update or extend docs in `docs/` first (or alongside code) to describe the new behaviour.
   - Only then modify scripts to match the updated spec.
 - If a requested change conflicts with existing docs, clarify in the docs and then implement the new direction.
-- For phase execution:
-  - treat `docs/dev/ROADMAP.md` as overview only
-  - treat the corresponding `docs/dev/PHASE-0x-IMPLEMENTATION-SPEC.md` as the source of truth for task IDs, order, verify, and acceptance
-- If the task is about cloning or porting OPS logic to another stack, also read:
-  - `docs/dev/PLATFORM-AGNOSTIC-CAPABILITIES.md`
-  - `docs/dev/PORTING-MAP-NODE-FIRST.md`
-  - `docs/dev/DESIGN-PATTERNS-EXTRACTED.md`
-- If the task touches future optional features such as notifications, external backup transports, or advanced web controls, also read:
-  - `docs/reference/FEATURE-EXPANSION-SPEC.md`
+- Production freeze mode:
+  - uu tien `docs/reference/*` va `docs/operator/*` lam source of truth
+  - chi dung `docs/dev/CODE-SKELETON-GUIDE.md` cho authoring pattern khi sua script
+- If the task touches notifications, scheduled checks, backups, or advanced web controls, also read:
   - `docs/operator/RUNBOOKS.md`
   - `docs/reference/RUNTIME-ARTEFACT-INVENTORY.md`
 

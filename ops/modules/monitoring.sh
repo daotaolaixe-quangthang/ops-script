@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # ============================================================
 # ops/modules/monitoring.sh
-# Purpose:  System overview, service status, quick logs — P1-11
+# Purpose:  System overview, service status, quick logs
 # Part of:  OPS — VPS Production Setup & Manager
 # ============================================================
 # Called by bin/ops via menu dispatch.
 # Do NOT add set -euo pipefail here — inherited from bin/ops.
 #
-# Design (PHASE-01-IMPLEMENTATION-SPEC.md §P1-11):
+# Design (stable-line monitoring contract):
 #   1. system overview (CPU/RAM/disk/uptime/load)
 #   2. service status (nginx, mariadb, php-fpm, pm2)
 #   3. quick logs: Nginx, PHP-FPM, PM2 Node services, DB
@@ -493,7 +493,7 @@ monitoring_setup_telegram() {
     log_info "Telegram bot token saved to $token_file (0600)"
 
     # Store non-secret config in notifications.conf (0640) — not in ops.conf
-    # (chốt: ARCHITECTURE.md, FEATURE-EXPANSION-SPEC.md, BUG-TRIAGE-INDEX.md, SOURCE-TO-RUNTIME-TRACE.md)
+    # (chốt: ARCHITECTURE.md, BUG-TRIAGE-INDEX.md, SOURCE-TO-RUNTIME-TRACE.md, RUNTIME-ARTEFACT-INVENTORY.md)
     local notif_conf="${OPS_CONFIG_DIR:-/etc/ops}/notifications.conf"
     ops_conf_set "notifications.conf" "TELEGRAM_ENABLED"  "yes"
     ops_conf_set "notifications.conf" "TELEGRAM_CHAT_ID"  "$chat_id"

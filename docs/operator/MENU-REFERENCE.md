@@ -293,7 +293,7 @@ Key requirements:
 
 - Support multiple versions: 7.4, 8.1, 8.2, 8.3 (via `ppa:ondrej/php`).
 - PHP-FPM pool naming: `/etc/php/<ver>/fpm/pool.d/<site-name>.conf`, socket `/run/php/php<ver>-fpm-<site-name>.sock`.
-- PHP-FPM pools must be tuned based on RAM/CPU using `PERF-TUNING.md`.
+- PHP-FPM pools must be tuned based on RAM/CPU using `docs/reference/PERF-TUNING.md`.
 - Domain creation for PHP sites must allow choosing a specific PHP version.
 
 ---
@@ -316,7 +316,7 @@ Constraints:
 - Default engine: **MariaDB** (chốt). MySQL chỉ cài nếu operator chọn rõ.
 - `bind-address = 127.0.0.1` luôn được đặt (MariaDB chỉ phục vụ nội bộ VPS).
 - Secure setup equivalent to or stricter than `mysql_secure_installation`.
-- Tuning values derived from `PERF-TUNING.md`.
+- Tuning values derived from `docs/reference/PERF-TUNING.md`.
 - DB root password lưu tại `/etc/ops/.db-root-password` (0600) — không in ra terminal.
 
 ---
@@ -359,7 +359,7 @@ Config state: `/etc/ops/claude-code.conf` (0640) | API key stored in admin `~/.b
 
 Entry: `9) System & Monitoring`
 
-Current implementation (monitoring.sh — đã full Phase 1 + Phase 2):
+Current implementation (monitoring.sh):
 
 1. **System overview** — CPU, RAM, swap, disk, load, uptime
 2. **Service status** — Nginx, PHP-FPM, MariaDB, PM2, UFW, fail2ban
@@ -374,15 +374,15 @@ Current implementation (monitoring.sh — đã full Phase 1 + Phase 2):
 11. **Test Telegram notification**
 12. **Verify stack health** — PASS/WARN/FAIL per component, always exit 0; caller menu does not use `|| true`
 13. **Advanced monitoring (Netdata opt-in)** → submenu install/remove/status
-14. **Notifications & scheduled checks** → submenu (checks.sh — P2-03)
-15. **Backup helpers** → submenu (backup.sh — P2-05)
+14. **Notifications & scheduled checks** → submenu (checks.sh)
+15. **Backup helpers** → submenu (backup.sh)
 16. **Update OPS from git** — download tarball, syntax check, apply
 0. **Back to main menu**
 
 **Telegram config implementation (chốt):**
 
 - Bot token: `/etc/ops/.telegram-bot-token` (0600, owned by ADMIN_USER) — never printed to terminal
-- Chat ID và `TELEGRAM_ENABLED`: lưu trong `/etc/ops/notifications.conf` — đúng theo `ARCHITECTURE.md`, `FEATURE-EXPANSION-SPEC.md`
+- Chat ID và `TELEGRAM_ENABLED`: lưu trong `/etc/ops/notifications.conf` — đúng theo `ARCHITECTURE.md` và `RUNTIME-ARTEFACT-INVENTORY.md`
 - Migration: nếu cũ lưu trong `ops.conf`, `monitoring_setup_telegram()` tự động migrate sang `notifications.conf`
 
 
@@ -423,55 +423,3 @@ Submenu:
 
 ---
 
-### 12. Planned future menu extensions (Phase 2 / Phase 4)
-
-These do **not** change the Phase 1 menu contract. They are planned placements for future feature groups.
-
-#### Notifications & Checks (planned, Phase 2)
-
-Planned actions:
-
-1. **Enable / disable website uptime-downtime checks**
-2. **Enable / disable SSL expiry alerts**
-3. **Enable / disable domain expiry alerts**
-4. **Enable / disable periodic security scan**
-
-> Note: Telegram config is already in Phase 1 (System & Monitoring #4).
-> Phase 2 extends it with automated check triggers.
-
-Suggested placement:
-
-- under `System & Monitoring`
-- with links from `SSL Management` and `Domains & Nginx` where relevant
-
-#### Remote Upload Backups (planned, Phase 4)
-
-Planned actions:
-
-1. **Upload website uploads backup to Telegram Cloud**
-2. **Download uploads backup from Telegram Cloud**
-3. **Enable automatic uploads backup to Telegram Cloud**
-4. **Disable automatic uploads backup to Telegram Cloud**
-
-Suggested placement:
-
-- separate optional submenu
-- or under backup-related future actions in `System & Monitoring`
-
-#### Advanced Web Controls (implemented — Phase 2)
-
-Status: da implement day du trong `menu_nginx_web_controls` (`modules/nginx.sh`).
-
-Actions da co:
-
-1. **Enable Cloudflare real IP logging** — deploy snippet `/etc/nginx/snippets/cloudflare-real-ip.conf`
-2. **Remove Cloudflare real IP snippet**
-3. **Add custom X-Powered-By header** — deploy snippet `/etc/nginx/snippets/custom-powered-by.conf`
-4. **Remove custom X-Powered-By snippet**
-5. **Enable Cloudflare IP restrict** — block non-CF traffic via live geo{} block (opt-in; all domains must be Orange Cloud)
-6. **Refresh Cloudflare IP list** — re-download from cloudflare.com/ips-v4 + ips-v6
-7. **Remove Cloudflare IP restrict**
-
-**Factory reset `.htaccess`:** da implement tai `php_reset_htaccess` trong `modules/php.sh`.
-
-**Block direct `http://IP` access:** khong can menu action rieng. Default deny server block (`00-default-deny`) tu dong tra 444 cho tat ca request toi unknown host, bao gom raw IP.
