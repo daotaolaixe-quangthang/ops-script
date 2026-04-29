@@ -66,16 +66,19 @@ Detailed spec: `docs/dev/PHASE-02-IMPLEMENTATION-SPEC.md`
 
 ---
 
-## Phase 3 — Extensibility and Multi-OS Support
+## Phase 3 — Production Stability on Ubuntu 22.04
 
-Status: **Not started.** Entry condition: Phase 1+2 stable trên runtime thật, nhu cầu rõ ràng.
+Status: **Not started.** Entry condition: Phase 1+2 stable, co Ubuntu 22.04 VPS that de chay acceptance tests.
 
-Ideas (not committed):
-- Support thêm Linux distro (Debian).
-- Plugin hooks cho third-party modules.
-- Template/rendering abstraction.
+Goal: dam bao OPS chay on dinh tren Ubuntu 22.04 production that, khong mo rong distro.
 
-Task groups: distro abstraction audit, compatibility matrix, plugin hook design, plugin loading safety, migration docs.
+Deliverables:
+- P3-01: Ubuntu 22.04 production runtime verification
+- P3-02: Production hardening fixes
+- P3-03: Template/rendering abstraction (giam duplicate, khong them framework)
+- P3-04: Phase acceptance and docs sync
+
+Khong bao gom: multi-OS support, plugin hooks, cloud integrations.
 
 Bất kỳ work nào trong phase này phải update `docs/reference/ARCHITECTURE.md` trước.
 

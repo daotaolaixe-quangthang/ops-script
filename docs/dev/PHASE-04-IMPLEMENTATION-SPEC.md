@@ -1,14 +1,14 @@
 ## OPS Phase 4 Implementation Spec
 
-Muc tieu: bien `Phase 4` thanh spec cho cac integration dai han, giu chung o vai tro optional va khong pha tinh gon nhe cua OPS.
+Muc tieu: on dinh va bao mat OPS tren Ubuntu 22.04 Server - chay mượt mà, khong co loi tiem an - dong thoi mo rong ho tro backup/snapshot cloud va tu dong hoa DNS/SSL/domain co nhan biet provider.
 
 Phase 4 tap trung vao:
 
-- cloud API integrations co kiem soat
-- snapshot/backup provider integrations
-- cloud-aware DNS, domain, SSL workflows
-- Codex-assisted runbook automation
-- provider-specific remote backup transports nhu Telegram Cloud
+- on dinh va bao mat toan bo OPS tren Ubuntu 22.04 Server
+- kiem tra va xu ly het loi tiem an truoc khi mo rong integration
+- ho tro snapshot/backup len cac cloud provider: Google Drive, OneDrive (Microsoft), Amazon S3, Telegram Cloud
+- tu dong hoa quy trinh DNS, kiem tra SSL/domain co nhan biet provider (cloud-aware)
+- secret va credential handling model ro rang, an toan
 
 Khong bao gom trong Phase 4:
 
@@ -26,12 +26,13 @@ Chi nen bat dau Phase 4 khi:
 
 1. `Phase 1` va `Phase 2` da on dinh tren runtime that.
 2. `Phase 3` da co abstraction du de tach cloud provider logic va integration hooks.
-3. Da co nhu cau thuc te cho:
+3. OPS da chay on dinh, khong co loi tiem an, tren Ubuntu 22.04 Server (day la dieu kien bat buoc truoc moi integration cloud).
+4. Da co nhu cau thuc te cho:
    - DNS automation
    - snapshot APIs
+   - backup len Google Drive / OneDrive / Amazon S3 / Telegram Cloud
    - certificate/domain workflows co provider awareness
-   - Codex-assisted runbooks
-4. Da chot ro safety model:
+5. Da chot ro safety model:
    - secret storage
    - opt-in prompts
    - audit logging
@@ -53,9 +54,8 @@ Tat ca implementers phai coi nhung diem sau la fixed contract:
    - require explicit opt-in
    - log operation
    - define rollback toi thieu
-5. Codex-assisted automation khong duoc tu y vuot qua human approval boundaries neu action la high-impact.
-6. Cloud-specific logic phai nam o layer/module rieng, khong duoc ro ri vao core layer.
-7. Moi provider support phai co support policy:
+5. Cloud-specific logic phai nam o layer/module rieng, khong duoc ro ri vao core layer.
+6. Moi provider support phai co support policy:
    - supported
    - experimental
    - not supported
@@ -85,15 +85,12 @@ Tat ca implementers phai coi nhung diem sau la fixed contract:
 
 Cu the co the gom:
 
-- Telegram Cloud transport cho uploads backups
-- manual upload/download flow
-- automatic upload scheduling enable/disable
-
-### D. Codex-assisted runbook automation
-
-- machine-readable runbook inputs/outputs
-- guardrails cho auto-suggested actions
-- approval checkpoints cho high-impact flows
+- Google Drive transport cho upload/download backups
+- OneDrive (Microsoft) transport cho upload/download backups
+- Amazon S3 transport cho upload/download backups
+- Telegram Cloud transport cho upload/download backups
+- manual upload/download flow cho tung provider
+- automatic upload scheduling enable/disable theo provider
 
 ### E. Integration docs and support matrix
 
@@ -113,15 +110,13 @@ Lam theo thu tu nay:
 3. `P4-03` snapshot/backup provider abstraction
 4. `P4-04` cloud-aware SSL and domain workflows
 5. `P4-05` secret and credential handling model
-6. `P4-06` Codex-assisted runbook automation design
-7. `P4-07` provider support matrix and docs
-8. `P4-08` phase acceptance and docs sync
+6. `P4-06` provider support matrix and docs
+7. `P4-07` phase acceptance and docs sync
 
 Ly do:
 
 - phai chot abstraction provider truoc khi viet flow cu the
 - secret model phai ro truoc khi support provider that
-- Codex automation phai dua tren runbook contract va provider state da ro
 
 ---
 
@@ -213,11 +208,14 @@ Ly do:
    - delete snapshot
    - retention note
 2. define relation giua snapshot provider va local backup helpers
-3. define provider-specific remote backup transport contract:
-   - Telegram Cloud uploads backup
-   - local metadata map
-   - manual upload/download
-   - scheduled auto upload
+3. define provider-specific remote backup transport contract cho tung provider:
+   - Google Drive: OAuth2, upload/download, folder mapping, metadata
+   - OneDrive (Microsoft): OAuth2, upload/download, folder mapping, metadata
+   - Amazon S3: IAM credentials, bucket/prefix config, upload/download, lifecycle notes
+   - Telegram Cloud: bot token/chat config, upload/download, metadata
+   - local metadata map chung cho moi provider
+   - manual upload/download flow
+   - scheduled auto upload enable/disable theo provider
 4. document restore expectations:
    - OPS co the trigger create/list
    - restore co the van can manual approvals
@@ -313,45 +311,7 @@ Ly do:
 
 ---
 
-### P4-06 Codex-assisted runbook automation design
-
-**Muc tieu**
-
-- cho Codex co the huong dan hoac tao de xuat automation dua tren runbooks, nhung van co guardrails
-
-**Tasks**
-
-1. define machine-readable runbook shape:
-   - inputs
-   - pre-checks
-   - actions
-   - verify
-   - rollback
-2. classify action risk:
-   - low
-   - medium
-   - high
-3. define approval gates:
-   - low-risk can suggest
-   - high-risk phai can explicit human confirm
-4. define audit/logging expectations cho AI-assisted actions
-
-**Output**
-
-- Codex-assisted automation design docs
-
-**Verify**
-
-- 1 runbook co the duoc chuyen thanh auto-suggestable flow ma van co approval boundary
-
-**Review checklist**
-
-- AI khong duoc tro thanh hidden operator
-- human approval boundaries ro rang
-
----
-
-### P4-07 Provider support matrix and docs
+### P4-06 Provider support matrix and docs
 
 **Muc tieu**
 
@@ -373,7 +333,7 @@ Ly do:
 
 **Verify**
 
-- maintainer va AI Agent co the nhin matrix de biet provider nao support that
+- maintainer co the nhin matrix de biet provider nao support that
 
 **Review checklist**
 
@@ -382,7 +342,7 @@ Ly do:
 
 ---
 
-### P4-08 Phase acceptance and docs sync
+### P4-07 Phase acceptance and docs sync
 
 **Muc tieu**
 
@@ -392,9 +352,8 @@ Ly do:
 
 1. review abstraction boundaries
 2. review provider secret handling
-3. review runbook automation guardrails
-4. review provider support matrix
-5. cap nhat docs index/roadmap/AI guide neu can
+3. review provider support matrix
+4. cap nhat docs index/roadmap/AI guide neu can
 
 **Output**
 
@@ -407,7 +366,6 @@ Ly do:
 **Review checklist**
 
 - Phase 4 khong bien OPS thanh cloud control panel nang
-- khong mo duong high-impact automation khong approval
 
 ---
 
@@ -420,7 +378,7 @@ Ly do:
 2. **Secret handling tests**
    - permission, path, redaction expectations
 3. **Workflow simulation**
-   - DNS/snapshot/runbook flows co verify/rollback ro khong
+   - DNS/snapshot/backup flows co verify/rollback ro khong
 4. **Support matrix review**
    - supported vs experimental vs planned co tach ro khong
 
@@ -444,8 +402,7 @@ Khi review phase, dung form nay:
 2. Core OPS co van hoat dong khi bo integration nay khong?
 3. Secrets va approvals co du ro khong?
 4. Rollback co kha thi khi cloud-side state thay doi khong?
-5. AI automation co bi vuot qua human approval boundary khong?
-6. Co dang day OPS thanh cloud control plane qua nang khong?
+5. Co dang day OPS thanh cloud control plane qua nang khong?
 
 ---
 
@@ -468,7 +425,6 @@ Thu tu khuyen nghi:
 5. `P4-04`
 6. `P4-06`
 7. `P4-07`
-8. `P4-08`
 
 Ly do:
 

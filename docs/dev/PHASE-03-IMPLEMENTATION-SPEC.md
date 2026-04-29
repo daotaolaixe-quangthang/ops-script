@@ -1,21 +1,23 @@
 ## OPS Phase 3 Implementation Spec
 
-Muc tieu: bien `Phase 3` thanh spec mo rong co kiem soat cho `extensibility` va `multi-OS support`, sau khi `Phase 1` va `Phase 2` da on dinh.
+Muc tieu: dam bao OPS chay on dinh tren `Ubuntu 22.04` production thuc te, sau khi `Phase 1` va `Phase 2` da on dinh.
 
 Phase 3 tap trung vao:
 
-- distro abstraction
-- plugin/module hooks co kiem soat
-- rendering/template abstraction tot hon
-- compatibility va migration docs khi them distro hoac extension points
+- production hardening tren Ubuntu 22.04
+- on dinh hoa stack hien tai: Nginx, Node.js, PM2, PHP, MariaDB, Certbot
+- verify end-to-end tren moi truong production that
+- giam duplicate trong template/rendering de duy tri long-term
 
 Khong bao gom trong Phase 3:
 
+- ho tro distro moi (Debian, CentOS, ...)
+- multi-OS abstraction
+- plugin/extension hooks cho third-party
 - cloud API automation
 - managed backup providers
 - DNS/cloud integrations
 - full remote orchestration platform
-- marketplace/module ecosystem mo khong kiem soat
 
 ---
 
@@ -25,13 +27,8 @@ Chi nen bat dau Phase 3 khi:
 
 1. `Phase 1` da on dinh va duoc su dung thuc te tren Ubuntu 22.04/24.04.
 2. `Phase 2` da xong hoac it nhat da xac dinh ro runtime artefacts, verify stack, runbooks.
-3. Da co bang chung ro rang ve nhu cau:
-   - ho tro distro moi
-   - them module moi tu ben thu ba
-   - giam duplicate template/rendering logic
-4. Docs va code hien tai du ro de tach abstraction ma khong lam mo control plane.
-
-Neu chua co nhu cau that, Phase 3 de tro thanh over-engineering.
+3. Da co Ubuntu 22.04 VPS that de chay acceptance tests.
+4. Docs va code hien tai du ro, khong con nhung gia dinh mo ho ve moi truong runtime.
 
 ---
 
@@ -39,48 +36,42 @@ Neu chua co nhu cau that, Phase 3 de tro thanh over-engineering.
 
 Tat ca implementers phai coi nhung diem sau la fixed contract:
 
-1. Extensibility khong duoc lam mat tinh de audit cua OPS.
-2. Plugin hooks phai bi rang buoc boi contract ro, khong cho module ngoai chen side effects tuy y.
-3. Support distro moi chi duoc them sau khi tách ro:
-   - package manager logic
-   - service names
-   - config paths
-   - security assumptions
-4. Template abstraction phai lam code ro hon, khong tao them framework phuc tap.
-5. Multi-OS support khong duoc pha contract Node-first, Nginx-first, PM2-only cho Node services neu chua cap nhat docs goc.
-6. Moi abstraction moi phai co:
+1. Ubuntu 22.04 la target duy nhat cua Phase 3. Khong mo rong sang distro khac.
+2. Stack contract khong doi: Node-first, Nginx-first, PM2-only cho Node services.
+3. Template abstraction phai lam code ro hon, khong tao them framework phuc tap.
+4. Moi thay doi hardening phai co:
    - source of truth
-   - verify
-   - rollback
-   - compatibility note
+   - verify step
+   - rollback path
+   - acceptance note
+5. Khong them tinh nang moi vuot qua scope Phase 1+2 da xac dinh.
 
 ---
 
 ## 3) Phase 3 deliverables
 
-### A. Distro abstraction layer
+### A. Production runtime verification
 
-- abstraction docs cho package/service/path differences
-- helpers tach rieng nhung cho OS-specific
-- compatibility matrix cho Ubuntu va distro moi neu co
+- chay full acceptance test tren Ubuntu 22.04 VPS that
+- verify tung thanh phan: Nginx, Node.js LTS, PM2, PHP 7.4/8.1/8.2/8.3, MariaDB, Certbot
+- ghi lai ket qua trong acceptance report
 
-### B. Plugin or extension hook contract
+### B. Production hardening
 
-- diem hook ro rang cho menus/modules/templates
-- allowlist/contract cho plugin modules
-- docs cho side effects va loading order
+- review va fix nhung diem de failure tren moi truong production that
+- hardening cho permissions, service restarts, log rotation
+- toi gian hoa installer one-liner flow
 
 ### C. Template and rendering abstraction
 
-- helper render templates tot hon
+- giam duplicate giua Node, PHP, SSL, Nginx config templates
 - convention ro cho placeholders, defaults, validation
-- giam duplicate giua Node, PHP, SSL, Nginx configs
+- helper render templates on dinh, idempotent, de diff
 
-### D. Compatibility and migration docs
+### D. Acceptance and docs sync
 
-- migration notes khi support distro moi
-- plugin authoring rules
-- backward compatibility notes cho runtime installs cu
+- Phase 3 acceptance report
+- cap nhat ARCHITECTURE.md, README.md, ROADMAP.md neu can
 
 ---
 
@@ -88,168 +79,86 @@ Tat ca implementers phai coi nhung diem sau la fixed contract:
 
 Lam theo thu tu nay:
 
-1. `P3-01` distro abstraction audit
-2. `P3-02` compatibility matrix and path/service mapping
-3. `P3-03` plugin hook design
-4. `P3-04` plugin loading safety contract
-5. `P3-05` template/rendering abstraction
-6. `P3-06` migration and compatibility docs
-7. `P3-07` phase acceptance and docs sync
+1. `P3-01` Ubuntu 22.04 production runtime verification
+2. `P3-02` Production hardening fixes
+3. `P3-03` Template and rendering abstraction
+4. `P3-04` Phase acceptance and docs sync
 
 Ly do:
 
-- phai biet cai gi OS-specific truoc khi tao abstraction
-- plugin hooks phai duoc thiet ke sau khi ranh gioi core/module da ro
-- template abstraction nen dua tren cases that, khong nen viet truoc ly thuyet
+- phai chay tren runtime that truoc de biet dung diem nao can hardening
+- template abstraction dua tren cases that, khong viet ly thuyet truoc
 
 ---
 
 ## 5) Detailed tasks
 
-### P3-01 Distro abstraction audit
+### P3-01 Ubuntu 22.04 production runtime verification
 
 **Muc tieu**
 
-- liet ke chinh xac nhung diem OPS hien dang phu thuoc Ubuntu
+- xac minh toan bo stack chay on dinh tren Ubuntu 22.04 VPS that
 
 **Tasks**
 
-1. audit:
-   - `apt`
-   - package names
-   - service names
-   - config paths
-   - log paths
-   - default users/groups
-2. tach thanh:
-   - truly generic logic
-   - Ubuntu-specific logic
-   - assumptions can document but chua abstraction ngay
-3. xac dinh minimum viable distro tiep theo neu co
+1. setup fresh Ubuntu 22.04 VPS
+2. chay installer one-liner
+3. verify:
+   - dashboard va menu hien thi dung
+   - production wizard chay thanh cong
+   - tao Node service thanh cong
+   - tao PHP site thanh cong
+   - CLIProxyAPI expose qua Nginx
+   - Certbot cap SSL thanh cong
+   - PM2 tu restart khi reboot
+   - MariaDB on dinh
+4. ghi lai ket qua va loi neu co
 
 **Output**
 
-- audit note hoac docs patch lam co so cho `P3-02`
+- runtime verification report lam co so cho `P3-02`
 
 **Verify**
 
-- moi layer chinh deu biet phan nao OS-specific
+- toan bo checklist Phase 1 "done" criteria deu PASS
 
 **Review checklist**
 
-- khong abstraction mo ho
-- khong promise support distro moi neu chua xac minh
+- test tren fresh VPS, khong test tren may da setup san
+- ghi ro version Ubuntu, kernel, va package versions duoc dung
 
 ---
 
-### P3-02 Compatibility matrix and path/service mapping
+### P3-02 Production hardening fixes
 
 **Muc tieu**
 
-- tao matrix ro rang cho OS/package/service/path differences
+- fix nhung van de phat hien tu P3-01 tren production that
 
 **Tasks**
 
-1. define compatibility matrix:
-   - OS version
-   - package sources
-   - package names
-   - service names
-   - config paths
-2. decide helper surface trong `core/system.sh` va `core/env.sh`
-3. document unsupported combinations ro rang
+1. fix loi hoac edge cases phat hien tu verification
+2. review permissions: web root, PM2 user, log dirs
+3. review service restart policies (systemd, PM2)
+4. review log rotation cho Nginx, PM2, MariaDB
+5. toi gian hoa flow: installer, wizard, SSL provisioning
 
 **Output**
 
-- compatibility matrix docs
-- target helper changes de support abstraction
+- hardening patches voi rollback notes
 
 **Verify**
 
-- 1 feature co the tra loi ro:
-   - package nao
-   - service nao
-   - config path nao tren tung distro duoc support
+- re-run verification checklist sau fix, tat ca PASS
 
 **Review checklist**
 
-- matrix de maintainer va AI Agent doc nhanh
-- khong tron "supported" va "planned"
+- moi fix phai co rollback path ro
+- khong them tinh nang moi ngoai scope hardening
 
 ---
 
-### P3-03 Plugin hook design
-
-**Muc tieu**
-
-- thiet ke extension points cho modules/menu ma van giu OPS audit duoc
-
-**Tasks**
-
-1. xac dinh cac diem co the hook:
-   - menu registration
-   - module action registration
-   - template injection
-   - post-install hooks
-2. define plugin manifest contract:
-   - name
-   - version
-   - entrypoint
-   - required capabilities
-   - supported OPS versions
-3. decide plugin discovery path
-
-**Output**
-
-- plugin hook design docs
-
-**Verify**
-
-- co the mo ta 1 plugin mau se gan vao menu/module the nao
-
-**Review checklist**
-
-- plugin khong duoc chen lung tung vao core
-- side effects cua plugin co the inventory duoc
-
----
-
-### P3-04 Plugin loading safety contract
-
-**Muc tieu**
-
-- dam bao plugin loading co guard va khong pha safety model
-
-**Tasks**
-
-1. define allowlist loading rules
-2. define fallback neu plugin loi
-3. define conflict rules:
-   - duplicate menu ids
-   - duplicate command names
-   - unsupported OPS version
-4. define docs requirements cho plugin:
-   - impact layer
-   - source of truth
-   - verify
-   - rollback
-
-**Output**
-
-- plugin safety contract docs
-
-**Verify**
-
-- plugin error khong duoc lam chet toan bo menu/core
-
-**Review checklist**
-
-- safety > convenience
-- plugin co the bi disable cleanly
-
----
-
-### P3-05 Template and rendering abstraction
+### P3-03 Template and rendering abstraction
 
 **Muc tieu**
 
@@ -261,14 +170,14 @@ Ly do:
    - Nginx
    - PM2
    - SSL snippets
-   - PHP pools neu them sau
+   - PHP pools
 2. define rendering conventions:
    - placeholder naming
    - defaults
    - required vars
    - validation before write
 3. define helper API cho render templates
-4. xac dinh phan nao nen giu template text don gian, phan nao nen render helper
+4. xac dinh phan nao giu template text don gian, phan nao can render helper
 
 **Output**
 
@@ -285,52 +194,18 @@ Ly do:
 
 ---
 
-### P3-06 Migration and compatibility docs
+### P3-04 Phase acceptance and docs sync
 
 **Muc tieu**
 
-- chuan hoa docs khi them distro moi, hooks moi, hoac abstraction moi
+- chot Phase 3 bang acceptance report va docs update
 
 **Tasks**
 
-1. migration doc structure:
-   - current installs
-   - changed assumptions
-   - required operator actions
-2. compatibility note structure
-3. plugin authoring guide outline
-4. support policy docs:
-   - supported
-   - experimental
-   - unsupported
-
-**Output**
-
-- docs framework cho migration va compatibility
-
-**Verify**
-
-- 1 thay doi lon co the duoc document bang framework nay ma khong mo ho
-
-**Review checklist**
-
-- docs phan biet ro `breaking`, `non-breaking`, `experimental`
-
----
-
-### P3-07 Phase acceptance and docs sync
-
-**Muc tieu**
-
-- chot Phase 3 bang docs, abstraction boundaries, va acceptance report
-
-**Tasks**
-
-1. review distro abstraction boundaries
-2. review plugin contracts
-3. review template abstraction contract
-4. review compatibility docs
-5. cap nhat `ARCHITECTURE.md`, `README.md`, `ROADMAP.md`, `OPS-AI-GUIDE.md` neu can
+1. review toan bo hardening changes
+2. review template abstraction contract
+3. cap nhat `ARCHITECTURE.md`, `README.md`, `ROADMAP.md`, `OPS-AI-GUIDE.md` neu can
+4. viet Phase 3 acceptance report
 
 **Output**
 
@@ -338,7 +213,7 @@ Ly do:
 
 **Verify**
 
-- abstraction boundaries de hieu va khong lam mo control plane
+- moi thay doi co source of truth, verify, rollback ro
 
 **Review checklist**
 
@@ -351,15 +226,12 @@ Ly do:
 
 ### Test levels
 
-1. **Architecture review tests**
-   - abstraction co giai quyet duplicate that khong
-   - abstraction co de audit khong
-2. **Compatibility review tests**
-   - matrix co du thong tin cho maintainer quyet dinh support/khong support
-3. **Plugin safety review tests**
-   - plugin loi co bi cô lap duoc khong
-   - plugin conflict co duoc phat hien khong
-4. **Template rendering review tests**
+1. **Production runtime tests**
+   - chay tren Ubuntu 22.04 VPS that
+   - verify tung thanh phan stack
+2. **Hardening regression tests**
+   - sau moi fix, re-run verification checklist
+3. **Template rendering review tests**
    - render output on dinh, diff-friendly, verify-friendly
 
 ### Minimum pass gate cho moi task
@@ -367,7 +239,6 @@ Ly do:
 Moi task chi duoc xem la xong khi co:
 
 - docs/spec ro
-- implementation contract ro neu da code
 - verify path ro
 - rollback/disable path ro
 - khong tang complexity vo ich
@@ -378,35 +249,31 @@ Moi task chi duoc xem la xong khi co:
 
 Khi review phase, dung form nay:
 
-1. Abstraction nay giai quyet van de that hay chi dep kien truc?
-2. Co lam OPS kho audit hon khong?
-3. Co tao them hidden contracts khong?
-4. Co tach duoc supported / experimental / future khong?
-5. Plugin/distro abstraction co co che disable va fallback ro khong?
-6. Co dang truot sang Phase 4 integrations khong?
+1. Fix nay giai quyet van de that hay chi dep code?
+2. Co lam OPS kho debug hon tren production khong?
+3. Co tao them hidden assumptions ve moi truong khong?
+4. Rollback path co ro khong?
+5. Co dang truot sang Phase 4 integrations khong?
 
 ---
 
 ## 8) Suggested working mode
 
-Phase 3 khong nen code ao at. Nen lam theo vong:
+Phase 3 nen lam theo vong:
 
-1. audit
-2. docs/spec
-3. review
-4. code abstraction toi thieu
-5. review lai
+1. verify tren runtime that
+2. phat hien van de
+3. fix voi rollback note
+4. verify lai
+5. docs sync
 
 Thu tu khuyen nghi:
 
 1. `P3-01`
 2. `P3-02`
-3. `P3-05`
-4. `P3-03`
-5. `P3-04`
-6. `P3-06`
-7. `P3-07`
+3. `P3-03`
+4. `P3-04`
 
 Ly do:
 
-- phai biet abstraction thuc su can gi truoc khi mo hook cho ben ngoai
+- phai biet production that can gi truoc khi abstraction
