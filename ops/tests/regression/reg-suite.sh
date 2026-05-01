@@ -227,6 +227,7 @@ case_sec_03_transition_keeps_two_ports_contract_present() {
     content="$(<"${OPS_ROOT}/modules/security.sh")"
     installer_content="$(<"${REPO_ROOT}/install/ops-install.sh")"
     test::assert_contains "$content" 'OPS_SSH_TRANSITION_PORT' 'transition port state missing' || return 1
+    test::assert_contains "$content" 'security_effective_password_auth()' 'transition password-auth helper missing' || return 1
     test::assert_contains "$content" 'Transition safety: keep only managed transition ports until login is verified on port $new_port.' 'transition safety contract missing' || return 1
     test::assert_contains "$installer_content" 'SSH_BOOTSTRAP_MODE="ambiguous"' 'installer must model ambiguous multi-port bootstrap state explicitly' || return 1
     test::assert_contains "$installer_content" 'SSH_BOOTSTRAP_PORTS=("${SSH_CURRENT_PORTS[@]}")' 'installer must preserve all detected live SSH ports during bootstrap' || return 1
@@ -255,9 +256,12 @@ case_sec_05_ufw_baseline_ports_present() {
 }
 
 case_sec_06_ufw_must_not_allow_8317() {
-    local content
+    local content security_content
     content="$(<"${OPS_ROOT}/modules/cli-proxy-api.sh")"
+    security_content="$(<"${OPS_ROOT}/modules/security.sh")"
     test::assert_contains "$content" 'ufw delete allow 8317/tcp' '8317 ALLOW cleanup missing' || return 1
+    test::assert_contains "$security_content" 'ufw delete allow 8317/tcp' 'security module must remove public ALLOW 8317/tcp rules' || return 1
+    test::assert_not_contains "$security_content" 'ufw_deny 8317/tcp' 'security module must not force a DENY 8317/tcp rule' || return 1
 }
 
 case_sec_07_fail2ban_tracks_managed_ports() {
@@ -278,6 +282,69 @@ case_sec_09_forwarding_disabled_contract_present() {
     test::assert_contains "$content" 'X11Forwarding no' 'X11 forwarding hardening missing' || return 1
     test::assert_contains "$content" 'echo "${val:-no}"' 'TCP forwarding must default to no when OPS state is unset' || return 1
     test::assert_contains "$content" 'AllowAgentForwarding no' 'agent forwarding hardening missing' || return 1
+}
+
+case_sec_09_1_keep_current_port_22_contract_present() {
+    local content validation_call_count
+    content="$(<"${OPS_ROOT}/modules/security.sh")"
+    validation_call_count="$(OPS_ROOT_ENV="$OPS_ROOT" python3 - <<'PY'
+import os
+from pathlib import Path
+text = (Path(os.environ['OPS_ROOT_ENV']) / 'modules/security.sh').read_text()
+print(text.count('security_validate_ssh_port "$new_port" "$current_port"'))
+PY
+)"
+
+    test::assert_eq "3" "$validation_call_count" 'all SSH port entry points must pass current port to the validator' || return 1
+    test::assert_contains "$content" 'unless you are preserving the current managed port' 'keep-current-port privileged-port exception missing' || return 1
+}
+
+case_sec_09_2_authorized_key_matchers_cover_modern_key_types() {
+    local security_content installer_content
+    security_content="$(<"${OPS_ROOT}/modules/security.sh")"
+    installer_content="$(<"${REPO_ROOT}/install/ops-install.sh")"
+
+    test::assert_contains "$security_content" 'sk-ecdsa-sha2-nistp256@openssh\.com' 'security SSH key matcher must cover security key-backed ECDSA keys' || return 1
+    test::assert_contains "$security_content" '_security_authorized_key_line_is_valid "$new_key"' 'security SSH key add path must reuse the shared matcher' || return 1
+    test::assert_contains "$installer_content" 'installer_authorized_key_line_is_valid()' 'installer SSH key matcher helper missing' || return 1
+    test::assert_contains "$installer_content" 'sk-ecdsa-sha2-nistp256@openssh\.com' 'installer SSH key matcher must cover security key-backed ECDSA keys' || return 1
+}
+
+case_sec_09_3_ssh_state_persists_only_after_full_success() {
+    local failures
+    failures="$(OPS_ROOT_ENV="$OPS_ROOT" python3 - <<'PY'
+import os
+from pathlib import Path
+text = (Path(os.environ['OPS_ROOT_ENV']) / 'modules/security.sh').read_text()
+issues = []
+
+apply_start = text.index('security_apply_sshd_hardening() {')
+apply_end = text.index('menu_security() {', apply_start)
+apply_body = text[apply_start:apply_end]
+if apply_body.index('security_restore_ssh_ops_state "$new_port" "$new_transition_port"') < apply_body.index('security_apply_fail2ban_ssh_state "$new_port" "$new_transition_port"'):
+    issues.append('apply flow persists OPS SSH state before fail2ban succeeds')
+
+finalize_start = text.index('security_finalize_ssh_transition_apply() {')
+finalize_end = text.index('security_finalize_ssh_transition() {', finalize_start)
+finalize_body = text[finalize_start:finalize_end]
+if finalize_body.index('security_restore_ssh_ops_state "$new_port" ""') < finalize_body.index('security_apply_fail2ban_ssh_state "$new_port" ""'):
+    issues.append('finalize flow persists OPS SSH state before fail2ban succeeds')
+
+print('\n'.join(issues))
+PY
+)"
+
+    test::assert_eq "" "$failures" 'SSH state must persist only after UFW/fail2ban success in apply and finalize flows' || return 1
+}
+
+case_sec_09_4_host_baseline_swap_contract_present() {
+    local security_content
+    security_content="$(<"${OPS_ROOT}/modules/security.sh")"
+
+    test::assert_contains "$security_content" 'security_apply_sysctl_baseline || return 1' 'host baseline must fail when sysctl apply fails' || return 1
+    test::assert_contains "$security_content" 'security_ensure_swap || return 1' 'host baseline must fail when swap provisioning fails' || return 1
+    test::assert_not_contains "$security_content" 'swapon "$SECURITY_SWAP_FILE" >/dev/null 2>&1 || true' 'swap activation must not swallow failures' || return 1
+    test::assert_contains "$security_content" '_swapfile_escaped' 'swap fstab matching must be semantic, not exact-string only' || return 1
 }
 
 case_ins_01_02_installer_os_contract_present() {
@@ -799,7 +866,8 @@ case_reg_24_high_risk_callers_use_shared_wrappers() {
 
     test::assert_contains "$security_content" 'ufw_allow 80/tcp "HTTP"' 'Security UFW baseline must use shared allow wrapper for HTTP' || return 1
     test::assert_contains "$security_content" 'ufw_allow 443/tcp "HTTPS"' 'Security UFW baseline must use shared allow wrapper for HTTPS' || return 1
-    test::assert_contains "$security_content" 'ufw_deny 8317/tcp' 'Security UFW baseline must use shared deny wrapper for 8317' || return 1
+    test::assert_contains "$security_content" 'ufw delete allow 8317/tcp' 'Security UFW baseline must remove public ALLOW 8317/tcp rules' || return 1
+    test::assert_not_contains "$security_content" 'ufw_deny 8317/tcp' 'Security UFW baseline must not force a DENY rule for 8317/tcp' || return 1
     test::assert_contains "$security_content" 'if ! service_reload "$ssh_svc" >/dev/null 2>&1; then' 'Security SSH toggles must gate success on shared reload wrapper' || return 1
     test::assert_not_contains "$security_content" 'service_reload "$ssh_svc" >/dev/null 2>&1 || true' 'Security SSH toggles must not swallow shared reload failures' || return 1
     test::assert_not_contains "$security_content" 'systemctl reload "$ssh_svc" >/dev/null 2>&1 || true' 'Security SSH toggles must not bypass service_reload' || return 1
@@ -966,6 +1034,10 @@ test::run_case 'SEC-06' 'CLIProxyAPI port 8317 must not be allowed' case_sec_06_
 test::run_case 'SEC-07' 'fail2ban tracks managed ports' case_sec_07_fail2ban_tracks_managed_ports
 test::run_case 'SEC-08' 'PermitRootLogin disabled contract present' case_sec_08_permit_root_login_disabled_contract_present
 test::run_case 'SEC-09' 'forwarding disabled contract present' case_sec_09_forwarding_disabled_contract_present
+test::run_case 'SEC-09.1' 'keeping current port 22 stays allowed' case_sec_09_1_keep_current_port_22_contract_present
+test::run_case 'SEC-09.2' 'authorized key matchers cover modern key types' case_sec_09_2_authorized_key_matchers_cover_modern_key_types
+test::run_case 'SEC-09.3' 'SSH state persists only after full success' case_sec_09_3_ssh_state_persists_only_after_full_success
+test::run_case 'SEC-09.4' 'host baseline swap contract present' case_sec_09_4_host_baseline_swap_contract_present
 test::run_case 'INS-01' 'installer Ubuntu support contract present' case_ins_01_02_installer_os_contract_present
 test::run_case 'INS-02' 'installer Ubuntu support contract present for 24.04' case_ins_01_02_installer_os_contract_present
 test::run_case 'INS-03' 'unsupported OS rejection contract present' case_ins_03_unsupported_os_rejected_contract_present

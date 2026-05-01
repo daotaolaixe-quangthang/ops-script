@@ -81,6 +81,30 @@ format_port_list() {
     printf '%s' "$joined"
 }
 
+installer_authorized_key_line_is_valid() {
+    local line="${1:-}"
+
+    [[ -n "$line" ]] || return 1
+    [[ "$line" =~ ^[[:space:]]*# ]] && return 1
+
+    grep -Eq '(^|[[:space:]])(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|sk-ecdsa-sha2-nistp256@openssh\.com|sk-ssh-ed25519@openssh\.com)[[:space:]]+[A-Za-z0-9+/=]+([[:space:]]|$)' <<< "$line"
+}
+
+installer_has_authorized_keys() {
+    local auth_keys="$1"
+    local line
+
+    [[ -f "$auth_keys" ]] || return 1
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if installer_authorized_key_line_is_valid "$line"; then
+            return 0
+        fi
+    done < "$auth_keys"
+
+    return 1
+}
+
 cleanup_install_artifacts() {
     if [[ -n "${OPS_INSTALL_STAGE_DIR:-}" && -d "${OPS_INSTALL_STAGE_DIR}" ]]; then
         rm -rf "${OPS_INSTALL_STAGE_DIR}"
@@ -882,9 +906,7 @@ setup_ssh_key() {
     fi
 
     # If authorized_keys already has valid content, skip.
-    if [[ -f "${admin_home}/.ssh/authorized_keys" ]] && \
-       grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp|sk-ssh) ' \
-           "${admin_home}/.ssh/authorized_keys" 2>/dev/null; then
+    if installer_has_authorized_keys "${admin_home}/.ssh/authorized_keys"; then
         ok "SSH authorized_keys already populated for '${ADMIN_USER}' -- skipping."
         SSH_KEY_CONFIGURED="yes"
         export SSH_KEY_CONFIGURED
@@ -903,7 +925,7 @@ setup_ssh_key() {
     fi
 
     # Sanity check: must look like a real public key
-    if ! echo "$pub_key" | grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp|sk-ssh) [A-Za-z0-9+/=]'; then
+    if ! installer_authorized_key_line_is_valid "$pub_key"; then
         warn "Input does not look like a valid SSH public key -- skipping."
         warn "Add later via: ops -> Security -> Manage SSH Keys"
         SSH_KEY_CONFIGURED="no"
