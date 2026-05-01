@@ -16,8 +16,11 @@ NGINX_DEFAULT_CERT_DIR="/etc/nginx/ssl"
 NGINX_DEFAULT_CERT="${NGINX_DEFAULT_CERT_DIR}/ops-default.crt"
 NGINX_DEFAULT_KEY="${NGINX_DEFAULT_CERT_DIR}/ops-default.key"
 
-# Cloudflare API credentials file (chmod 600, root-only)
+# Cloudflare API credentials file — shell-sourceable format: CF_API_TOKEN="..."
 CF_CREDS_FILE="/etc/ops/cloudflare.conf"
+# Separate certbot INI credentials file (dns_cloudflare_api_token = <token>)
+# NEVER shell-source this file — it is INI format only.
+CF_CERTBOT_CREDS_FILE="/etc/ops/cloudflare-certbot.ini"
 # Load CF_API_TOKEN if the credentials file exists
 [[ -f "$CF_CREDS_FILE" ]] && source "$CF_CREDS_FILE" 2>/dev/null || true
 
@@ -161,8 +164,10 @@ _nginx_add_official_repo() {
         "$keyring" "$codename" \
         > "/etc/apt/sources.list.d/nginx.list"
     # Pin official repo above distro repo so apt always picks mainline
+    # M-06 fix: pin nginx* (not just nginx) so apt-managed nginx-module-* packages
+    # are also locked to the nginx.org mainline repo, preventing version skew.
     cat > "/etc/apt/preferences.d/99nginx" <<'EOF'
-Package: nginx
+Package: nginx*
 Pin: origin nginx.org
 Pin-Priority: 1001
 EOF
@@ -175,9 +180,14 @@ _nginx_ensure_http_directive() {
     local key="$2"
     local value="$3"
     local rendered="${key} ${value};"
+    # M-03 fix: escape key for safe use in grep -E and sed -E patterns.
+    # Characters like /, &, $, . in key values would break the regex/replacement.
+    local key_re key_sed
+    key_re=$(printf '%s' "$key" | sed 's/[.[\*^$()+?{|]/\\&/g')
+    key_sed=$(printf '%s' "$key" | sed 's|[/&]|\\&|g')
 
-    if grep -Eq "^[[:space:]]*${key}[[:space:]]+" "$conf"; then
-        sed -i -E "s#^[[:space:]]*${key}[[:space:]]+.*;#    ${rendered}#" "$conf"
+    if grep -Eq "^[[:space:]]*${key_re}[[:space:]]+" "$conf"; then
+        sed -i -E "s#^[[:space:]]*${key_sed}[[:space:]]+.*;#    ${rendered}#" "$conf"
         return 0
     fi
 
@@ -204,9 +214,13 @@ _nginx_ensure_http_directive() {
 _nginx_ensure_events_directive() {
     local conf="$1" key="$2" value="$3"
     local rendered="${key} ${value};"
+    # M-03 fix: escape key for grep/sed
+    local key_re key_sed
+    key_re=$(printf '%s' "$key" | sed 's/[.[\*^$()+?{|]/\\&/g')
+    key_sed=$(printf '%s' "$key" | sed 's|[/&]|\\&|g')
 
-    if grep -Eq "^[[:space:]]*${key}[[:space:]]+" "$conf"; then
-        sed -i -E "s#^[[:space:]]*${key}[[:space:]]+.*;#    ${rendered}#" "$conf"
+    if grep -Eq "^[[:space:]]*${key_re}[[:space:]]+" "$conf"; then
+        sed -i -E "s#^[[:space:]]*${key_sed}[[:space:]]+.*;#    ${rendered}#" "$conf"
         return 0
     fi
 
@@ -226,9 +240,13 @@ _nginx_ensure_events_directive() {
 _nginx_ensure_main_directive() {
     local conf="$1" key="$2" value="$3"
     local rendered="${key} ${value};"
+    # M-03 fix: escape key for grep/sed
+    local key_re key_sed
+    key_re=$(printf '%s' "$key" | sed 's/[.[\*^$()+?{|]/\\&/g')
+    key_sed=$(printf '%s' "$key" | sed 's|[/&]|\\&|g')
 
-    if grep -Eq "^[[:space:]]*${key}[[:space:]]+" "$conf"; then
-        sed -i -E "s#^[[:space:]]*${key}[[:space:]]+.*;#${rendered}#" "$conf"
+    if grep -Eq "^[[:space:]]*${key_re}[[:space:]]+" "$conf"; then
+        sed -i -E "s#^[[:space:]]*${key_sed}[[:space:]]+.*;#${rendered}#" "$conf"
         return 0
     fi
 
@@ -412,6 +430,24 @@ _nginx_apply_global_tuning() {
     # ignored and port 443 never binds even with a valid vhost + cert.
     _nginx_ensure_sites_enabled_include "$conf"
 
+    # M-02 fix: validate nginx config after ALL mutations.
+    # Multiple sequential sed/awk calls above could leave nginx.conf partially
+    # modified if one crashes. nginx -t here catches that and restores from
+    # the backup taken at the top of this function.
+    if ! nginx_validate > /dev/null 2>&1; then
+        local backup_path
+        backup_path=$(ls -t "${conf}".bak.* 2>/dev/null | head -1)
+        if [[ -n "$backup_path" && -f "$backup_path" ]]; then
+            cp -p "$backup_path" "$conf"
+            log_error "_nginx_apply_global_tuning: nginx -t FAILED after tuning — restored from backup ${backup_path}"
+            print_error "_nginx_apply_global_tuning: nginx config invalid after tuning — restored from backup."
+        else
+            log_error "_nginx_apply_global_tuning: nginx -t FAILED and no backup found — manual fix required."
+            print_error "_nginx_apply_global_tuning: nginx config invalid and no backup to restore — check ${conf}."
+        fi
+        return 1
+    fi
+
     log_info "Applied nginx tuning: worker_processes=${worker_processes}, worker_connections=${worker_connections}, rlimit=65535, multi_accept=on, epoll, keepalive=30s, client limits, gzip full, open_file_cache, rate limit zones, security headers, log_format main_ext."
 }
 
@@ -420,9 +456,14 @@ _nginx_test_and_reload() {
         print_error "Nginx validation failed."
         return 1
     fi
-    # F-15 fix: use reload-or-restart so this is safe both when nginx is already
-    # running (reload = zero-downtime) and when it is not yet started (restart = start).
-    systemctl reload-or-restart nginx && log_info "Nginx reloaded-or-restarted successfully."
+    # REG-24 fix: use shared service_reload/service_restart wrappers (health-check
+    # polling) instead of bare systemctl which bypasses system.sh wrappers.
+    if service_active nginx; then
+        service_reload nginx
+    else
+        service_restart nginx
+    fi
+    log_info "Nginx reloaded-or-restarted successfully."
     print_ok "Nginx reloaded successfully."
 }
 
@@ -442,6 +483,7 @@ _write_domain_state() {
     local backend_target="${3:-}"
     local php_version="${4:-}"
     local php_socket="${5:-}"
+    local ssl_mode="${6:-none}"
 
     ensure_dir "$OPS_DOMAINS_DIR"
     write_file "${OPS_DOMAINS_DIR}/${domain}.conf" <<EOF
@@ -451,6 +493,7 @@ DOMAIN_BACKEND_TARGET="${backend_target}"
 DOMAIN_PHP_VERSION="${php_version}"
 DOMAIN_PHP_SOCKET="${php_socket}"
 DOMAIN_WEB_ROOT="/var/www/${domain}"
+DOMAIN_SSL_MODE="${ssl_mode}"
 DOMAIN_CREATED="$(date '+%Y-%m-%d %H:%M:%S')"
 EOF
     chmod 0644 "${OPS_DOMAINS_DIR}/${domain}.conf"
@@ -471,7 +514,65 @@ _domain_ssl_cert_ready() {
     [[ -f "/etc/letsencrypt/live/${domain}/fullchain.pem" ]] && [[ -f "/etc/letsencrypt/live/${domain}/privkey.pem" ]]
 }
 
-# _render_node_vhost <domain> <port> <available-path>
+_domain_cf_origin_cert_ready() {
+    local domain="$1"
+    [[ -f "/etc/nginx/ssl/${domain}/cf-origin.pem" ]] && [[ -f "/etc/nginx/ssl/${domain}/cf-origin.key" ]]
+}
+
+# _nginx_commit_vhost <domain> <staged_file>
+# Transactional vhost commit: snapshot -> validate -> commit -> reload -> rollback.
+# REG-10: render helpers write to staged temp; this function owns the live commit.
+# OPS domain state must be written by callers AFTER this returns 0.
+_nginx_commit_vhost() {
+    local domain="$1"
+    local staged_file="$2"
+    local available="${NGINX_SITES_AVAILABLE}/${domain}"
+    local enabled="${NGINX_SITES_ENABLED}/${domain}"
+    local snapshot_root
+    # M-01 fix: keep snapshot on same filesystem as sites-available so cp -a
+    # restore stays on-device (avoids cross-device copies under load).
+    snapshot_root=$(mktemp -d "${NGINX_SITES_AVAILABLE}/.snap-${domain}.XXXXXX")
+    local commit_ok=0
+
+    snapshot_path_state "$available" "$snapshot_root" "available"
+    snapshot_path_state "$enabled"   "$snapshot_root" "enabled"
+
+    if ! mv -f "$staged_file" "$available"; then
+        log_error "_nginx_commit_vhost: mv failed for ${domain}"
+        rm -f "$staged_file"; rm -rf "$snapshot_root"; return 1
+    fi
+    chmod 0644 "$available"; chown root:root "$available" 2>/dev/null || true
+
+    if ! nginx_validate > /dev/null 2>&1; then
+        log_error "_nginx_commit_vhost: nginx -t failed for ${domain} — rolling back"
+        restore_path_snapshot "$available" "$snapshot_root" "available"
+        restore_path_snapshot "$enabled"   "$snapshot_root" "enabled"
+        rm -rf "$snapshot_root"; return 1
+    fi
+
+    if ! safe_symlink "$available" "$enabled"; then
+        log_error "_nginx_commit_vhost: safe_symlink failed for ${domain} — rolling back"
+        restore_path_snapshot "$available" "$snapshot_root" "available"
+        restore_path_snapshot "$enabled"   "$snapshot_root" "enabled"
+        rm -rf "$snapshot_root"; return 1
+    fi
+
+    if service_active nginx; then
+        if ! service_reload nginx; then
+            log_error "_nginx_commit_vhost: reload failed for ${domain} — rolling back"
+            restore_path_snapshot "$available" "$snapshot_root" "available"
+            restore_path_snapshot "$enabled"   "$snapshot_root" "enabled"
+            rm -rf "$snapshot_root"; return 1
+        fi
+    fi
+
+    commit_ok=1
+    rm -rf "$snapshot_root"
+    log_info "_nginx_commit_vhost: committed and reloaded vhost for ${domain}"
+    [[ "$commit_ok" -eq 1 ]]
+}
+
+# _render_node_vhost <domain> <port> <available-path> [ssl_mode]
 # F-01 fix: The old approach passed SSL_HTTPS_BLOCK (a multi-line string with
 # $host, $remote_addr, \, & etc.) through render_template's Bash parameter expansion,
 # silently corrupting the output. Fix: template now receives only SSL_HTTP_REDIRECT
@@ -481,11 +582,15 @@ _render_node_vhost() {
     local domain="$1"
     local port="$2"
     local available="$3"
-    local ssl_redirect=""
+    local ssl_mode="${4:-}"
+    local ssl_redirect="" _has_ssl=0
 
-    if _domain_ssl_cert_ready "$domain"; then
-        ssl_redirect="    return 301 https://\$host\$request_uri;"
+    if [[ "$ssl_mode" == "cloudflare_origin" ]] && _domain_cf_origin_cert_ready "$domain"; then
+        _has_ssl=1
+    elif [[ "$ssl_mode" == "letsencrypt" || -z "$ssl_mode" ]] && _domain_ssl_cert_ready "$domain"; then
+        _has_ssl=1
     fi
+    [[ "$_has_ssl" -eq 1 ]] && ssl_redirect="    return 301 https://\$host\$request_uri;"
 
     # Step 1: Render HTTP server block from template (safe single-line vars only)
     _create_site_from_template "${NGINX_TEMPLATE_DIR}/node_vhost.conf.tpl" "$available" \
@@ -494,7 +599,17 @@ _render_node_vhost() {
         "SSL_HTTP_REDIRECT=${ssl_redirect}"
 
     # Step 2: Append SSL server block directly — no Bash expansion of Nginx variables
-    if _domain_ssl_cert_ready "$domain"; then
+    if [[ "$_has_ssl" -eq 1 ]]; then
+        local _ssl_cert _ssl_key _ssl_extra
+        if [[ "$ssl_mode" == "cloudflare_origin" ]]; then
+            _ssl_cert="/etc/nginx/ssl/${domain}/cf-origin.pem"
+            _ssl_key="/etc/nginx/ssl/${domain}/cf-origin.key"
+            _ssl_extra="    ssl_protocols TLSv1.2 TLSv1.3;"
+        else
+            _ssl_cert="/etc/letsencrypt/live/${domain}/fullchain.pem"
+            _ssl_key="/etc/letsencrypt/live/${domain}/privkey.pem"
+            _ssl_extra="    include /etc/letsencrypt/options-ssl-nginx.conf;\n    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;"
+        fi
         cat >> "$available" <<NGINX_SSL_EOF
 
 server {
@@ -545,23 +660,17 @@ server {
         log_not_found off;
     }
 
-    ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
-    include /etc/letsencrypt/options-ssl-nginx.conf;
-    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+    ssl_certificate     ${_ssl_cert};
+    ssl_certificate_key ${_ssl_key};
+$(printf '%b' "${_ssl_extra}")
 }
 NGINX_SSL_EOF
     fi
-
-    # Step 3: Guard — remove broken file if nginx syntax check fails
-    if ! nginx_validate >/dev/null 2>&1; then
-        log_error "_render_node_vhost: nginx -t failed for ${domain} — removing broken vhost file"
-        rm -f "$available"
-        return 1
-    fi
+    # Step 3: caller (_nginx_commit_vhost) owns validation and rollback.
+    # Render helpers must NOT run nginx -t or delete the staged file.
 }
 
-# _render_php_vhost <domain> <web_root> <php_version> <php_socket> <available-path>
+# _render_php_vhost <domain> <web_root> <php_version> <php_socket> <available-path> [ssl_mode]
 # F-01 fix: same pattern as _render_node_vhost — SSL block appended directly.
 # Note: php_socket is substituted via sed after template rendering (safe, single-line value).
 _render_php_vhost() {
@@ -570,11 +679,15 @@ _render_php_vhost() {
     local php_version="$3"
     local php_socket="$4"
     local available="$5"
-    local ssl_redirect=""
+    local ssl_mode="${6:-}"
+    local ssl_redirect="" _has_ssl=0
 
-    if _domain_ssl_cert_ready "$domain"; then
-        ssl_redirect="    return 301 https://\$host\$request_uri;"
+    if [[ "$ssl_mode" == "cloudflare_origin" ]] && _domain_cf_origin_cert_ready "$domain"; then
+        _has_ssl=1
+    elif [[ "$ssl_mode" == "letsencrypt" || -z "$ssl_mode" ]] && _domain_ssl_cert_ready "$domain"; then
+        _has_ssl=1
     fi
+    [[ "$_has_ssl" -eq 1 ]] && ssl_redirect="    return 301 https://\$host\$request_uri;"
 
     # Step 1: Render HTTP server block (single-line vars only)
     local rendered
@@ -584,12 +697,25 @@ _render_php_vhost() {
         "PHP_VERSION=${php_version}" \
         "SSL_HTTP_REDIRECT=${ssl_redirect}")"
     # Substitute PHP socket path (safe single-line sed)
+    # L-01 fix: escape the dot in php_version so "8X2" cannot match "8.2" pattern.
+    local _php_ver_escaped
+    _php_ver_escaped="${php_version//./\\.}"
     rendered="$(printf '%s\n' "$rendered" | sed -E \
-        "s|fastcgi_pass[[:space:]]+unix:/run/php/php${php_version}-fpm\.sock;|fastcgi_pass   unix:${php_socket};|")"
+        "s|fastcgi_pass[[:space:]]+unix:/run/php/php${_php_ver_escaped}-fpm\.sock;|fastcgi_pass   unix:${php_socket};|")"
     printf '%s\n' "$rendered" | write_file "$available"
 
     # Step 2: Append SSL server block directly
-    if _domain_ssl_cert_ready "$domain"; then
+    if [[ "$_has_ssl" -eq 1 ]]; then
+        local _ssl_cert _ssl_key _ssl_extra
+        if [[ "$ssl_mode" == "cloudflare_origin" ]]; then
+            _ssl_cert="/etc/nginx/ssl/${domain}/cf-origin.pem"
+            _ssl_key="/etc/nginx/ssl/${domain}/cf-origin.key"
+            _ssl_extra="    ssl_protocols TLSv1.2 TLSv1.3;"
+        else
+            _ssl_cert="/etc/letsencrypt/live/${domain}/fullchain.pem"
+            _ssl_key="/etc/letsencrypt/live/${domain}/privkey.pem"
+            _ssl_extra="    include /etc/letsencrypt/options-ssl-nginx.conf;\n    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;"
+        fi
         cat >> "$available" <<NGINX_SSL_EOF
 
 server {
@@ -654,36 +780,34 @@ server {
     access_log  /var/log/nginx/${domain}.access.log main_ext;
     error_log   /var/log/nginx/${domain}.error.log;
 
-    ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
-    include /etc/letsencrypt/options-ssl-nginx.conf;
-    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+    ssl_certificate     ${_ssl_cert};
+    ssl_certificate_key ${_ssl_key};
+$(printf '%b' "${_ssl_extra}")
 }
 NGINX_SSL_EOF
     fi
 
     chmod 0644 "$available"
     chown root:root "$available" 2>/dev/null || true
-
-    # Step 3: Guard — remove broken file if nginx syntax check fails
-    if ! nginx_validate >/dev/null 2>&1; then
-        log_error "_render_php_vhost: nginx -t failed for ${domain} — removing broken vhost file"
-        rm -f "$available"
-        return 1
-    fi
+    # Step 3: caller (_nginx_commit_vhost) owns validation and rollback.
+    # Render helpers must NOT run nginx -t or delete the staged file.
 }
 
-# _render_static_vhost <domain> <web_root> <available-path>
+# _render_static_vhost <domain> <web_root> <available-path> [ssl_mode]
 # F-01 fix: same pattern as _render_node_vhost — SSL block appended directly.
 _render_static_vhost() {
     local domain="$1"
     local web_root="$2"
     local available="$3"
-    local ssl_redirect=""
+    local ssl_mode="${4:-}"
+    local ssl_redirect="" _has_ssl=0
 
-    if _domain_ssl_cert_ready "$domain"; then
-        ssl_redirect="    return 301 https://\$host\$request_uri;"
+    if [[ "$ssl_mode" == "cloudflare_origin" ]] && _domain_cf_origin_cert_ready "$domain"; then
+        _has_ssl=1
+    elif [[ "$ssl_mode" == "letsencrypt" || -z "$ssl_mode" ]] && _domain_ssl_cert_ready "$domain"; then
+        _has_ssl=1
     fi
+    [[ "$_has_ssl" -eq 1 ]] && ssl_redirect="    return 301 https://\$host\$request_uri;"
 
     # Step 1: Render HTTP server block (single-line vars only)
     _create_site_from_template "${NGINX_TEMPLATE_DIR}/static_vhost.conf.tpl" "$available" \
@@ -692,7 +816,17 @@ _render_static_vhost() {
         "SSL_HTTP_REDIRECT=${ssl_redirect}"
 
     # Step 2: Append SSL server block directly
-    if _domain_ssl_cert_ready "$domain"; then
+    if [[ "$_has_ssl" -eq 1 ]]; then
+        local _ssl_cert _ssl_key _ssl_extra
+        if [[ "$ssl_mode" == "cloudflare_origin" ]]; then
+            _ssl_cert="/etc/nginx/ssl/${domain}/cf-origin.pem"
+            _ssl_key="/etc/nginx/ssl/${domain}/cf-origin.key"
+            _ssl_extra="    ssl_protocols TLSv1.2 TLSv1.3;"
+        else
+            _ssl_cert="/etc/letsencrypt/live/${domain}/fullchain.pem"
+            _ssl_key="/etc/letsencrypt/live/${domain}/privkey.pem"
+            _ssl_extra="    include /etc/letsencrypt/options-ssl-nginx.conf;\n    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;"
+        fi
         cat >> "$available" <<NGINX_SSL_EOF
 
 server {
@@ -740,20 +874,14 @@ server {
     access_log  /var/log/nginx/${domain}.access.log main_ext;
     error_log   /var/log/nginx/${domain}.error.log;
 
-    ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
-    include /etc/letsencrypt/options-ssl-nginx.conf;
-    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+    ssl_certificate     ${_ssl_cert};
+    ssl_certificate_key ${_ssl_key};
+$(printf '%b' "${_ssl_extra}")
 }
 NGINX_SSL_EOF
     fi
-
-    # Step 3: Guard — remove broken file if nginx syntax check fails
-    if ! nginx_validate >/dev/null 2>&1; then
-        log_error "_render_static_vhost: nginx -t failed for ${domain} — removing broken vhost file"
-        rm -f "$available"
-        return 1
-    fi
+    # Step 3: caller (_nginx_commit_vhost) owns validation and rollback.
+    # Render helpers must NOT run nginx -t or delete the staged file.
 }
 
 # _load_domain_state <state_file>
@@ -767,7 +895,7 @@ _load_domain_state() {
     while IFS= read -r line; do
         # Accept only: KEY="value" where value contains no double-quotes.
         # The regex anchors prevent injecting additional shell statements.
-        if [[ "$line" =~ ^(DOMAIN|DOMAIN_BACKEND_TYPE|DOMAIN_BACKEND_TARGET|DOMAIN_PHP_VERSION|DOMAIN_PHP_SOCKET|DOMAIN_WEB_ROOT)=\"([^\"]*)\"$ ]]; then
+        if [[ "$line" =~ ^(DOMAIN|DOMAIN_BACKEND_TYPE|DOMAIN_BACKEND_TARGET|DOMAIN_PHP_VERSION|DOMAIN_PHP_SOCKET|DOMAIN_WEB_ROOT|DOMAIN_SSL_MODE)=\"([^\"]*)\"$ ]]; then
             key="${BASH_REMATCH[1]}"
             val="${BASH_REMATCH[2]}"
             # printf produces plain KEY=value lines — no shell metacharacters can leak.
@@ -820,7 +948,7 @@ _validate_domain_state() {
 _rebuild_domain_vhost() {
     local domain="$1"
     local state_file="${OPS_DOMAINS_DIR}/${domain}.conf"
-    local type backend_target php_version php_socket web_root available enabled port
+    local type backend_target php_version php_socket web_root ssl_mode staged port
 
     if [[ ! -f "$state_file" ]]; then
         log_warn "No state file for domain ${domain}; skipped vhost rebuild"
@@ -828,41 +956,58 @@ _rebuild_domain_vhost() {
     fi
 
     # P-05 fix: parse state file through regex-whitelist; validate before use.
-    local DOMAIN DOMAIN_BACKEND_TYPE DOMAIN_BACKEND_TARGET DOMAIN_PHP_VERSION DOMAIN_PHP_SOCKET DOMAIN_WEB_ROOT
+    local DOMAIN DOMAIN_BACKEND_TYPE DOMAIN_BACKEND_TARGET DOMAIN_PHP_VERSION DOMAIN_PHP_SOCKET DOMAIN_WEB_ROOT DOMAIN_SSL_MODE
     eval "$(_load_domain_state "$state_file")"
     type="${DOMAIN_BACKEND_TYPE:-}"
     backend_target="${DOMAIN_BACKEND_TARGET:-}"
     php_version="${DOMAIN_PHP_VERSION:-}"
     php_socket="${DOMAIN_PHP_SOCKET:-}"
     web_root="${DOMAIN_WEB_ROOT:-}"
+    ssl_mode="${DOMAIN_SSL_MODE:-}"
+
+    # Backward compat: infer ssl_mode when field absent from older state files
+    if [[ -z "$ssl_mode" ]]; then
+        if _domain_cf_origin_cert_ready "$domain"; then
+            ssl_mode="cloudflare_origin"
+        elif _domain_ssl_cert_ready "$domain"; then
+            ssl_mode="letsencrypt"
+        else
+            ssl_mode="none"
+        fi
+    fi
 
     if ! _validate_domain_state "$domain" "$type" "$php_version" "$php_socket" "$web_root"; then
         log_error "_rebuild_domain_vhost: aborting rebuild for ${domain} due to invalid state."
         return 1
     fi
 
-    available="${NGINX_SITES_AVAILABLE}/${domain}"
-    enabled="${NGINX_SITES_ENABLED}/${domain}"
+    staged=$(mktemp "${NGINX_SITES_AVAILABLE}/.${domain}.staged.XXXXXX")
 
     case "$type" in
         node)
             port="${backend_target#127.0.0.1:}"
-            _render_node_vhost "$domain" "$port" "$available"
+            _render_node_vhost "$domain" "$port" "$staged" "$ssl_mode"
             ;;
         php)
-            _render_php_vhost "$domain" "$web_root" "$php_version" "$php_socket" "$available"
+            _render_php_vhost "$domain" "$web_root" "$php_version" "$php_socket" "$staged" "$ssl_mode"
             ;;
         static)
-            _render_static_vhost "$domain" "$web_root" "$available"
+            _render_static_vhost "$domain" "$web_root" "$staged" "$ssl_mode"
             ;;
         *)
             log_warn "Unsupported backend type '${type}' for ${domain}; skipped vhost rebuild"
+            rm -f "$staged"
             return 0
             ;;
     esac
 
-    safe_symlink "$available" "$enabled"
-    log_info "Rebuilt vhost for ${domain} (type=${type}, ssl=$(_domain_ssl_cert_ready "$domain" && echo yes || echo no))"
+    if ! _nginx_commit_vhost "$domain" "$staged"; then
+        log_error "_rebuild_domain_vhost: commit failed for ${domain}"
+        rm -f "$staged"
+        return 1
+    fi
+
+    log_info "Rebuilt vhost for ${domain} (type=${type}, ssl_mode=${ssl_mode})"
 }
 
 _sync_all_managed_vhosts() {
@@ -1243,9 +1388,24 @@ create_default_deny() {
     local available="${NGINX_SITES_AVAILABLE}/${NGINX_DEFAULT_DENY_NAME}"
     local enabled="${NGINX_SITES_ENABLED}/${NGINX_DEFAULT_DENY_NAME}"
 
-    _create_site_from_template "$tpl" "$available" \
+    # H-03 fix: render to a staged temp so a broken template can never land in
+    # sites-enabled.  The deny vhost is global — a bad symlink breaks all sites.
+    local staged
+    staged=$(mktemp "${NGINX_SITES_AVAILABLE}/.${NGINX_DEFAULT_DENY_NAME}.staged.XXXXXX")
+
+    _create_site_from_template "$tpl" "$staged" \
         "SELF_SIGNED_CERT=${NGINX_DEFAULT_CERT}" \
         "SELF_SIGNED_KEY=${NGINX_DEFAULT_KEY}"
+
+    # Validate before moving into place
+    if ! nginx_validate >/dev/null 2>&1; then
+        log_error "create_default_deny: nginx -t failed with staged deny vhost — leaving existing config untouched"
+        rm -f "$staged"
+        return 1
+    fi
+
+    mv -f "$staged" "$available"
+    chmod 0644 "$available"; chown root:root "$available" 2>/dev/null || true
 
     _nginx_disable_packaged_default_site
     safe_symlink "$available" "$enabled"
@@ -1353,6 +1513,11 @@ add_domain() {
         log_info "Prepared web root ${web_root} with ${ADMIN_USER}:www-data and 755."
     fi
 
+    # C-01 fix: use a staged temp file + _nginx_commit_vhost (transactional).
+    # No writes to the live available path until nginx -t passes.
+    local staged
+    staged=$(mktemp "${NGINX_SITES_AVAILABLE}/.${domain}.staged.XXXXXX")
+
     case "$type" in
         node)
             local pm2_service port
@@ -1362,10 +1527,11 @@ add_domain() {
             port="$REPLY"
             if [[ ! "$port" =~ ^[0-9]{2,5}$ ]]; then
                 print_error "Invalid port: $port"
+                rm -f "$staged"
                 return 1
             fi
             backend_target="127.0.0.1:${port}"
-            _render_node_vhost "$domain" "$port" "$available"
+            _render_node_vhost "$domain" "$port" "$staged"
             if [[ -n "$pm2_service" ]]; then
                 log_info "Operator selected PM2 service: ${pm2_service}"
             fi
@@ -1376,24 +1542,36 @@ add_domain() {
             php_version="$REPLY"
             if [[ ! "$php_version" =~ ^[0-9]+\.[0-9]+$ ]]; then
                 print_error "Invalid PHP version: $php_version"
+                rm -f "$staged"
                 return 1
             fi
             site_slug="$(_domain_slug "$domain")"
             php_socket="/run/php/php${php_version}-fpm-${site_slug}.sock"
             backend_target="$php_socket"
-            _render_php_vhost "$domain" "$web_root" "$php_version" "$php_socket" "$available"
+            _render_php_vhost "$domain" "$web_root" "$php_version" "$php_socket" "$staged"
             ;;
         static)
             backend_target="$web_root"
-            _render_static_vhost "$domain" "$web_root" "$available"
+            _render_static_vhost "$domain" "$web_root" "$staged"
             ;;
     esac
 
-    safe_symlink "$available" "$enabled"
+    # M-04 fix: ensure default-deny vhost exists BEFORE committing the new domain
+    # vhost, so that nginx -t inside _nginx_commit_vhost sees a complete config.
+    # create_default_deny is idempotent. This eliminates the redundant reload that
+    # previously occurred when create_default_deny was called after _nginx_commit_vhost.
     create_default_deny
+
+    # Transactional commit: nginx -t → atomic mv → symlink → reload → rollback on failure.
+    if ! _nginx_commit_vhost "$domain" "$staged"; then
+        print_error "add_domain: vhost commit failed for ${domain} — config NOT activated."
+        rm -f "$staged"
+        return 1
+    fi
+
+    # Write domain state AFTER successful commit (OPS contract: state reflects live reality).
     _write_domain_state "$domain" "$type" "$backend_target" "$php_version" "$php_socket"
 
-    _nginx_test_and_reload
     print_ok "Domain added: ${domain} (${type})"
     print_warn "SSL not issued here. Use SSL Management to issue certificate."
     log_info "add_domain: '${domain}' added (type=${type})"
@@ -1437,13 +1615,14 @@ nginx_edit_domain() {
     fi
 
     # Read current state via the safe parser (P-05 fix) — same path as _rebuild_domain_vhost.
-    local DOMAIN DOMAIN_BACKEND_TYPE DOMAIN_BACKEND_TARGET DOMAIN_PHP_VERSION DOMAIN_PHP_SOCKET DOMAIN_WEB_ROOT
+    local DOMAIN DOMAIN_BACKEND_TYPE DOMAIN_BACKEND_TARGET DOMAIN_PHP_VERSION DOMAIN_PHP_SOCKET DOMAIN_WEB_ROOT DOMAIN_SSL_MODE
     eval "$(_load_domain_state "$state_file")"
     local type="${DOMAIN_BACKEND_TYPE:-}"
     local backend_target="${DOMAIN_BACKEND_TARGET:-}"
     local php_version="${DOMAIN_PHP_VERSION:-}"
     local php_socket="${DOMAIN_PHP_SOCKET:-}"
     local web_root="${DOMAIN_WEB_ROOT:-}"
+    local ssl_mode="${DOMAIN_SSL_MODE:-none}"
     if ! _validate_domain_state "$domain" "$type" "$php_version" "$php_socket" "$web_root"; then
         print_error "State file for '${domain}' is corrupted — cannot edit. Check ${state_file}."
         return 1
@@ -1467,11 +1646,11 @@ nginx_edit_domain() {
                 return 0
             fi
             backend_target="127.0.0.1:${new_port}"
-            # State written first, then vhost rebuilt from it.
-            _write_domain_state "$domain" "$type" "$backend_target" "" ""
+            # H-01 fix: pass ssl_mode so state rewrite does not silently reset CF origin mode.
+            _write_domain_state "$domain" "$type" "$backend_target" "" "" "$ssl_mode"
             if ! _rebuild_domain_vhost "$domain"; then
                 print_error "Vhost rebuild failed — rolling back state file."
-                _write_domain_state "$domain" "$type" "127.0.0.1:${current_port}" "" ""
+                _write_domain_state "$domain" "$type" "127.0.0.1:${current_port}" "" "" "$ssl_mode"
                 return 1
             fi
             print_ok "Domain ${domain}: port updated ${current_port} → ${new_port}"
@@ -1492,10 +1671,11 @@ nginx_edit_domain() {
             fi
             site_slug="$(_domain_slug "$domain")"
             new_php_socket="/run/php/php${new_php_version}-fpm-${site_slug}.sock"
-            _write_domain_state "$domain" "$type" "$new_php_socket" "$new_php_version" "$new_php_socket"
+            # H-01 fix: pass ssl_mode so state rewrite does not silently reset CF origin mode.
+            _write_domain_state "$domain" "$type" "$new_php_socket" "$new_php_version" "$new_php_socket" "$ssl_mode"
             if ! _rebuild_domain_vhost "$domain"; then
                 print_error "Vhost rebuild failed — rolling back state file."
-                _write_domain_state "$domain" "$type" "$php_socket" "$php_version" "$php_socket"
+                _write_domain_state "$domain" "$type" "$php_socket" "$php_version" "$php_socket" "$ssl_mode"
                 return 1
             fi
             print_ok "Domain ${domain}: PHP version updated ${php_version} → ${new_php_version}"
@@ -1546,11 +1726,16 @@ remove_domain() {
     fi
 
     # Step 1: Read backend metadata BEFORE any delete.
+    # H-04 fix: use the P-05 safe parser (_load_domain_state) instead of
+    # unsafe grep|cut|tr which does not validate values.
     local state_file="${OPS_DOMAINS_DIR}/${domain}.conf"
     local backend_type php_version site_slug
     if [[ -f "$state_file" ]]; then
-        backend_type=$(grep '^DOMAIN_BACKEND_TYPE=' "$state_file" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '"')
-        php_version=$(grep '^DOMAIN_PHP_VERSION='   "$state_file" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '"')
+        local _REM_DOMAIN _REM_TYPE _REM_PHP_VER
+        local DOMAIN_BACKEND_TYPE="" DOMAIN_PHP_VERSION=""
+        eval "$(_load_domain_state "$state_file")"
+        backend_type="${DOMAIN_BACKEND_TYPE:-}"
+        php_version="${DOMAIN_PHP_VERSION:-}"
     fi
 
     # Step 2: Backend-specific cleanup FIRST (before touching Nginx files).
@@ -1786,6 +1971,7 @@ issue_ssl() {
     esac
 
     log_info "issue_ssl: SSL issued for ${domain} — syncing managed vhosts"
+    # _rebuild_domain_vhost calls _nginx_commit_vhost which reloads nginx internally.
     _rebuild_domain_vhost "$domain"
 
     local cliproxyapi_domain
@@ -1793,15 +1979,14 @@ issue_ssl() {
     if [[ "$domain" == "$cliproxyapi_domain" ]] && declare -F link_cliproxyapi_domain >/dev/null 2>&1; then
         log_info "Re-rendering CLIProxyAPI vhost after SSL issuance for ${domain}."
         link_cliproxyapi_domain "$domain"
-    fi
-
-    # P-03 fix: _nginx_test_and_reload already prints error and returns 1 on failure;
-    # || true was hiding that. If reload fails after SSL issuance operator must know.
-    if ! _nginx_test_and_reload; then
-        print_error "Nginx reload failed after SSL issuance for ${domain}."
-        print_warn "SSL cert was issued but nginx is not serving it — run 'nginx -t' to diagnose."
-        log_error "issue_ssl: _nginx_test_and_reload failed for ${domain}"
-        return 1
+        # H-05 fix: one final reload only when CLIProxyAPI vhost also changed.
+        # The _rebuild_domain_vhost above already reloaded; this catches the CPA diff.
+        if ! _nginx_test_and_reload; then
+            print_error "Nginx reload failed after CLIProxyAPI vhost re-render for ${domain}."
+            print_warn "SSL cert was issued but nginx may not be serving the CLIProxyAPI vhost."
+            log_error "issue_ssl: _nginx_test_and_reload failed for CLIProxyAPI domain ${domain}"
+            return 1
+        fi
     fi
     curl -I "https://${domain}" 2>/dev/null || true   # informational
     certbot certificates 2>/dev/null || true           # informational
@@ -1954,17 +2139,19 @@ _issue_ssl_dns01_cloudflare() {
 
     _ensure_certbot_dns_cloudflare
 
-    # Write CF credentials file (chmod 600 — token never world-readable)
-    printf 'dns_cloudflare_api_token = %s\n' "$CF_API_TOKEN" > "$CF_CREDS_FILE"
-    chmod 600 "$CF_CREDS_FILE"
-    log_info "CF credentials written to ${CF_CREDS_FILE}"
+    # REG-32: write INI-format certbot credentials to dedicated file.
+    # CF_CREDS_FILE is shell-sourceable only — NEVER overwrite it with INI format.
+    ensure_dir "$(dirname "$CF_CERTBOT_CREDS_FILE")"
+    printf 'dns_cloudflare_api_token = %s\n' "$CF_API_TOKEN" > "$CF_CERTBOT_CREDS_FILE"
+    chmod 600 "$CF_CERTBOT_CREDS_FILE"
+    log_info "CF certbot credentials written to ${CF_CERTBOT_CREDS_FILE} (INI format)"
 
     # Build certbot command
     # --dns-cloudflare-propagation-seconds 20: CF DNS propagates within seconds globally
     local certbot_args=(
         certonly
         --dns-cloudflare
-        --dns-cloudflare-credentials "$CF_CREDS_FILE"
+        --dns-cloudflare-credentials "$CF_CERTBOT_CREDS_FILE"
         --dns-cloudflare-propagation-seconds 20
         -d "$domain"
         --non-interactive
@@ -2049,14 +2236,18 @@ ssl_set_cf_token() {
         return 1
     fi
 
-    # Save token to credentials file (chmod 600)
+    # Save shell-sourceable token file
     ensure_dir "$(dirname "$CF_CREDS_FILE")"
     printf 'CF_API_TOKEN="%s"\n' "$new_token" > "$CF_CREDS_FILE"
     chmod 600 "$CF_CREDS_FILE"
-    # Reload into current session
+    # Also write certbot INI file so DNS-01 issuance never overwrites cloudflare.conf
+    ensure_dir "$(dirname "$CF_CERTBOT_CREDS_FILE")"
+    printf 'dns_cloudflare_api_token = %s\n' "$new_token" > "$CF_CERTBOT_CREDS_FILE"
+    chmod 600 "$CF_CERTBOT_CREDS_FILE"
     CF_API_TOKEN="$new_token"
 
-    print_ok "Cloudflare API token saved to ${CF_CREDS_FILE} (chmod 600)."
+    print_ok "Cloudflare API token saved to ${CF_CREDS_FILE} (chmod 600, shell format)."
+    print_ok "Certbot credentials written to ${CF_CERTBOT_CREDS_FILE} (chmod 600, INI format)."
     print_ok "DNS-01 challenge will now be used automatically for Cloudflare-proxied domains."
     log_info "ssl_set_cf_token: CF API token saved and validated successfully"
 }
@@ -2246,35 +2437,47 @@ ssl_issue_cf_origin_cert() {
     print_ok "  Private key saved: ${key_file}"
     log_info "ssl_issue_cf_origin_cert: cert saved to ${cert_file}"
 
-    # ── Step 5: Update nginx vhost to use CF origin cert ─────────────────────
-    local vhost_avail="${NGINX_SITES_AVAILABLE}/${domain}"
+    # ── Step 5: Update OPS domain state → transactional vhost rebuild ────────
+    # H-02 fix: instead of sed-patching the live vhost, write DOMAIN_SSL_MODE=
+    # "cloudflare_origin" into the OPS state file and call _rebuild_domain_vhost.
+    # That path uses _nginx_commit_vhost (snapshot → nginx -t → mv → symlink →
+    # reload → rollback on failure).  For the CLIProxyAPI vhost — rendered by
+    # cli-proxy-api.sh, not tracked in OPS domain state — use targeted sed with
+    # backup (acceptable: isolated single-file patch with restore path).
+    local state_file="${OPS_DOMAINS_DIR}/${domain}.conf"
     local cliproxyapi_vhost="/etc/nginx/sites-available/cli-proxy-api.${domain}"
 
-    # Determine which vhost file to patch (ops-managed or cli-proxy-api)
-    local vhost_to_patch=""
-    [[ -f "$vhost_avail" ]]       && vhost_to_patch="$vhost_avail"
-    [[ -f "$cliproxyapi_vhost" ]] && vhost_to_patch="$cliproxyapi_vhost"
-
-    if [[ -n "$vhost_to_patch" ]]; then
-        backup_file "$vhost_to_patch" >/dev/null || true
-        # Replace ssl_certificate and ssl_certificate_key lines
+    if [[ -f "$state_file" ]]; then
+        # Persist ssl_mode so future rebuilds keep using CF origin certs.
+        if grep -q '^DOMAIN_SSL_MODE=' "$state_file"; then
+            sed -i 's|^DOMAIN_SSL_MODE=.*|DOMAIN_SSL_MODE="cloudflare_origin"|' "$state_file"
+        else
+            printf 'DOMAIN_SSL_MODE="cloudflare_origin"\n' >> "$state_file"
+        fi
+        if ! _rebuild_domain_vhost "$domain"; then
+            print_error "  Vhost rebuild failed — cert installed but nginx not yet serving it."
+            print_error "  State updated. Retry: Domains & Nginx → Rebuild all vhosts."
+            log_error "ssl_issue_cf_origin_cert: _rebuild_domain_vhost failed for ${domain}"
+        else
+            print_ok "  Nginx vhost rebuilt transactionally (ssl_mode=cloudflare_origin)."
+            log_info "ssl_issue_cf_origin_cert: vhost rebuilt via _rebuild_domain_vhost for ${domain}"
+        fi
+    elif [[ -f "$cliproxyapi_vhost" ]]; then
+        # CLIProxyAPI vhost: not in OPS domain state; targeted sed is acceptable.
+        backup_file "$cliproxyapi_vhost" >/dev/null || true
         sed -i \
             -e "s|ssl_certificate\b[^;]*;|ssl_certificate     ${cert_file};|g" \
             -e "s|ssl_certificate_key\b[^;]*;|ssl_certificate_key ${key_file};|g" \
-            "$vhost_to_patch"
-        # Remove certbot-specific includes that don't apply to CF origin certs
-        sed -i \
             -e '/include.*options-ssl-nginx\.conf/d' \
             -e '/ssl_dhparam.*ssl-dhparams\.pem/d' \
-            "$vhost_to_patch"
-        # Add basic TLS settings in their place if not already present
-        if ! grep -q 'ssl_protocols' "$vhost_to_patch"; then
-            sed -i "/ssl_certificate_key/a\\    ssl_protocols TLSv1.2 TLSv1.3;" "$vhost_to_patch"
+            "$cliproxyapi_vhost"
+        if ! grep -q 'ssl_protocols' "$cliproxyapi_vhost"; then
+            sed -i "/ssl_certificate_key/a\    ssl_protocols TLSv1.2 TLSv1.3;" "$cliproxyapi_vhost"
         fi
-        print_ok "  Nginx vhost updated: ${vhost_to_patch}"
-        log_info "ssl_issue_cf_origin_cert: vhost patched at ${vhost_to_patch}"
+        print_ok "  CLIProxyAPI vhost patched: ${cliproxyapi_vhost}"
+        log_info "ssl_issue_cf_origin_cert: CLIProxyAPI vhost patched at ${cliproxyapi_vhost}"
     else
-        print_warn "  No managed vhost found for ${domain} — vhost not patched."
+        print_warn "  No managed vhost found for ${domain}."
         print_warn "  Add manually: ssl_certificate ${cert_file}; ssl_certificate_key ${key_file};"
     fi
 
@@ -2371,15 +2574,17 @@ ssl_renew_all() {
     _ensure_certbot
     certbot renew
     _sync_all_managed_vhosts
-    # P-03 fix: if reload fails after renewal, nginx continues to serve expired/stale
-    # certs — this must surface as an error, not be silently swallowed.
-    if ! _nginx_test_and_reload; then
-        print_error "Nginx reload failed after SSL renewal sync."
-        print_warn "Certs renewed OK but nginx may be serving stale certs — check 'nginx -t'."
-        log_error "ssl_renew_all: _nginx_test_and_reload failed"
+    # L-03 fix: _sync_all_managed_vhosts already reloads nginx once per domain via
+    # _nginx_commit_vhost. A second full reload is redundant and scales as O(N).
+    # Keep a final nginx -t to surface any config drift introduced by certbot
+    # (e.g. options-ssl-nginx.conf changed) without the overhead of another reload.
+    if ! nginx_validate > /dev/null 2>&1; then
+        print_error "Nginx config invalid after SSL renewal sync — check 'nginx -t'."
+        print_warn "Certs renewed but nginx config has errors. Manual fix required."
+        log_error "ssl_renew_all: nginx -t failed after vhost sync"
         return 1
     fi
-    log_info "ssl_renew_all: certbot renew completed; all managed vhosts synced"
+    log_info "ssl_renew_all: certbot renew completed; all managed vhosts synced and config validated"
 }
 ssl_list_certs() {
     # F-21: same guard — only install if absent.

@@ -298,7 +298,13 @@ The following settings are the minimum security posture that `_vs_check_mariadb(
 
 The following rules apply to every Nginx installation managed by OPS (enforced by `_nginx_apply_global_tuning`):
 
-**HTTP/2:** All HTTPS virtual hosts MUST use `listen 443 ssl http2`. HTTP/1.1-only is not acceptable.
+**HTTP/2:** All HTTPS virtual hosts MUST use the two-directive nginx 1.25.1+ canonical form:
+```nginx
+listen 443 ssl;
+listen [::]:443 ssl;
+http2 on;
+```
+The old combined form (`listen 443 ssl http2;`) is accepted by `_vs_check_nginx` for backward compat but must not be used in new renders. HTTP/1.1-only is not acceptable.
 
 **Rate limiting:** The global http block must define `limit_req_zone` and `limit_conn_zone`. Default zones:
 - `ops_req: 100r/s per IP` — burst 200 per vhost location

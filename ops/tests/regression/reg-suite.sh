@@ -417,9 +417,12 @@ case_ins_09_installer_rollback_contract_present() {
 }
 
 case_web_01_nginx_install_contract_present() {
+    # L-05 fix: REG-24 migrated bare systemctl calls to service_reload/service_restart
+    # wrappers. Assert the current contract phrases instead of the legacy string.
     local content
     content="$(<"${OPS_ROOT}/modules/nginx.sh")"
-    test::assert_contains "$content" 'systemctl reload-or-restart nginx' 'nginx reload-or-restart contract missing' || return 1
+    test::assert_contains "$content" 'service_reload nginx' 'nginx service_reload contract missing' || return 1
+    test::assert_contains "$content" 'service_restart nginx' 'nginx service_restart contract missing' || return 1
 }
 
 case_web_02_node_domain_contract_present() {

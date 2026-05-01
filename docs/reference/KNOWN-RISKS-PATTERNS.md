@@ -291,11 +291,17 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
 
 ## 26) `listen 443 ssl` without `http2` - forced HTTP/1.1
 
-**Risk:** HTTP/2 provides multiplexing and header compression. Without `http2` in the listen directive, all HTTPS traffic uses HTTP/1.1 even on modern clients.
+**Risk:** HTTP/2 provides multiplexing and header compression. Without an `http2` directive, all HTTPS traffic uses HTTP/1.1 even on modern clients.
 
-**Detection:** `nginx -T | grep "443 ssl" | grep -v http2` returns matches **or** `_vs_check_nginx` WARN on http2.
+**Detection:** `nginx -T | grep -E 'listen .*443.*ssl|http2'` shows no http2 entry **or** `_vs_check_nginx` WARN on http2.
 
-**Fix:** Rebuild vhost via OPS after running `Apply security baseline`. All inline vhost renders now emit `listen 443 ssl http2;`.
+**Fix:** OPS uses the two-directive nginx 1.25.1+ style (canonical form for all new vhosts):
+```nginx
+listen 443 ssl;
+listen [::]:443 ssl;
+http2 on;
+```
+The old combined form (`listen 443 ssl http2;`) is also accepted by `_vs_check_nginx` for backward compat. Rebuild vhosts via OPS after running `Apply security baseline` to emit the canonical form.
 
 ---
 

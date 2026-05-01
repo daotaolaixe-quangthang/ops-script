@@ -132,6 +132,7 @@ Khuyen nghi:
 | WEB-08 | SSL status hien dung domain het han/khong co cert | Co domain co va khong co cert | Chay status | Hien du expiry/status ro rang |
 | WEB-09 | CLIProxyAPI vhost giu `proxy_buffering off` | CLIProxyAPI domain da link | Inspect vhost | Co `proxy_buffering off`, proxy toi `127.0.0.1:8317` |
 | WEB-10 | Nginx van la public entrypoint duy nhat | CLIProxyAPI/Node app da chay | Test public va local binding | Backend bind localhost, public truy cap qua Nginx |
+| WEB-11 | Transactional vhost commit — invalid staged config khong corrupt live vhost | Domain co vhost dang hoat dong | Inject vhost loi vao staged path; chay _nginx_commit_vhost | nginx -t fail, live vhost van nguyen, khong co dangling symlink |
 
 ### 4.5 Node.js va PM2
 
@@ -233,6 +234,7 @@ Day la nhom bug phai retest moi khi co thay doi lien quan, vi da xuat hien hoac 
 | REG-27 | Prompt TTY bi drift ve `read -p` / direct-stdin trong TUI flow | sua prompt/menu/confirm/input helpers |
 | REG-30 | Security state drift: persist `ops.conf` truoc khi live SSH/sysctl apply thanh cong, hoac mutate `authorized_keys` khong backup/dedup | sua `security.sh`, `setup-wizard.sh`, regression/docs lien quan |
 | REG-31 | Setup wizard drift: stale `WIZARD_DONE_*`, missing monitoring baseline, mat handoff PHP versions, hoac ghi `FULL_WIZARD` truoc khi verify pass | sua `setup-wizard.sh`, `monitoring.sh`, regression/docs lien quan |
+| REG-32 | CF DNS-01 credentials file format bi overwrite: `cloudflare.conf` bi ghi de bang INI format sau DNS-01 issuance, pha shell-sourceability | sua `nginx.sh` `_issue_ssl_dns01_cloudflare`, `ssl_set_cf_token`, hoac bat ky code nao ghi `CF_CREDS_FILE` |
 
 ## 6. Quy trinh test khi them/chinh sua 1 chuc nang moi
 

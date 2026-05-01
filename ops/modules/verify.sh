@@ -239,9 +239,10 @@ _vs_check_nginx() {
         any_warn=1
     fi
 
-    # 2. HTTP/2 — at least one listen has ssl http2
-    if ! printf '%s\n' "$nginx_full_conf" | grep -qE 'listen[[:space:]]+[0-9]+[[:space:]]+ssl[[:space:]]+http2'; then
-        _vs_warn "Nginx http2" "no http2 listen found" "run OPS: Apply security baseline, then rebuild vhosts"
+    # 2. HTTP/2 — accept both old combined form (listen 443 ssl http2) and
+    #    the two-directive nginx 1.25.1+ form (listen 443 ssl; http2 on;)
+    if ! printf '%s\n' "$nginx_full_conf" | grep -qE 'listen[[:space:]]+[0-9]+[[:space:]]+ssl[[:space:]]+http2|^[[:space:]]*http2[[:space:]]+on'; then
+        _vs_warn "Nginx http2" "no http2 directive found" "run OPS: Apply security baseline, then rebuild vhosts"
         any_warn=1
     fi
 
