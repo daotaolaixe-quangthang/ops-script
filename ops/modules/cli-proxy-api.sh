@@ -26,7 +26,7 @@ CLIPROXYAPI_VHOST_TEMPLATE="${OPS_ROOT}/modules/templates/nginx/cli-proxy-api.vh
 CLIPROXYAPI_QUOTA_INSPECTOR_REPO_URL="https://github.com/daotaolaixe-quangthang/CLIProxyAPI-Quota-Inspector"
 CLIPROXYAPI_QUOTA_INSPECTOR_DIR="${CLIPROXYAPI_DIR}/quota-inspector"
 CLIPROXYAPI_QUOTA_INSPECTOR_BINARY="${CLIPROXYAPI_QUOTA_INSPECTOR_DIR}/cpa-quota-inspector"
-CLIPROXYAPI_QUOTA_INSPECTOR_GO_VERSION="1.25.0"
+CLIPROXYAPI_QUOTA_INSPECTOR_GO_VERSION="1.22.0"  # F-10 fix: 1.25.0 does not exist; pin to current stable
 CLIPROXYAPI_QUOTA_INSPECTOR_GO_ROOT="/opt/ops-go/go${CLIPROXYAPI_QUOTA_INSPECTOR_GO_VERSION}"
 CLIPROXYAPI_QUOTA_INSPECTOR_GO_BINARY="${CLIPROXYAPI_QUOTA_INSPECTOR_GO_ROOT}/bin/go"
 CLIPROXYAPI_QUOTA_BASHRC_MARKER="# OPS: cliproxyapi quota inspector"
@@ -338,7 +338,12 @@ _cliproxyapi_install_latest_release() {
     temp_dir="$(mktemp -d /tmp/cli-proxy-api-XXXXXX)"
     release_dir="${CLIPROXYAPI_RELEASES_DIR}/${version}"
 
+    # F-05/F-06 note: release is fetched from CLIPROXYAPI_RELEASE_API_URL (router-for-me org)
+    # while CLIPROXYAPI_SOURCE_REPO_URL points to daotaolaixe-quangthang.
+    # No checksum or GPG verification is performed on the downloaded tarball.
+    # Verify the release asset manually on first install if supply-chain assurance is required.
     log_info "Downloading CLIProxyAPI ${version} from ${asset_url}"
+    log_warn "Binary downloaded without checksum/GPG verification — review release asset before production use: ${asset_url}"
     curl -fsSL "$asset_url" -o "$archive"
 
     rm -rf "$release_dir"
@@ -409,7 +414,7 @@ tls:
 remote-management:
   allow-remote: false
   secret-key: ""
-  disable-control-panel: false
+  disable-control-panel: true
   panel-github-repository: "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
 auth-dir: "${runtime_home}/.cli-proxy-api"
 ${api_keys_yaml}
@@ -497,7 +502,7 @@ Group=${runtime_user}
 WorkingDirectory=${CLIPROXYAPI_DIR}
 Environment=HOME=${runtime_home}
 ExecStart=${CLIPROXYAPI_BINARY}
-Restart=on-failure
+Restart=always
 RestartSec=10
 NoNewPrivileges=true
 PrivateTmp=true
@@ -529,7 +534,9 @@ _cliproxyapi_assert_ufw_closed() {
     fi
 
     if printf '%s\n' "$ufw_out" | grep -Eq "8317.*DENY|DENY.*8317"; then
-        log_info "Removing stale UFW DENY rule for port 8317"
+        # F-08 fix: SECURITY-RULES §4 allows removing explicit DENY 8317 (default-deny covers it).
+        # Use log_warn so the operator sees this action rather than a silent log_info.
+        log_warn "Removing explicit UFW DENY rule for port 8317 — default-deny posture makes this redundant. If intentionally added for defence-in-depth, re-add it manually after each OPS run."
         ufw delete deny 8317/tcp >/dev/null 2>&1 || true
         ufw delete deny 8317 >/dev/null 2>&1 || true
         ufw delete deny 8317/udp >/dev/null 2>&1 || true
@@ -548,14 +555,19 @@ _cliproxyapi_remove_legacy_domain_files() {
     : # no-op on fresh installs
 }
 
+# _cliproxyapi_render_vhost <domain> <staged_file>
+# F-01/F-03 fix: writes the HTTP server block via render_template (safe single-line vars),
+# then appends the SSL server block directly via cat>> — bypasses render_template so Bash
+# never expands Nginx variables like $host, $remote_addr, $proxy_add_x_forwarded_for.
+# Mirrors the pattern from _render_node_vhost in nginx.sh.
+# Callers must create the staged_file and hand it to _nginx_commit_vhost for the live
+# transactional commit (snapshot → nginx -t → safe_symlink → reload → rollback).
+# Prints "yes" or "no" on stdout to indicate whether SSL was rendered.
 _cliproxyapi_render_vhost() {
     local domain="$1"
-    local vhost_path enabled_path ssl_http_block ssl_https_block ssl_enabled
-    vhost_path="/etc/nginx/sites-available/cli-proxy-api.${domain}"
-    enabled_path="/etc/nginx/sites-enabled/cli-proxy-api.${domain}"
-    ssl_enabled="no"
-    ssl_http_block=""
-    ssl_https_block=""
+    local staged_file="$2"
+    local ssl_enabled="no"
+    local ssl_http_block=""
 
     if [[ ! -f "$CLIPROXYAPI_VHOST_TEMPLATE" ]]; then
         log_error "Missing nginx template: ${CLIPROXYAPI_VHOST_TEMPLATE}"
@@ -565,16 +577,34 @@ _cliproxyapi_render_vhost() {
     if _cliproxyapi_ssl_cert_ready "$domain"; then
         ssl_enabled="yes"
         ssl_http_block="    return 301 https://\$host\$request_uri;"
-        ssl_https_block=$(cat <<EOF
+    fi
+
+    # Step 1: Render HTTP server block from template.
+    # SSL_HTTPS_BLOCK passed as empty so the {{SSL_HTTPS_BLOCK}} placeholder renders blank.
+    render_template "$CLIPROXYAPI_VHOST_TEMPLATE" \
+        "DOMAIN=${domain}" \
+        "CLIPROXYAPI_PORT=${CLIPROXYAPI_PORT}" \
+        "SSL_HTTP_BLOCK=${ssl_http_block}" \
+        "SSL_HTTPS_BLOCK=" \
+        | write_file "$staged_file"
+    chmod 0644 "$staged_file"
+    chown root:root "$staged_file" 2>/dev/null || true
+
+    # Step 2: Append SSL server block directly — no Bash expansion of Nginx variables.
+    # This mirrors the F-01 fix applied to _render_node_vhost in nginx.sh.
+    if [[ "$ssl_enabled" == "yes" ]]; then
+        cat >> "$staged_file" <<NGINX_SSL_EOF
+
 server {
     listen 443 ssl;
+    listen [::]:443 ssl;
     http2 on;
     server_name ${domain};
 
     access_log /var/log/nginx/cli-proxy-api.access.log;
     error_log  /var/log/nginx/cli-proxy-api.error.log;
 
-    ssl_certificate /etc/letsencrypt/live/${domain}/fullchain.pem;
+    ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
@@ -604,22 +634,10 @@ server {
         proxy_buffering       off;
     }
 }
-EOF
-)
+NGINX_SSL_EOF
     fi
 
-    backup_file "$vhost_path" >/dev/null || true
-    render_template "$CLIPROXYAPI_VHOST_TEMPLATE" \
-        "DOMAIN=${domain}" \
-        "CLIPROXYAPI_PORT=${CLIPROXYAPI_PORT}" \
-        "SSL_HTTP_BLOCK=${ssl_http_block}" \
-        "SSL_HTTPS_BLOCK=${ssl_https_block}" \
-        | write_file "$vhost_path"
-    chmod 0644 "$vhost_path"
-    chown root:root "$vhost_path" 2>/dev/null || true
-
-    safe_symlink "$vhost_path" "$enabled_path"
-    _cliproxyapi_remove_legacy_domain_files "$domain"
+    # Step 3: caller (_nginx_commit_vhost) owns validation, symlink, reload, and rollback.
     printf '%s' "$ssl_enabled"
 }
 
@@ -784,6 +802,10 @@ update_cliproxyapi() {
     fi
 
     version="$(_cliproxyapi_install_latest_release)" || return 1
+    # F-04 fix: _cliproxyapi_write_config fully regenerates config.yaml from OPS state.
+    # Any manual additions not tracked in cli-proxy-api.conf will be lost.
+    # The previous config is preserved as a backup (backup_file is called inside _cliproxyapi_write_config).
+    log_warn "update_cliproxyapi: config.yaml will be rewritten from OPS state. Manual edits not tracked by OPS state are dropped. Backup preserved at ${CLIPROXYAPI_CONFIG_FILE}.bak.*"
     _cliproxyapi_write_config
     _cliproxyapi_write_service
 
@@ -797,6 +819,8 @@ update_cliproxyapi() {
 }
 
 link_cliproxyapi_domain() {
+    # F-01/F-07 fix: use _nginx_commit_vhost for transactional
+    # snapshot → nginx -t → safe_symlink → service_reload → rollback on any failure.
     require_root || return 1
     local domain="${1:-}"
     if [[ -z "$domain" ]]; then
@@ -811,12 +835,23 @@ link_cliproxyapi_domain() {
 
     create_default_deny
 
-    local ssl_enabled
-    ssl_enabled="$(_cliproxyapi_render_vhost "$domain")" || return 1
+    # Create staged temp file on the same filesystem as sites-available so that
+    # _nginx_commit_vhost can use mv -f (on-device, atomic) when committing.
+    local vhost_name="cli-proxy-api.${domain}"
+    local staged_file
+    staged_file="$(mktemp "${NGINX_SITES_AVAILABLE}/.cpa-staged-XXXXXX")"
 
-    nginx_validate
+    local ssl_enabled
+    ssl_enabled="$(_cliproxyapi_render_vhost "$domain" "$staged_file")" || {
+        rm -f "$staged_file"
+        return 1
+    }
+
+    # _nginx_commit_vhost owns: nginx -t validation, safe_symlink, service_reload,
+    # and full snapshot-based rollback if any step fails.
+    _nginx_commit_vhost "$vhost_name" "$staged_file" || return 1
+
     service_enable nginx
-    service_reload nginx
 
     _cliproxyapi_set_state "CLIPROXYAPI_DOMAIN" "$domain"
     _cliproxyapi_set_state "CLIPROXYAPI_SSL" "$ssl_enabled"
@@ -945,7 +980,9 @@ verify_cliproxyapi() {
         print_ok "Local /v1/models endpoint returned JSON"
     fi
 
-    _cliproxyapi_assert_ufw_closed || true
+    if ! _cliproxyapi_assert_ufw_closed; then
+        all_ok=false
+    fi
 
     if [[ "$all_ok" == "true" ]]; then
         print_ok "Verification passed"
