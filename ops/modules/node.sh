@@ -31,11 +31,11 @@ menu_node() {
         echo ""
         prompt_menu_choice "Select" "" choice
         case "$choice" in
-            1) _node_menu_run node_list_apps ;;
-            2) _node_menu_run node_add_app ;;
-            3) _node_menu_run node_remove_app ;;
-            4) _node_menu_run node_restart_app ;;
-            5) _node_menu_run node_show_logs ;;
+            1) _node_menu_run node_list_apps; press_enter ;;
+            2) _node_menu_run node_add_app; press_enter ;;
+            3) _node_menu_run node_remove_app; press_enter ;;
+            4) _node_menu_run node_restart_app; press_enter ;;
+            5) _node_menu_run node_show_logs; press_enter ;;
             0) return 0             ;;
             *) print_warn "Invalid option" ;;
         esac
@@ -197,9 +197,12 @@ node_install() {
     local keyring="/usr/share/keyrings/nodesource.gpg"
     local sources_file="/etc/apt/sources.list.d/nodesource.list"
     local codename
-    codename=$(lsb_release -cs 2>/dev/null \
-        || . /etc/os-release 2>/dev/null && echo "${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}" \
-        || echo "jammy")
+    codename=$(lsb_release -cs 2>/dev/null || true)
+    if [[ -z "$codename" ]]; then
+        # env.sh already sourced /etc/os-release; fall back to those vars.
+        codename="${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}"
+    fi
+    [[ -n "$codename" ]] || codename="jammy"
 
     if ! command -v curl > /dev/null 2>&1; then apt_install curl; fi
     if ! command -v gpg  > /dev/null 2>&1; then apt_install gnupg; fi
@@ -407,7 +410,7 @@ node_add_app() {
             continue
         fi
         # P3-A: check against running processes
-        if ss -tlnp 2>/dev/null | grep -q ":${app_port} "; then
+        if ss -tlnp 2>/dev/null | grep -qE ":${app_port}[[:space:]]"; then
             print_error "Port ${app_port} is already in use by another process. Choose a different port."
             continue
         fi
@@ -445,13 +448,15 @@ node_add_app() {
         "APP_DOMAIN=" \
         "APP_CREATED=$(date '+%Y-%m-%d %H:%M:%S')"
 
-    # Tier-aware memory ceiling for PM2 (used by both template and fallback paths)
-    local max_mem
+    # Tier-aware memory ceiling for PM2 (used by both template and fallback paths).
+    # _max_mem_mb is ~90% of max_mem: V8 heap cap so GC fires before PM2 restarts
+    # (KNOWN-RISKS §22 — prevents hard OOM crash before graceful restart).
+    local max_mem _max_mem_mb
     case "${OPS_TIER:-M}" in
-        S) max_mem="300M" ;;
-        M) max_mem="500M" ;;
-        L) max_mem="800M" ;;
-        *) max_mem="500M" ;;
+        S) max_mem="300M"; _max_mem_mb=256 ;;
+        M) max_mem="500M"; _max_mem_mb=460 ;;
+        L) max_mem="800M"; _max_mem_mb=740 ;;
+        *) max_mem="500M"; _max_mem_mb=460 ;;
     esac
 
     # Render ecosystem.config.js from template if available
@@ -489,19 +494,14 @@ node_add_app() {
                 "EXEC_MODE=fork" \
                 "NODE_ENV=${app_env}" \
                 "MAX_MEMORY_RESTART=${max_mem}" \
+                "NODE_ARGS_MAX_OLD_SPACE=${_max_mem_mb}" \
                 > "$eco_dest"
             print_ok "Rendered: $eco_dest"
         else
             # Inline fallback ecosystem.config.js
             # P4-B: kill_timeout 5000 (>=5s per SECURITY-RULES §8), merge_logs,
             # node_args --max-old-space-size derived from max_memory_restart ceiling.
-            local _max_mem_mb
-            case "${OPS_TIER:-M}" in
-                S) _max_mem_mb=256 ;;
-                M) _max_mem_mb=460 ;;
-                L) _max_mem_mb=740 ;;
-                *) _max_mem_mb=460 ;;
-            esac
+            # (_max_mem_mb already calculated in the shared tier block above.)
             cat > "$eco_dest" <<EOF
 module.exports = {
   apps: [{
@@ -513,7 +513,7 @@ module.exports = {
       PORT:     '${app_port}',
     },
     merge_logs:           true,
-    listen_timeout:       8000,
+    listen_timeout:       10000,
     kill_timeout:         5000,
     node_args:            '--max-old-space-size=${_max_mem_mb}',
     max_memory_restart:   '${max_mem}',
@@ -529,7 +529,10 @@ EOF
     # Start with PM2
     log_info "Starting app with PM2 as runtime user: $(_node_runtime_user) -> pm2 start $eco_dest"
     _node_run_as_runtime_user pm2 start "$eco_dest"
-    _node_run_as_runtime_user pm2 save
+    if ! _node_run_as_runtime_user pm2 save; then
+        print_warn "PM2 started '${app_name}' but failed to save process list — app will NOT survive reboot/PM2 restart."
+        print_warn "Run manually: sudo -u $(_node_runtime_user) pm2 save"
+    fi
 
     # P3-2 fix: post-start port verification — pm2 start exit 0 doesn't confirm
     # the process is running and the port is bound. Poll ss up to 3 times (6s total).
@@ -596,8 +599,11 @@ node_remove_app() {
                 rm -f "$vhost_available"
                 rm -f "$domain_state"
                 if nginx_validate > /dev/null 2>&1; then
-                    service_reload nginx > /dev/null 2>&1 || true
-                    print_ok "Nginx vhost for '${app_domain}' removed and nginx reloaded."
+                    if service_reload nginx > /dev/null 2>&1; then
+                        print_ok "Nginx vhost for '${app_domain}' removed and nginx reloaded."
+                    else
+                        print_warn "Nginx vhost removed but reload failed — check 'systemctl status nginx' manually."
+                    fi
                 else
                     print_warn "nginx validation failed after vhost removal — check /etc/nginx/nginx.conf manually."
                 fi

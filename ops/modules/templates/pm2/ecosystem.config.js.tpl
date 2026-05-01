@@ -2,7 +2,8 @@
 // PM2 ecosystem config template for a generic Node.js app.
 // Rendered by OPS node module — do not edit this template directly.
 // Placeholders: {{APP_NAME}}, {{APP_PATH}}, {{APP_PORT}}, {{NODE_ENV}},
-//               {{INSTANCES}}, {{EXEC_MODE}}, {{MAX_MEMORY_RESTART}}
+//               {{INSTANCES}}, {{EXEC_MODE}}, {{MAX_MEMORY_RESTART}},
+//               {{NODE_ARGS_MAX_OLD_SPACE}}
 
 module.exports = {
   apps: [
@@ -24,6 +25,9 @@ module.exports = {
       // Prevents a leaky app from starving the whole VPS (tier-tuned by OPS).
       // Tier S (<1.5 GB RAM): 300M  |  Tier M: 500M  |  Tier L: 800M
       max_memory_restart: "{{MAX_MEMORY_RESTART}}",
+      // V8 heap cap: ~90% of max_memory_restart so GC triggers before PM2 graceful restart.
+      // Prevents hard OOM crash before PM2 can recycle (KNOWN-RISKS §22).
+      node_args: "--max-old-space-size={{NODE_ARGS_MAX_OLD_SPACE}}",
       // Logging
       out_file: "/var/log/ops/pm2-{{APP_NAME}}-out.log",
       error_file: "/var/log/ops/pm2-{{APP_NAME}}-err.log",

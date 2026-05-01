@@ -105,9 +105,12 @@ case_reg_06_cliproxyapi_posture_contract_present() {
 }
 
 case_reg_07_pm2_startup_not_root_contract_present() {
-    local content
+    local content node_content
     content="$(<"${REPO_ROOT}/docs/reference/KNOWN-RISKS-PATTERNS.md")"
-    test::assert_contains "$content" 'pm2-root.service' 'pm2 root startup regression coverage missing' || return 1
+    node_content="$(<"${OPS_ROOT}/modules/node.sh")"
+    test::assert_contains "$content" 'pm2-root.service' 'pm2 root startup regression coverage missing in KNOWN-RISKS' || return 1
+    # Assert the actual code passes -u <runtime_user> — not root — to pm2 startup.
+    test::assert_contains "$node_content" 'pm2 startup systemd -u "$runtime_user"' 'node_install_pm2 must pass runtime_user to pm2 startup, not root' || return 1
 }
 
 case_reg_08_pm2_runtime_user_wrapper_present() {
@@ -136,10 +139,13 @@ case_reg_11_cliproxyapi_vhost_preserves_global_rate_limit_zone() {
 }
 
 case_reg_12_pm2_logrotate_and_merge_logs_contract_present() {
-    local content
+    local content node_content
     content="$(<"${REPO_ROOT}/docs/reference/KNOWN-RISKS-PATTERNS.md")"
+    node_content="$(<"${OPS_ROOT}/modules/node.sh")"
     test::assert_contains "$content" 'pm2-logrotate' 'pm2 logrotate regression contract missing' || return 1
     test::assert_contains "$content" 'merge_logs: true' 'merge_logs regression contract missing' || return 1
+    # Assert inline fallback path in node.sh also sets merge_logs (template is checked by NODE-08).
+    test::assert_contains "$node_content" 'merge_logs:           true' 'node.sh inline fallback ecosystem must include merge_logs: true' || return 1
 }
 
 case_reg_13_pm2_read_helpers_centralized() {
@@ -479,7 +485,10 @@ case_web_09_web_10_cliproxyapi_nginx_boundary_contract_present() {
 case_node_01_node_lts_install_contract_present() {
     local content
     content="$(<"${OPS_ROOT}/modules/node.sh")"
-    test::assert_contains "$content" 'setup_lts.x' 'NodeSource LTS setup contract missing' || return 1
+    # Assert the safe manual GPG path, NOT the download-and-execute pattern (setup_lts.x).
+    test::assert_contains "$content" 'nodesource-repo.gpg.key' 'NodeSource manual GPG key download missing (safe install required)' || return 1
+    test::assert_contains "$content" 'gpg --dearmor' 'NodeSource GPG dearmor step missing' || return 1
+    test::assert_contains "$content" 'deb.nodesource.com' 'NodeSource apt sources.list entry missing' || return 1
 }
 
 case_node_02_pm2_not_root_contract_present() {
@@ -504,6 +513,9 @@ case_node_08_09_10_pm2_template_contract_present() {
     test::assert_contains "$tpl_content" 'merge_logs: true' 'PM2 merge_logs contract missing' || return 1
     test::assert_contains "$node_content" 'pm2-logrotate' 'PM2 logrotate contract missing' || return 1
     test::assert_contains "$tpl_content" 'max_memory_restart' 'PM2 max_memory_restart contract missing' || return 1
+    # NODE-10: template must include node_args to cap V8 heap (KNOWN-RISKS §22).
+    test::assert_contains "$tpl_content" 'node_args' 'PM2 template must include node_args for V8 heap cap (NODE-10 / KNOWN-RISKS §22)' || return 1
+    test::assert_contains "$tpl_content" 'NODE_ARGS_MAX_OLD_SPACE' 'PM2 template node_args must use NODE_ARGS_MAX_OLD_SPACE placeholder' || return 1
 }
 
 case_php_01_php_versions_contract_present() {
