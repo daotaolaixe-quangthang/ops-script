@@ -1,4 +1,4 @@
 Suite: reg-suite
-Total: 88
-Passed: 88
+Total: 104
+Passed: 104
 Failed: 0

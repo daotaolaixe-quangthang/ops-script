@@ -8,8 +8,11 @@ This document defines non-negotiable security rules for OPS. Any change that vio
   - Enforce use of a **non-root admin/runtime user** for SSH and day-2 operations.
   - Support changing the SSH port from 22 to a user-defined port.
   - Keep only the locked SSH port active in steady state, with an explicitly recorded transition port allowed only during controlled migration.
+  - During installer/bootstrap reruns, preserve every detected live SSH port in UFW until OPS has an unambiguous managed state; do not collapse multi-port hosts to one guessed port.
+  - In that ambiguous rerun state, do not rewrite `OPS_SSH_PORT` / `OPS_SSH_TRANSITION_PORT` until OPS can identify the managed SSH state safely.
   - Reconcile both `/etc/ssh/sshd_config` and `/etc/ssh/sshd_config.d/*.conf` so stale overrides cannot silently re-enable insecure settings.
   - Offer a guided step to close the old SSH port once login on the new port has been verified.
+  - Keep transition state recorded and avoid reporting success if SSH validation/reload-restart, UFW reconcile, or fail2ban apply fails during finalization.
 - Prompts must clearly show the **new SSH port and admin username**, for example:
 
   ```text
@@ -25,6 +28,10 @@ This document defines non-negotiable security rules for OPS. Any change that vio
   - `security_wizard_baseline()` (Setup Wizard step 1>1)
   - `security_harden_ssh()` (Security menu > 1)
   If no key is present, `PasswordAuthentication` remains `yes` regardless of user input.
+- **Installer-time rule:** the bootstrap installer may add the admin user's SSH public key, but it
+  must still keep `PasswordAuthentication yes` until the operator has verified SSH access on the
+  admin user and locked SSH port. Disabling password auth belongs to the wizard/security flow, not
+  to the installer itself.
 - SSH hardening baseline must disable at least:
   - `PermitRootLogin`
   - `PasswordAuthentication` (outside transition)
@@ -76,8 +83,10 @@ This document defines non-negotiable security rules for OPS. Any change that vio
   - Rely on default-deny posture for other inbound ports; explicit `DENY 8317` is not required and stale deny rules may be removed.
 - `fail2ban`:
   - **Must be installed** (via `apt_install fail2ban`) **and enabled** by the end of wizard Step 1 (Security Baseline).
-  - `security_apply_host_baseline` and `security_setup_fail2ban` must call `apt_install fail2ban` if not already present before attempting to configure it.
-  - Must follow the real SSH port set in OPS state, including temporary multi-port transition windows.
+  - `security_apply_host_baseline`, `security_setup_fail2ban`, and SSH finalization must call `apt_install fail2ban` if not already present before attempting to configure it.
+  - SSH finalization must treat fail2ban reconciliation as mandatory: do not clear `OPS_SSH_TRANSITION_PORT` unless fail2ban config write, enable, restart, and `fail2ban-client status sshd` all succeed.
+  - Generated SSH jail policy must come from OPS state (`OPS_SSH_PORT` plus optional `OPS_SSH_TRANSITION_PORT`), including temporary multi-port transition windows.
+  - `sshd -T`, `ss -tlnp`, and `fail2ban-client` are validation/diagnostic inputs here, not policy-generation inputs.
   - Should include a minimal Nginx-facing baseline when the host serves public web traffic.
   - Configuration changes must be conservative; avoid breaking legitimate SSH access.
 
@@ -155,6 +164,10 @@ The following settings are written to `/etc/mysql/mariadb.conf.d/60-ops-tuning.c
   - Fail safely on errors rather than producing partial configs.
 - For Nginx, PHP-FPM, and systemd:
   - Changes must be validated (e.g. `nginx -t`) before reloading services.
+- Managed symlink reconciliation (for example `/usr/local/bin/ops` and `/usr/local/bin/ops-dashboard`) must:
+  - no-op when the symlink already points to the desired OPS target
+  - replace only clearly OPS-managed/stale OPS symlinks
+  - refuse to remove foreign regular files, foreign symlinks, or directories
 - For PM2-managed Node services:
   - Run processes under a non-root runtime user.
   - **PM2 startup (`pm2 startup systemd`) MUST be configured for the runtime user, not `root`.** Running `pm2 startup` as root causes all PM2-managed processes to run as root, which is a critical security violation.
@@ -173,6 +186,8 @@ The following settings are written to `/etc/mysql/mariadb.conf.d/60-ops-tuning.c
 - OPS must avoid:
   - Printing secrets (passwords, tokens, API keys) into logs.
   - Storing secrets in world-readable files.
+- `/var/log/ops` must be root-owned and not group-writable (`0755` or stricter).
+- OPS-managed log files such as `/var/log/ops/ops.log` and `/var/log/ops/checks.log` must be root-owned `0640` (or stricter) and created safely under rerun/reconcile flows.
 - Secret files must have restrictive permissions (`0600`, owned by admin or runtime service user as appropriate):
   - `/opt/cli-proxy-api/config.yaml` (local API keys and managed proxy settings)
   - `/etc/ops/.cli-proxy-api-key` (CLIProxyAPI local client key)

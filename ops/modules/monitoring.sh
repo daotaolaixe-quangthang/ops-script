@@ -43,7 +43,7 @@ menu_monitoring() {
         echo "  17) Refresh capacity profile (re-detect RAM/CPU tier)"
         echo "  0) Back"
         echo ""
-        read -r -p "Select: " choice
+        prompt_menu_choice "Select" "" choice
         case "$choice" in
             1)  _monitoring_menu_run monitoring_system_overview; press_enter ;;
             2)  _monitoring_menu_run monitoring_service_status; press_enter ;;
@@ -70,6 +70,145 @@ menu_monitoring() {
     done
 }
 
+_monitoring_reconcile_ops_log_path() {
+    local log_file="${OPS_LOG_FILE:-/var/log/ops/ops.log}"
+    local log_dir
+    log_dir="$(dirname "$log_file")"
+
+    ensure_dir "$log_dir"
+    chmod 755 "$log_dir"
+    chown root:root "$log_dir" 2>/dev/null || true
+    touch "$log_file"
+    chmod 640 "$log_file"
+    chown root:root "$log_file" 2>/dev/null || true
+}
+
+_monitoring_reconcile_ops_logrotate() {
+    local lr_file="/etc/logrotate.d/ops"
+    local tmp
+    tmp=$(mktemp)
+
+    cat > "$tmp" <<'EOF_LR'
+# Managed by OPS — do not edit manually.
+/var/log/ops/ops.log {
+    weekly
+    rotate 8
+    compress
+    missingok
+    notifempty
+    create 0640 root root
+}
+EOF_LR
+
+    if [[ -f "$lr_file" ]] && cmp -s "$tmp" "$lr_file"; then
+        rm -f "$tmp"
+        return 0
+    fi
+
+    if [[ -f "$lr_file" ]]; then
+        backup_file "$lr_file" >/dev/null 2>&1 || true
+    fi
+
+    write_file "$lr_file" < "$tmp"
+    rm -f "$tmp"
+}
+
+_monitoring_php_fpm_installed() {
+    local php_ver
+    for php_ver in 7.4 8.1 8.2 8.3; do
+        if systemctl list-unit-files 2>/dev/null | grep -q "^php${php_ver}-fpm\\.service"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+_monitoring_ensure_pm2_logrotate() {
+    local runtime_user=""
+    local node_mod="${OPS_ROOT:-/opt/ops}/modules/node.sh"
+
+    runtime_user="$(ops_runtime_user 2>/dev/null || true)"
+    if [[ -z "$runtime_user" || "$runtime_user" == "root" ]]; then
+        print_warn "PM2 is installed but OPS_RUNTIME_USER is unresolved or root. Re-run Step 3 first."
+        return 1
+    fi
+
+    if ops_run_as_user "$runtime_user" pm2 module:list 2>/dev/null | grep -q 'pm2-logrotate'; then
+        ops_run_as_user "$runtime_user" pm2 set pm2-logrotate:max_size 20M >/dev/null 2>&1 || return 1
+        ops_run_as_user "$runtime_user" pm2 set pm2-logrotate:retain 7 >/dev/null 2>&1 || return 1
+        ops_run_as_user "$runtime_user" pm2 set pm2-logrotate:compress true >/dev/null 2>&1 || return 1
+        ops_run_as_user "$runtime_user" pm2 set pm2-logrotate:dateFormat YYYY-MM-DD >/dev/null 2>&1 || return 1
+        ops_run_as_user "$runtime_user" pm2 set pm2-logrotate:rotateInterval '0 0 * * *' >/dev/null 2>&1 || return 1
+        print_ok "PM2 log rotation reconciled for runtime user: ${runtime_user}"
+        return 0
+    fi
+
+    if ! declare -f node_ensure_pm2_logrotate >/dev/null 2>&1 && [[ -f "$node_mod" ]]; then
+        # shellcheck source=/dev/null
+        source "$node_mod"
+    fi
+
+    if declare -f node_ensure_pm2_logrotate >/dev/null 2>&1; then
+        node_ensure_pm2_logrotate
+        return $?
+    fi
+
+    print_warn "PM2 is installed but node_ensure_pm2_logrotate is unavailable."
+    return 1
+}
+
+monitoring_apply_baseline() {
+    require_root || return 1
+
+    local ok=1
+
+    if _monitoring_reconcile_ops_log_path; then
+        print_ok "OPS log path ready."
+    else
+        print_warn "Could not prepare ${OPS_LOG_FILE:-/var/log/ops/ops.log}."
+        ok=0
+    fi
+
+    if _monitoring_reconcile_ops_logrotate; then
+        print_ok "OPS logrotate config reconciled."
+    else
+        print_warn "Could not reconcile /etc/logrotate.d/ops."
+        ok=0
+    fi
+
+    if command -v nginx >/dev/null 2>&1 || systemctl list-unit-files 2>/dev/null | grep -q '^nginx\.service'; then
+        if [[ -f /etc/logrotate.d/nginx ]]; then
+            print_ok "Nginx logrotate config present."
+        else
+            print_warn "Nginx is installed but /etc/logrotate.d/nginx is missing."
+            ok=0
+        fi
+    fi
+
+    if _monitoring_php_fpm_installed; then
+        if compgen -G '/etc/logrotate.d/php*-fpm' >/dev/null; then
+            print_ok "PHP-FPM logrotate config present."
+        else
+            print_warn "PHP-FPM is installed but no php*-fpm logrotate config was found."
+            ok=0
+        fi
+    fi
+
+    if command -v pm2 >/dev/null 2>&1; then
+        if ! _monitoring_ensure_pm2_logrotate; then
+            ok=0
+        fi
+    fi
+
+    if (( ok == 1 )); then
+        print_ok "Monitoring baseline applied."
+        return 0
+    fi
+
+    print_warn "Monitoring baseline completed with follow-up required."
+    return 1
+}
+
 # monitoring_refresh_capacity — re-detect resources and rewrite capacity.conf
 # F-16/F-20: Without this, OPS_TIER stays stale after a VPS RAM upgrade until reinstall.
 monitoring_refresh_capacity() {
@@ -77,11 +216,10 @@ monitoring_refresh_capacity() {
     require_root || return 1
 
     print_warn "Re-detecting VPS resources and rewriting capacity profile..."
-    detect_tier   # re-reads /proc/meminfo, nproc → sets RAM_MB, CPU_CORES, OPS_TIER
+    detect_tier   # re-reads /proc/meminfo, nproc, and root-disk capacity fields
 
-    # F-16: Also refresh disk and derive TIER_SITES/TIER_USERS so capacity.conf
-    # stays complete (same fields as the installer writes).
-    DISK_GB=$(df -BG / | awk 'NR==2 { gsub("G","",$4); print $4 }')
+    # F-16: Refresh the full persisted capacity schema so capacity.conf stays
+    # aligned with the installer contract.
     local tier_sites tier_users
     case "$OPS_TIER" in
         S) tier_sites="1-2";  tier_users="10-50"  ;;
@@ -100,6 +238,7 @@ monitoring_refresh_capacity() {
 RAM_MB="${RAM_MB}"
 CPU_CORES="${CPU_CORES}"
 DISK_GB="${DISK_GB}"
+DISK_AVAIL_GB="${DISK_AVAIL_GB}"
 OPS_TIER="${OPS_TIER}"
 TIER_SITES="${tier_sites}"
 TIER_USERS="${tier_users}"
@@ -109,10 +248,10 @@ EOF
     print_ok "Capacity profile updated:"
     printf "  RAM:        %s MB\n"        "$RAM_MB"
     printf "  CPUs:       %s core(s)\n"   "$CPU_CORES"
-    printf "  Disk avail: %s GB\n"        "$DISK_GB"
+    printf "  Disk:       %s GB total, %s GB available\n" "$DISK_GB" "$DISK_AVAIL_GB"
     printf "  Tier:       %s  (sites: %s, users/site: ~%s)\n" \
         "$OPS_TIER" "$tier_sites" "$tier_users"
-    log_info "monitoring_refresh_capacity: RAM=${RAM_MB}MB CPU=${CPU_CORES} Disk=${DISK_GB}GB Tier=${OPS_TIER}"
+    log_info "monitoring_refresh_capacity: RAM=${RAM_MB}MB CPU=${CPU_CORES} Disk=${DISK_GB}GB Avail=${DISK_AVAIL_GB}GB Tier=${OPS_TIER}"
 
     # F-16: Prompt to re-apply per-service tuning so the new tier takes effect
     # immediately — not just on the next reinstall.
@@ -576,7 +715,7 @@ menu_monitoring_netdata() {
         echo "  3) Show Netdata status"
         echo "  0) Back"
         echo ""
-        read -r -p "Select: " choice
+        prompt_menu_choice "Select" "" choice
         case "$choice" in
             1) _monitoring_netdata_menu_run monitoring_install_netdata ;;
             2) _monitoring_netdata_menu_run monitoring_remove_netdata ;;

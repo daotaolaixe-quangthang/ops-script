@@ -24,7 +24,7 @@ At the bottom of the dashboard, the following prompt appears:
 Both methods launch the same main OPS menu.
 
 **Technical note on the login hook (`~/.bash_profile`):**
-The hook uses `SSH_CONNECTION` (always set by `sshd` for interactive SSH sessions) as the login guard, **not** `SSH_TTY` (which some SSH clients may leave unset). This ensures the dashboard reliably appears on every SSH login.
+The hook uses `SSH_CONNECTION` (always set by `sshd` for interactive SSH sessions) as the login guard, **not** `SSH_TTY` (which some SSH clients may leave unset). This ensures the dashboard reliably appears on every SSH login. The hook is display-only and must not mutate SSH/firewall state.
 
 ```bash
 # OPS login hook — ~/.bash_profile
@@ -67,12 +67,14 @@ Entry: `1) Production Setup Wizard`
 
 - Guides the user through first-time production stack setup.
 - Orchestrates:
+  - System update & base tools
   - Security & firewall
   - Nginx install & tuning
   - Node.js + PM2
   - PHP-FPM (multi-version)
   - Database (MariaDB default)
   - Logging & basic monitoring
+  - Summary & verification
 
 > **SSH lockout guard (chot):** The Security Baseline step (1>1) checks whether the admin user has at
 > least one SSH public key in `~/.ssh/authorized_keys` before allowing `PasswordAuthentication` to be
@@ -186,6 +188,10 @@ Submenu:
 2. **Renew all certificates**
 3. **Show certificate status**
 4. **Install / repair Certbot (snap)**
+5. **Snap housekeeping** — clean stale revisions, set retain=2
+6. **Set Cloudflare API Token** — enable DNS-01 automation for proxied Cloudflare domains
+7. **Issue Cloudflare Origin Certificate** — 15-year origin cert for Cloudflare proxy mode
+8. **List Cloudflare Origin Certificates**
 0. **Back to main menu**
 
 Guidelines:
@@ -297,6 +303,7 @@ Submenu:
 3. **Configure PHP-FPM pools**
 4. **Set default PHP CLI version**
 5. **Show PHP-FPM status**
+6. **Reset .htaccess (PHP sites only)**
 0. **Back to main menu**
 
 Key requirements:
@@ -314,11 +321,15 @@ Entry: `7) Database Management`
 
 Submenu:
 
-1. **Install / reinstall database server**
-2. **Secure and tune database**
-3. **Create database and user**
-4. **List databases and users**
-5. **Show database server status**
+1. **Install MariaDB**
+2. **Secure/re-harden MariaDB**
+3. **Apply tuning (by Tier)**
+4. **Create database**
+5. **Create database user**
+6. **Drop database**
+7. **List databases**
+8. **Database status**
+9. **Compliance audit**
 0. **Back to main menu**
 
 Constraints:
@@ -387,6 +398,7 @@ Current implementation (monitoring.sh):
 14. **Notifications & scheduled checks** → submenu (checks.sh)
 15. **Backup helpers** → submenu (backup.sh)
 16. **Update OPS from git** — download tarball, syntax check, apply
+17. **Refresh capacity profile (re-detect RAM/CPU tier)** — rewrite capacity.conf after VPS resize
 0. **Back to main menu**
 
 **Telegram config implementation (chốt):**
@@ -403,6 +415,7 @@ This reference must be kept in sync with the actual menu layout in `bin/ops`.
 - Moi `menu_*` boundary phai `return 0` khi user back hoac khi action ben trong soft-fail.
 - Action-level non-zero duoc hap thu boi wrapper menu-local (`_foo_menu_run`), khong propagate len menu cha.
 - `bin/ops` goi cac `menu_*` truc tiep; khong con dung `menu_x || true` nhu workaround.
+- Interactive menu prompts phai doc qua `/dev/tty` helper path (`core/ui.sh`), khong doc truc tiep tu `stdin` trong TUI loops.
 
 ---
 
@@ -417,7 +430,7 @@ Submenu:
 3. **Install & configure fail2ban** — set up fail2ban with SSH and nginx jails
 4. **Show security status** — display SSH port, auth settings, TCP forwarding, ufw/fail2ban state
 5. **Change SSH port** — change port with safe transition (old port kept open until verified)
-6. **Finalize SSH transition (close old SSH port)** — remove old port from sshd config and UFW
+6. **Finalize SSH transition (close old SSH port)** — reconcile sshd config/includes, remove the old port from managed config and UFW, refresh fail2ban, and clear transition state only after SSH, UFW, and fail2ban all apply successfully
 7. **Apply host baseline (sysctl/swap/firewall/fail2ban)** — apply all non-SSH security baselines
 8. **Manage SSH keys** — add/remove authorized_keys, toggle PasswordAuthentication
 9. **TCP Forwarding (VSCode Remote SSH)** — enable or disable `AllowTcpForwarding` in sshd

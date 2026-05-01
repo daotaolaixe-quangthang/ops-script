@@ -76,8 +76,7 @@ main_menu() {
         echo ""
         # F-SPIN: read with 5-min timeout — exits cleanly if tty dies mid-session
         # (prevents 100% CPU spin loop when SSH disconnects with ops open)
-        printf "Select: " > /dev/tty
-        if ! read -r -t 300 choice < /dev/tty; then
+        if ! prompt_menu_choice "Select" 300 choice; then
             echo "" >&2
             exit 0
         fi
@@ -99,48 +98,47 @@ main_menu() {
     done
 }
 
+# F-SPIN: Guard — require a real interactive terminal before entering the menu loop.
+# The TUI reads from /dev/tty, but we also require interactive stdin/stdout so
+# redirected invocations like `ops < /dev/null` fail fast instead of entering a
+# mixed-input session.
+if ! tty_is_available || ! [ -t 0 ] || ! [ -t 1 ]; then
+    echo "[ERROR] 'ops' requires an interactive terminal. Run: sudo ops" >&2
+    exit 1
+fi
+
 # ── F-13: Session lock ───────────────────────────────────────
 # Prevents two concurrent 'ops' sessions from corrupting shared state
 # (config files, service restarts, PM2 saves, UFW rules, etc.).
 #
-# Uses flock(1) on a file descriptor opened against /run/lock/ops-menu.lock:
-#   • /run/lock has sticky-bit (1777) — world-writable but each user can
-#     only delete their own files, so no unprivileged tampering.
-#   • flock is atomic — no TOCTOU window between check and acquire.
-#   • Works for both 'ops' (opsuser) and 'sudo ops' (root): flock operates
-#     on the fd, not the file owner, so no AppArmor/ownership conflict.
+# Use a shared lock file opened read-only so alternating users (opsuser/root)
+# can always reopen the same path even if an earlier run created it.
 OPS_LOCK_FILE="/run/lock/ops-menu.lock"
 OPS_LOCK_FD=9
 
-# Open/create the lock file on fd 9.
-exec 9>"$OPS_LOCK_FILE" || {
+# Create the lock file only if missing; once it exists, all users only need read
+# access to reopen it and take an advisory flock on the descriptor.
+if [[ ! -e "$OPS_LOCK_FILE" ]]; then
+    : > "$OPS_LOCK_FILE" || {
+        echo "[ERROR] Cannot create lock file $OPS_LOCK_FILE" >&2
+        exit 1
+    }
+fi
+
+exec 9<"$OPS_LOCK_FILE" || {
     echo "[ERROR] Cannot open lock file $OPS_LOCK_FILE" >&2
     exit 1
 }
 
 # Attempt a non-blocking exclusive lock.
 if ! flock -n 9 2>/dev/null; then
-    _ops_old_pid=$(cat "$OPS_LOCK_FILE" 2>/dev/null || true)
-    echo "[ERROR] Another ops session is already running${_ops_old_pid:+ (PID $_ops_old_pid)}." >&2
+    echo "[ERROR] Another ops session is already running." >&2
     echo "        Exit that session first, then run 'ops' again." >&2
-    exec 9>&-
+    exec 9<&-
     exit 1
 fi
-
-# Write our PID into the locked file (informational — shown on conflict above).
-echo "$$" >&9
 
 # Lock is released automatically when fd 9 is closed (process exits).
-# The trap also removes the file to keep /run/lock tidy.
-trap 'flock -u 9; exec 9>&-; rm -f "$OPS_LOCK_FILE" 2>/dev/null || true' EXIT INT TERM HUP
-
-# F-SPIN: Guard — require an interactive terminal before entering the menu loop.
-# If stdin/stdout are not a TTY (e.g. piped, or tty already deleted), exit cleanly
-# rather than spinning the while-true loop at 100% CPU forever.
-if ! { [ -t 0 ] || [ -t 1 ]; }; then
-    echo "[ERROR] 'ops' requires an interactive terminal. Run: sudo ops" >&2
-    exec 9>&-
-    exit 1
-fi
+trap 'flock -u 9 2>/dev/null || true; exec 9<&-' EXIT INT TERM HUP
 
 main_menu

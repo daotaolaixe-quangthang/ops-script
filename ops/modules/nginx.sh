@@ -416,8 +416,8 @@ _nginx_apply_global_tuning() {
 }
 
 _nginx_test_and_reload() {
-    if ! nginx -t; then
-        print_error "Nginx config test failed."
+    if ! nginx_validate; then
+        print_error "Nginx validation failed."
         return 1
     fi
     # F-15 fix: use reload-or-restart so this is safe both when nginx is already
@@ -453,6 +453,8 @@ DOMAIN_PHP_SOCKET="${php_socket}"
 DOMAIN_WEB_ROOT="/var/www/${domain}"
 DOMAIN_CREATED="$(date '+%Y-%m-%d %H:%M:%S')"
 EOF
+    chmod 0644 "${OPS_DOMAINS_DIR}/${domain}.conf"
+    chown root:root "${OPS_DOMAINS_DIR}/${domain}.conf" 2>/dev/null || true
 }
 
 _create_site_from_template() {
@@ -460,6 +462,8 @@ _create_site_from_template() {
     local output="$2"
     shift 2
     render_template "$template" "$@" | write_file "$output"
+    chmod 0644 "$output"
+    chown root:root "$output" 2>/dev/null || true
 }
 
 _domain_ssl_cert_ready() {
@@ -550,7 +554,7 @@ NGINX_SSL_EOF
     fi
 
     # Step 3: Guard — remove broken file if nginx syntax check fails
-    if ! nginx -t >/dev/null 2>&1; then
+    if ! nginx_validate >/dev/null 2>&1; then
         log_error "_render_node_vhost: nginx -t failed for ${domain} — removing broken vhost file"
         rm -f "$available"
         return 1
@@ -658,8 +662,11 @@ server {
 NGINX_SSL_EOF
     fi
 
+    chmod 0644 "$available"
+    chown root:root "$available" 2>/dev/null || true
+
     # Step 3: Guard — remove broken file if nginx syntax check fails
-    if ! nginx -t >/dev/null 2>&1; then
+    if ! nginx_validate >/dev/null 2>&1; then
         log_error "_render_php_vhost: nginx -t failed for ${domain} — removing broken vhost file"
         rm -f "$available"
         return 1
@@ -742,7 +749,7 @@ NGINX_SSL_EOF
     fi
 
     # Step 3: Guard — remove broken file if nginx syntax check fails
-    if ! nginx -t >/dev/null 2>&1; then
+    if ! nginx_validate >/dev/null 2>&1; then
         log_error "_render_static_vhost: nginx -t failed for ${domain} — removing broken vhost file"
         rm -f "$available"
         return 1
@@ -1074,12 +1081,12 @@ nginx_apply_security_baseline() {
         return 1
     fi
     _nginx_apply_global_tuning
-    if nginx -t >/dev/null 2>&1; then
+    if nginx_validate >/dev/null 2>&1; then
         service_reload nginx
         print_ok "Nginx security baseline applied and reloaded."
         log_info "nginx_apply_security_baseline: applied and nginx reloaded"
     else
-        print_error "Nginx config test failed after tuning — check /etc/nginx/nginx.conf"
+        print_error "Nginx validation failed after tuning — check /etc/nginx/nginx.conf"
         return 1
     fi
 }
@@ -1103,7 +1110,7 @@ menu_nginx() {
         echo "  8) Apply security baseline (server_tokens, TLS, headers)"
         echo "  0) Back"
         echo ""
-        read -r -p "Select: " choice
+        prompt_menu_choice "Select" "" choice
         case "$choice" in
             1) _nginx_menu_run list_domains ;;
             2) _nginx_menu_run nginx_prompt_add_domain ;;
@@ -1142,7 +1149,7 @@ menu_ssl() {
         echo "  8) List Cloudflare Origin Certificates"
         echo "  0) Back"
         echo ""
-        read -r -p "Select: " choice
+        prompt_menu_choice "Select" "" choice
         case "$choice" in
             1) _ssl_menu_run ssl_issue_cert ;;
             2) _ssl_menu_run ssl_renew_all ;;
@@ -1215,8 +1222,8 @@ install_nginx() {
     _nginx_disable_packaged_default_site
 
     # Validate config before touching the service.
-    if ! nginx -t; then
-        print_error "F-15: Nginx config test failed after tuning — service NOT started. Check /etc/nginx/nginx.conf"
+    if ! nginx_validate; then
+        print_error "F-15: Nginx validation failed after tuning — service NOT started. Check /etc/nginx/nginx.conf"
         return 1
     fi
 
@@ -1274,7 +1281,7 @@ nginx_prompt_add_domain() {
     echo "  1) Node.js"
     echo "  2) PHP site"
     echo "  3) Static site"
-    read -r -p "Select backend type: " _type_choice
+    prompt_menu_choice "Select backend type" "" _type_choice
 
     local type
     case "$_type_choice" in
@@ -1322,9 +1329,7 @@ add_domain() {
         if [[ "${FORCE_OVERWRITE:-0}" != "1" ]]; then
             print_warn "Domain '${domain}' already has an existing vhost or state file."
             print_warn "Overwriting will replace the live Nginx config for this domain."
-            local _ow_ans
-            read -r -p "Overwrite existing config for '${domain}'? [y/N]: " _ow_ans
-            if [[ "${_ow_ans,,}" != "y" ]]; then
+            if ! prompt_confirm "Overwrite existing config for '${domain}'?"; then
                 print_warn "Aborted. Existing config for '${domain}' was NOT changed."
                 return 0
             fi
@@ -1535,9 +1540,7 @@ remove_domain() {
         return 1
     fi
 
-    local confirm_ans
-    read -r -p "Remove domain ${domain}? This will delete Nginx config and FPM pool (if PHP). [y/N]: " confirm_ans
-    if [[ "${confirm_ans,,}" != "y" ]]; then
+    if ! prompt_confirm "Remove domain ${domain}? This will delete Nginx config and FPM pool (if PHP)."; then
         print_warn "Cancelled."
         return 0
     fi
@@ -1840,7 +1843,7 @@ nginx_remove_vhost() {
         nginx_prompt_remove_domain
     fi
 }
-nginx_status() { nginx -t && service_status nginx || true; }
+nginx_status() { nginx_validate && service_status nginx || true; }
 ssl_install_certbot() { _install_certbot_snap; }
 
 # _ssl_collect_domains
@@ -2009,8 +2012,7 @@ ssl_set_cf_token() {
 
     if [[ -n "${CF_API_TOKEN:-}" ]]; then
         print_warn "A Cloudflare API token is already configured."
-        read -r -p "  Replace existing token? [y/N]: " _replace_ans
-        if [[ "${_replace_ans,,}" != "y" ]]; then
+        if ! prompt_confirm "  Replace existing token?"; then
             print_warn "Aborted — existing token retained."
             return 0
         fi
@@ -2406,7 +2408,7 @@ menu_nginx_web_controls() {
         echo "  7) Remove Cloudflare IP restrict"
         echo "  0) Back"
         echo ""
-        read -r -p "Select: " choice
+        prompt_menu_choice "Select" "" choice
         case "$choice" in
             1) _nginx_web_controls_menu_run nginx_enable_cloudflare_real_ip; press_enter ;;
             2) _nginx_web_controls_menu_run nginx_remove_cloudflare_real_ip; press_enter ;;
@@ -2542,15 +2544,15 @@ nginx_refresh_cloudflare_ips() {
     print_ok "Cloudflare IP list refreshed: $restrict_conf"
     log_info "F-22: nginx_refresh_cloudflare_ips: ranges written at $(date -u '+%Y-%m-%dT%H:%MZ')"
 
-    if nginx -t 2>/dev/null; then
+    if nginx_validate >/dev/null 2>&1; then
         # P-03 fix: if service_reload fails, don't print_ok — operator needs to know.
         if service_reload nginx; then
             print_ok "Nginx reloaded with updated Cloudflare IP ranges."
         else
-            print_warn "nginx -t OK but reload returned non-zero — check 'systemctl status nginx'."
+            print_warn "Nginx validation passed but reload returned non-zero — check 'systemctl status nginx'."
         fi
     else
-        print_error "nginx -t failed after refresh — check $restrict_conf manually."
+        print_error "Nginx validation failed after refresh — check $restrict_conf manually."
         return 1
     fi
 }

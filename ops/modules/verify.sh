@@ -608,7 +608,7 @@ _vs_check_runtime_user() {
     ru="$(ops_runtime_user 2>/dev/null || true)"
     if [[ "$ru" == "root" || -z "$ru" ]]; then
         _vs_fail "Runtime User" "ops_runtime_user resolved to '${ru:-empty}'" \
-            "set OPS_RUNTIME_USER=<username> in ops.conf"
+            "set OPS_RUNTIME_USER or OPS_ADMIN_USER to a valid non-root user in ops.conf"
         _vs_set_result fail
     else
         _vs_pass "Runtime User" "${ru}"

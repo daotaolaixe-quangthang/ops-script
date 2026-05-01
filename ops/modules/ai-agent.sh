@@ -355,9 +355,8 @@ configure_claude_telegram_bot() {
     # ── User inputs ───────────────────────────────────────────
 
     # Bot Token
-    local bot_token
-    read -r -s -p "  Telegram Bot Token (from @BotFather): " bot_token
-    echo ""
+    prompt_secret "  Telegram Bot Token (from @BotFather)"
+    local bot_token="$SECRET"
     if [[ -z "$bot_token" ]]; then
         log_error "Bot token cannot be empty"
         return 1

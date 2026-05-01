@@ -10,11 +10,12 @@ This document describes the exact end‑to‑end flow from a fresh VPS to a prod
 The recommended entrypoint for users:
 
 ```bash
-curl -sO https://raw.githubusercontent.com/daotaolaixe-quangthang/ops-script/main/install/ops-install.sh \
-  && bash ops-install.sh
+bash <(curl -fsSL https://raw.githubusercontent.com/daotaolaixe-quangthang/ops-script/main/install/ops-install.sh)
 ```
 
 > **Installer URL (chốt)**: `https://raw.githubusercontent.com/daotaolaixe-quangthang/ops-script/main/install/ops-install.sh`
+>
+> Process substitution is the recommended entrypoint because it preserves the TTY for interactive prompts.
 
 The `ops-install.sh` script **must**:
 
@@ -30,6 +31,8 @@ Installer asks for:
    - Validate port is not in use and > 1024.
    - Add new port to `sshd_config` but keep port 22 temporarily.
    - Open both ports in firewall.
+   - On rerun, if the host already has multiple live SSH ports, preserve all detected live SSH ports during bootstrap and do not collapse firewall/state down to a guessed single port.
+   - In that ambiguous rerun case, do not rewrite `OPS_SSH_PORT` / `OPS_SSH_TRANSITION_PORT` until OPS can infer a managed state unambiguously.
 
 2. **Non‑root admin user** (e.g. `opsadmin` with a suggested default):
    - Create user, set password, add to `sudo`.
@@ -41,19 +44,28 @@ Installer asks for:
    - If skipped: warns that `PasswordAuthentication` will remain `yes` until a key is added later.
    - Sets internal state `SSH_KEY_CONFIGURED=yes|no`, used by the Security Wizard to guard against
      disabling `PasswordAuthentication` without any key present (prevents SSH lockout).
+   - **Installer-time rule:** OPS still keeps `PasswordAuthentication = yes` during the bootstrap phase,
+     even if a key was pasted successfully. Disabling password auth is only offered later from the
+     Security Wizard / Security menu after the operator has verified SSH access on the admin user
+     and locked SSH port.
    - Idempotent: no-op if `authorized_keys` already contains a valid key.
 
 
 3. **Capacity estimation**:
-   - Based on RAM and CPU, compute:
+   - Capture RAM, CPU cores, root-disk total, and root-disk available.
+   - Compute `OPS_TIER` from RAM only, then derive:
      - Recommended number of active Node.js / CLIProxyAPI sites.
      - Rough concurrent user range per site.
-   - Store this in `/etc/ops/capacity.conf` (or JSON) for later display.
+   - Store this in `/etc/ops/capacity.conf` as a shell-sourceable key=value file for later display.
 
 After this step, installer:
 
-- Clones or extracts OPS core to `/opt/ops`.
-- Runs `/opt/ops/bin/ops-setup.sh`.
+- Before any bootstrap mutation to SSH, UFW, admin-user state, SSH keys, or minimum SSH hardening, snapshots the current host state so a pre-activation failure can roll back cleanly.
+- Builds and validates a full staged OPS tree before touching the live `/opt/ops` path.
+- Activates `/opt/ops` only after staged syntax checks pass, including extensionless Bash entrypoints such as `bin/ops` and `bin/ops-dashboard`.
+- Runs `/opt/ops/bin/ops-setup.sh` only after the live tree activation succeeds.
+- If bootstrap fails before activation completes, OPS restores the previous SSH/UFW/admin-user/bootstrap-key/minimum-hardening state before exiting.
+- If post-deploy setup fails after activation (for example `ops-setup.sh` or `capacity.conf` write), OPS restores the previous `/opt/ops` tree and operator-facing state (`ops.conf`, symlinks, login hook) before exiting with failure.
 
 ### 3. `ops-setup.sh` responsibilities
 
@@ -65,6 +77,7 @@ After this step, installer:
 2. Wires login hook:
    - When an interactive shell starts for the admin user, run `ops-dashboard`.
    - The hook is display-only; it must not mutate SSH/firewall state.
+   - On rerun, OPS rewrites one managed login-hook block and only removes the legacy auto-finalize sudoers rule after the hook migration succeeds.
    - After showing the dashboard, print a prompt like:
 
      ```text
@@ -147,6 +160,7 @@ From the main menu, user selects **“Production Setup Wizard”** (or similar).
      - Apply tuning from `docs/reference/PERF-TUNING.md`.
 
 7. **Logging & basic monitoring**
+   - Ensure the OPS log path (`/var/log/ops/ops.log`) exists and is rotated via `/etc/logrotate.d/ops`.
    - Ensure `logrotate` rules for Nginx, PHP‑FPM, and Node/PM2 logs.
    - Optionally install simple monitoring tools (e.g. `htop`).
 
@@ -162,7 +176,7 @@ From the main menu, user selects **“Production Setup Wizard”** (or similar).
 
 The wizard should be re‑runnable; subsequent runs should detect existing state and ask before changing configs.
 
-### 6. SSH port finalisation and reboot
+### 6. SSH port finalisation
 
 After the stack and menus are confirmed to be working, OPS offers a security hardening step to finish the SSH transition:
 
@@ -174,19 +188,28 @@ Everything looks ready.
 We will now:
 - close SSH port 22
 - keep SSH port <NEW_PORT> open
-- reboot the server
+- validate the final SSH config before applying it
 
-After reboot, you MUST use:
+You MUST then use:
   ssh -p <NEW_PORT> <ADMIN_USER>@<SERVER_IP_OR_HOSTNAME>
 
-Do you want to apply these changes and reboot now? [y/N]:
+Do you want to finalize the SSH transition now? [y/N]:
 ```
 
 If the user confirms:
 
-1. UFW (or other firewall) is updated to **deny port 22** and allow only the new SSH port.
-2. `sshd_config` is updated to remove port 22 and keep only the new port.
-3. A reboot is triggered.
+1. OPS reconciles both `/etc/ssh/sshd_config` and `sshd_config.d/*.conf` so stale `Port` directives do not keep port 22 active.
+2. The managed hardening include is rewritten so only the locked SSH port remains.
+3. `sshd -t` must pass before OPS applies the change.
+4. SSH is reloaded/restarted successfully.
+5. OPS writes the final intended SSH state, then reconciles UFW and fail2ban from that OPS state for the final single-port policy.
+6. Only after SSH, UFW, and fail2ban all apply cleanly does OPS clear transition state and report success.
+
+If validation, SSH apply, UFW reconcile, or fail2ban apply fails:
+
+- OPS must keep the transition state recorded and must **not** report success.
+- OPS must restore the previous SSH/firewall/fail2ban state before exiting failure.
+- The operator should fix the issue first, then re-run finalization.
 
 If the user declines:
 

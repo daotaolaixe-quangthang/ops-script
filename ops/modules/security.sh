@@ -217,11 +217,14 @@ security_wizard_baseline() {
         fi
         local _ssh_svc
         _ssh_svc=$(security_detect_ssh_service)
-        service_restart "$_ssh_svc"
-        security_reconcile_ufw_rules
+        if ! service_restart "$_ssh_svc"; then
+            print_error "SSH restart failed after writing the port-unchanged hardening config."
+            return 1
+        fi
+        security_reconcile_ufw_rules || return 1
         security_write_fail2ban_config
         service_enable fail2ban > /dev/null 2>&1 || true
-        service_restart fail2ban > /dev/null 2>&1 || true
+        service_restart fail2ban > /dev/null 2>&1 || print_warn "fail2ban restart failed after applying the port-unchanged hardening config."
         print_ok "SSH port unchanged; hardening config fully applied, firewall and fail2ban baseline reconciled."
     fi
 
@@ -232,9 +235,14 @@ security_write_sshd_hardening_include() {
     local locked_port="$1"
     local password_auth="$2"
     local transition_port="${3:-}"
+    local tcp_forwarding_override="${4:-}"
     # Read TCP forwarding preference; default no (security-hardened)
     local tcp_forwarding
-    tcp_forwarding="$(security_get_tcp_forwarding)"
+    if [[ -n "$tcp_forwarding_override" ]]; then
+        tcp_forwarding="$tcp_forwarding_override"
+    else
+        tcp_forwarding="$(security_get_tcp_forwarding)"
+    fi
 
     ensure_dir "$SECURITY_SSHD_INCLUDE_DIR"
     backup_file "$SECURITY_SSHD_OPS_INCLUDE" >/dev/null 2>&1 || true
@@ -375,9 +383,160 @@ security_list_desired_ssh_ports() {
     fi
 }
 
+security_snapshot_sshd_include_dir() {
+    local snapshot_root
+    snapshot_root=$(mktemp -d /tmp/ops-sshd-include-state-XXXXXX)
+    snapshot_path_state "$SECURITY_SSHD_INCLUDE_DIR" "$snapshot_root" "sshd-include-dir"
+    echo "$snapshot_root"
+}
+
+security_snapshot_ufw_state() {
+    local snapshot_root
+    snapshot_root=$(mktemp -d /tmp/ops-ufw-state-XXXXXX)
+    snapshot_ufw_state "$snapshot_root"
+    echo "$snapshot_root"
+}
+
+security_ufw_status_has_allow_port() {
+    local status_output="$1"
+    local port="$2"
+    printf '%s\n' "$status_output" | grep -Eq "^[[:space:]]*${port}(/tcp)?([[:space:]]|\(v6\)).*ALLOW"
+}
+
+security_finalize_ufw_transition() {
+    local new_port="$1"
+    local old_port="$2"
+    local status_output
+
+    if ! command -v ufw >/dev/null 2>&1; then
+        apt_install ufw || {
+            print_error "Failed to install ufw while finalizing the SSH transition."
+            return 1
+        }
+    fi
+
+    ufw default deny incoming >/dev/null 2>&1 || {
+        print_error "Failed to set UFW default deny incoming while finalizing the SSH transition."
+        return 1
+    }
+    ufw default allow outgoing >/dev/null 2>&1 || {
+        print_error "Failed to set UFW default allow outgoing while finalizing the SSH transition."
+        return 1
+    }
+    ufw_allow "${new_port}/tcp" "SSH managed" >/dev/null 2>&1 || {
+        print_error "Failed to allow SSH port ${new_port}/tcp in UFW while finalizing the SSH transition."
+        return 1
+    }
+    ufw_allow 80/tcp "HTTP" >/dev/null 2>&1 || {
+        print_error "Failed to allow 80/tcp in UFW while finalizing the SSH transition."
+        return 1
+    }
+    ufw_allow 443/tcp "HTTPS" >/dev/null 2>&1 || {
+        print_error "Failed to allow 443/tcp in UFW while finalizing the SSH transition."
+        return 1
+    }
+
+    status_output="$(ufw status 2>/dev/null || true)"
+    if security_ufw_status_has_allow_port "$status_output" "8317"; then
+        yes | ufw delete allow 8317/tcp >/dev/null 2>&1 || {
+            print_error "Failed to remove a public UFW allow rule for 8317/tcp while finalizing the SSH transition."
+            return 1
+        }
+    fi
+    ufw_deny 8317/tcp >/dev/null 2>&1 || {
+        print_error "Failed to enforce UFW deny on 8317/tcp while finalizing the SSH transition."
+        return 1
+    }
+
+    if security_ufw_status_has_allow_port "$status_output" "$old_port"; then
+        yes | ufw delete allow "${old_port}/tcp" >/dev/null 2>&1 || {
+            print_error "Failed to remove the old SSH UFW allow rule for ${old_port}/tcp."
+            return 1
+        }
+    fi
+
+    if grep -qi 'Status: active' <<< "$status_output"; then
+        ufw reload >/dev/null 2>&1 || {
+            print_error "Failed to reload UFW while finalizing the SSH transition."
+            return 1
+        }
+    else
+        ufw --force enable >/dev/null 2>&1 || {
+            print_error "Failed to enable UFW while finalizing the SSH transition."
+            return 1
+        }
+    fi
+
+    status_output="$(ufw status 2>/dev/null || true)"
+    if ! security_ufw_status_has_allow_port "$status_output" "$new_port"; then
+        print_error "UFW does not show SSH port ${new_port}/tcp as allowed after finalization."
+        return 1
+    fi
+    if security_ufw_status_has_allow_port "$status_output" "$old_port"; then
+        print_error "UFW still shows the old SSH port ${old_port}/tcp as allowed after finalization."
+        return 1
+    fi
+    if security_ufw_status_has_allow_port "$status_output" "8317"; then
+        print_error "UFW still shows 8317/tcp as allowed after finalization."
+        return 1
+    fi
+}
+
+security_apply_fail2ban_ssh_state() {
+    if ! command -v fail2ban-client >/dev/null 2>&1; then
+        log_info "security_apply_fail2ban_ssh_state: fail2ban not found — installing..."
+        if ! apt_install fail2ban; then
+            print_error "Failed to install fail2ban while applying the SSH security state."
+            return 1
+        fi
+    fi
+
+    # backend=systemd works best when python3-systemd is available, but some
+    # containers cannot install it. Keep this best-effort like the existing flow.
+    if ! dpkg -s python3-systemd >/dev/null 2>&1; then
+        apt_install python3-systemd 2>/dev/null || true
+    fi
+
+    security_write_fail2ban_config
+
+    if ! service_enable fail2ban; then
+        print_error "Failed to enable fail2ban while applying the SSH security state."
+        return 1
+    fi
+    if ! service_restart fail2ban; then
+        print_error "fail2ban restart failed while applying the SSH security state."
+        return 1
+    fi
+    if ! fail2ban-client ping >/dev/null 2>&1; then
+        print_error "fail2ban did not respond after restart."
+        return 1
+    fi
+    if ! fail2ban-client status sshd >/dev/null 2>&1; then
+        print_error "fail2ban SSH jail is not active after reconciliation."
+        return 1
+    fi
+}
+
+security_restore_ssh_ops_state() {
+    local locked_port="$1"
+    local transition_port="$2"
+    local root_login="$3"
+    local password_auth="$4"
+    local runtime_user="$5"
+    local tcp_forwarding="$6"
+
+    ops_conf_set "ops.conf" "OPS_SSH_PORT" "$locked_port"
+    ops_conf_set "ops.conf" "OPS_SSH_TRANSITION_PORT" "$transition_port"
+    ops_conf_set "ops.conf" "OPS_SSH_ROOT_LOGIN" "$root_login"
+    ops_conf_set "ops.conf" "OPS_SSH_PASSWORD_AUTH" "$password_auth"
+    ops_conf_set "ops.conf" "OPS_RUNTIME_USER" "$runtime_user"
+    ops_conf_set "ops.conf" "OPS_SSH_TCP_FORWARDING" "$tcp_forwarding"
+}
+
 security_reconcile_ufw_rules() {
     local desired_ports=()
     local port status_output existing_ports=()
+    local ufw_errors=0
 
     if ! command -v ufw > /dev/null 2>&1; then
         apt_install ufw
@@ -394,21 +553,33 @@ security_reconcile_ufw_rules() {
         return 1
     fi
 
-    ufw default deny incoming > /dev/null 2>&1 || true
-    ufw default allow outgoing > /dev/null 2>&1 || true
+    if ! ufw default deny incoming > /dev/null 2>&1; then
+        print_warn "UFW: failed to set default deny incoming"
+        ((ufw_errors++))
+    fi
+    if ! ufw default allow outgoing > /dev/null 2>&1; then
+        print_warn "UFW: failed to set default allow outgoing"
+        ((ufw_errors++))
+    fi
 
     # Track SSH rule add success; only enable UFW if at least one succeeded
     local ssh_rules_added=0
     for port in "${desired_ports[@]}"; do
-        if ufw allow "${port}/tcp" comment "ops: SSH managed" > /dev/null 2>&1; then
+        if ufw_allow "${port}/tcp" "SSH managed" > /dev/null 2>&1; then
             ((ssh_rules_added++))
         else
             print_warn "UFW: failed to add SSH rule for port ${port}/tcp"
             log_info "security_reconcile_ufw_rules: ufw allow ${port}/tcp failed"
         fi
     done
-    ufw allow 80/tcp  comment "ops: HTTP"  > /dev/null 2>&1 || true
-    ufw allow 443/tcp comment "ops: HTTPS" > /dev/null 2>&1 || true
+    if ! ufw_allow 80/tcp "HTTP" > /dev/null 2>&1; then
+        print_warn "UFW: failed to add 80/tcp rule"
+        ((ufw_errors++))
+    fi
+    if ! ufw_allow 443/tcp "HTTPS" > /dev/null 2>&1; then
+        print_warn "UFW: failed to add 443/tcp rule"
+        ((ufw_errors++))
+    fi
 
     # Skip enable if no SSH rules added — prevents lockout on fresh UFW enable
     if [[ "$ssh_rules_added" -eq 0 ]]; then
@@ -488,30 +659,58 @@ security_reconcile_ufw_rules() {
         fi
 
         if [[ "$keep" -eq 0 ]]; then
-            ufw delete allow "${port}/tcp" > /dev/null 2>&1 || true
-            log_info "UFW: removed stale OPS-managed rule for port ${port}"
+            if yes | ufw delete allow "${port}/tcp" > /dev/null 2>&1; then
+                log_info "UFW: removed stale OPS-managed rule for port ${port}"
+            else
+                print_warn "UFW: failed to remove stale OPS-managed rule for port ${port}"
+                ((ufw_errors++))
+            fi
         fi
     done
 
-    ufw delete allow 8317/tcp > /dev/null 2>&1 || true
-    ufw deny   8317/tcp       > /dev/null 2>&1 || true
-    ufw --force enable         > /dev/null 2>&1 || true
-    ufw reload                 > /dev/null 2>&1 || true
+    if security_ufw_status_has_allow_port "$status_output" "8317"; then
+        if ! yes | ufw delete allow 8317/tcp > /dev/null 2>&1; then
+            print_warn "UFW: failed to remove public allow rule for 8317/tcp"
+            ((ufw_errors++))
+        fi
+    fi
+    if ! ufw_deny 8317/tcp > /dev/null 2>&1; then
+        print_warn "UFW: failed to enforce deny on 8317/tcp"
+        ((ufw_errors++))
+    fi
+    if grep -qi 'Status: active' <<< "$status_output"; then
+        if ! ufw reload > /dev/null 2>&1; then
+            print_warn "UFW: failed to reload ufw"
+            ((ufw_errors++))
+        fi
+    else
+        if ! ufw --force enable > /dev/null 2>&1; then
+            print_warn "UFW: failed to enable ufw"
+            ((ufw_errors++))
+        fi
+    fi
+
+    if [[ "$ufw_errors" -gt 0 ]]; then
+        log_info "security_reconcile_ufw_rules: completed with ${ufw_errors} warning-level failures"
+        return 1
+    fi
 }
 
 
 security_write_fail2ban_config() {
-    local ssh_ports
-    # Detect live SSH ports from ss (more reliable than sshd -T in non-session contexts)
-    ssh_ports=$(ss -tlnp 2>/dev/null \
-        | awk '/sshd/ {print $4}' \
-        | grep -oP ':\K[0-9]+$' \
-        | sort -un \
-        | paste -sd, - || true)
-    # Fallback: use OPS-managed ports from ops.conf
-    if [[ -z "$ssh_ports" ]]; then
-        ssh_ports=$(security_list_desired_ssh_ports | paste -sd, -)
-    fi
+    local ssh_ports=""
+    local port
+
+    # Desired SSH policy comes from OPS managed state. Runtime socket inspection
+    # is validation-only; do not derive fail2ban policy from partial live output.
+    while IFS= read -r port; do
+        [[ -n "$port" ]] || continue
+        if [[ -n "$ssh_ports" ]]; then
+            ssh_ports+=","
+        fi
+        ssh_ports+="$port"
+    done < <(security_list_desired_ssh_ports)
+
     # Last fallback: port 22
     ssh_ports="${ssh_ports:-22}"
 
@@ -583,7 +782,10 @@ fs.suid_dumpable = 0
 vm.swappiness = 10
 EOF_SYSCTL
     chmod 644 "$SECURITY_SYSCTL_OPS_CONF"
-    sysctl -p "$SECURITY_SYSCTL_OPS_CONF" >/dev/null 2>&1 || true
+    if ! sysctl -p "$SECURITY_SYSCTL_OPS_CONF" >/dev/null 2>&1; then
+        log_warn "security_apply_sysctl_baseline: sysctl apply failed for ${SECURITY_SYSCTL_OPS_CONF}"
+        return 1
+    fi
 }
 
 security_ensure_swap() {
@@ -641,28 +843,39 @@ security_ensure_ssh_transition_ports() {
 }
 
 security_rollback_sshd_config() {
-    local backup_path="$1"
-    local ssh_service
-    ssh_service=$(security_detect_ssh_service)
+    local sshd_backup="$1"
+    local include_state_snapshot="$2"
+    local ssh_service="$3"
+    local ufw_state_snapshot="${4:-}"
+    local fail2ban_state_snapshot="${5:-}"
 
-    print_warn "Rollback triggered: opening port 22 first to avoid SSH lockout..."
-    ufw allow 22/tcp comment "ops: rollback emergency SSH" > /dev/null 2>&1 || true
+    print_warn "Rollback triggered: restoring previous SSH, firewall, and fail2ban state..."
 
-    if [[ -n "$backup_path" && -f "$backup_path" ]]; then
-        cp "$backup_path" "$SECURITY_SSHD_CONFIG"
-        print_warn "Restored SSH config from backup: $backup_path"
+    if [[ -n "$sshd_backup" && -f "$sshd_backup" ]]; then
+        cp "$sshd_backup" "$SECURITY_SSHD_CONFIG"
+        print_warn "Restored SSH config from backup: ${sshd_backup}"
+    fi
+
+    if [[ -n "$include_state_snapshot" && -d "$include_state_snapshot" ]]; then
+        restore_path_snapshot "$SECURITY_SSHD_INCLUDE_DIR" "$include_state_snapshot" "sshd-include-dir"
+    fi
+
+    if [[ -n "$fail2ban_state_snapshot" && -d "$fail2ban_state_snapshot" ]]; then
+        restore_path_snapshot "$SECURITY_FAIL2BAN_JAIL_OPS" "$fail2ban_state_snapshot" "fail2ban-ops-jail"
     fi
 
     if sshd -t > /dev/null 2>&1; then
-        service_restart "$ssh_service"
-        print_warn "Rollback complete: SSH service restarted."
-        # Bug F fix: reconcile UFW back to pre-hardening state and remove the emergency
-        # port-22 rule. ops.conf still reflects the old SSH port since
-        # security_ensure_ssh_transition_ports had not yet run when rollback triggered.
-        log_info "Rollback: reconciling UFW to remove emergency rule..."
-        security_reconcile_ufw_rules || true
+        service_restart "$ssh_service" >/dev/null 2>&1 || print_warn "Rollback restored SSH config, but SSH service restart still needs manual attention."
     else
-        print_error "Rollback restored config still fails sshd -t. Manual recovery required immediately."
+        print_error "Rollback restored SSH config still fails sshd -t. Manual recovery required immediately."
+    fi
+
+    if [[ -n "$ufw_state_snapshot" && -d "$ufw_state_snapshot" ]]; then
+        restore_ufw_state "$ufw_state_snapshot"
+    fi
+
+    if [[ -n "$fail2ban_state_snapshot" && -d "$fail2ban_state_snapshot" ]] && command -v fail2ban-client >/dev/null 2>&1; then
+        service_restart fail2ban >/dev/null 2>&1 || print_warn "Rollback restored fail2ban config, but fail2ban still needs manual attention."
     fi
 }
 
@@ -670,14 +883,30 @@ security_rollback_sshd_config() {
 security_apply_sshd_hardening() {
     local new_port="$1"
     local password_auth="$2"
-    local old_port
-    local ssh_service
-    local backup_path
+    local old_port ssh_service sshd_backup include_state_snapshot ufw_state_snapshot
+    local prev_locked_port prev_transition_port prev_root_login prev_password_auth prev_runtime_user prev_tcp_forwarding
+    local new_transition_port="" new_runtime_user current_tcp_forwarding fail2ban_state_snapshot=""
 
     old_port=$(security_get_current_ssh_port)
     ssh_service=$(security_detect_ssh_service)
+    sshd_backup=$(backup_file "$SECURITY_SSHD_CONFIG" | tail -n1)
+    include_state_snapshot=$(security_snapshot_sshd_include_dir)
+    ufw_state_snapshot=$(security_snapshot_ufw_state)
+    prev_locked_port=$(ops_conf_get "ops.conf" "OPS_SSH_PORT" 2>/dev/null || true)
+    prev_transition_port=$(ops_conf_get "ops.conf" "OPS_SSH_TRANSITION_PORT" 2>/dev/null || true)
+    prev_root_login=$(ops_conf_get "ops.conf" "OPS_SSH_ROOT_LOGIN" 2>/dev/null || true)
+    prev_password_auth=$(ops_conf_get "ops.conf" "OPS_SSH_PASSWORD_AUTH" 2>/dev/null || true)
+    prev_runtime_user=$(ops_conf_get "ops.conf" "OPS_RUNTIME_USER" 2>/dev/null || true)
+    prev_tcp_forwarding=$(ops_conf_get "ops.conf" "OPS_SSH_TCP_FORWARDING" 2>/dev/null || true)
+    current_tcp_forwarding="${prev_tcp_forwarding:-$(security_get_tcp_forwarding)}"
+    new_runtime_user=$(security_get_runtime_user)
 
-    backup_path=$(backup_file "$SECURITY_SSHD_CONFIG")
+    fail2ban_state_snapshot=$(mktemp -d /tmp/ops-fail2ban-state-XXXXXX)
+    snapshot_path_state "$SECURITY_FAIL2BAN_JAIL_OPS" "$fail2ban_state_snapshot" "fail2ban-ops-jail"
+
+    if [[ "$old_port" != "$new_port" ]]; then
+        new_transition_port="$old_port"
+    fi
 
     security_reconcile_sshd_main_config
     # Bug D fix: strip cloud-init SSH overrides BEFORE writing our include file and
@@ -687,18 +916,36 @@ security_apply_sshd_hardening() {
 
     if ! sshd -t > /dev/null 2>&1; then
         print_error "sshd -t failed after update. Starting rollback."
-        security_rollback_sshd_config "$backup_path"
+        security_rollback_sshd_config "$sshd_backup" "$include_state_snapshot" "$ssh_service" "$ufw_state_snapshot" "$fail2ban_state_snapshot"
+        rm -rf "$include_state_snapshot" "$ufw_state_snapshot" "$fail2ban_state_snapshot"
         return 1
     fi
 
-    security_ensure_ssh_transition_ports "$old_port" "$new_port"
-    service_restart "$ssh_service"
+    if ! service_restart "$ssh_service"; then
+        print_error "SSH service restart failed after update. Starting rollback."
+        security_rollback_sshd_config "$sshd_backup" "$include_state_snapshot" "$ssh_service" "$ufw_state_snapshot" "$fail2ban_state_snapshot"
+        rm -rf "$include_state_snapshot" "$ufw_state_snapshot" "$fail2ban_state_snapshot"
+        return 1
+    fi
 
-    ops_conf_set "ops.conf" "OPS_SSH_PORT" "$new_port"
-    ops_conf_set "ops.conf" "OPS_SSH_ROOT_LOGIN" "no"
-    ops_conf_set "ops.conf" "OPS_SSH_PASSWORD_AUTH" "$password_auth"
-    ops_conf_set "ops.conf" "OPS_RUNTIME_USER" "$(security_get_runtime_user)"
+    security_restore_ssh_ops_state "$new_port" "$new_transition_port" "no" "$password_auth" "$new_runtime_user" "$current_tcp_forwarding"
+    if ! security_reconcile_ufw_rules; then
+        print_error "UFW reconcile failed after SSH hardening. Restoring previous SSH and firewall state."
+        security_restore_ssh_ops_state "$prev_locked_port" "$prev_transition_port" "$prev_root_login" "$prev_password_auth" "$prev_runtime_user" "$prev_tcp_forwarding"
+        security_rollback_sshd_config "$sshd_backup" "$include_state_snapshot" "$ssh_service" "$ufw_state_snapshot" "$fail2ban_state_snapshot"
+        rm -rf "$include_state_snapshot" "$ufw_state_snapshot" "$fail2ban_state_snapshot"
+        return 1
+    fi
 
+    if ! security_apply_fail2ban_ssh_state; then
+        print_error "fail2ban apply failed after SSH hardening. Restoring previous SSH, firewall, and fail2ban state."
+        security_restore_ssh_ops_state "$prev_locked_port" "$prev_transition_port" "$prev_root_login" "$prev_password_auth" "$prev_runtime_user" "$prev_tcp_forwarding"
+        security_rollback_sshd_config "$sshd_backup" "$include_state_snapshot" "$ssh_service" "$ufw_state_snapshot" "$fail2ban_state_snapshot"
+        rm -rf "$include_state_snapshot" "$ufw_state_snapshot" "$fail2ban_state_snapshot"
+        return 1
+    fi
+
+    rm -rf "$include_state_snapshot" "$ufw_state_snapshot" "$fail2ban_state_snapshot"
     print_ok "SSH hardening applied successfully."
     print_warn "Transition safety: keep only managed transition ports until login is verified on port $new_port."
     return 0
@@ -726,7 +973,7 @@ menu_security() {
         echo "  10) Auto Security Updates (unattended-upgrades)"
         echo "  0) Back"
         echo ""
-        read -r -p "Select: " choice
+        prompt_menu_choice "Select" "" choice
         case "$choice" in
             1) _security_menu_run security_harden_ssh ;;
             2) _security_menu_run security_configure_ufw ;;
@@ -787,31 +1034,17 @@ security_configure_ufw() {
         return 0
     fi
 
-    security_reconcile_ufw_rules
+    security_reconcile_ufw_rules || return 1
 
     print_ok "UFW baseline reconciled."
-    ufw status verbose
+    ufw_status
 }
 
 security_setup_fail2ban() {
     print_section "fail2ban Setup"
     security_require_root || return 1
 
-    if ! command -v fail2ban-client >/dev/null 2>&1; then
-        apt_install fail2ban
-    fi
-
-    # P3-C: backend=systemd requires python3-systemd. Without it fail2ban logs import
-    # errors and silently falls back to polling, missing attack events from journald.
-    # The || true prevents abort on OpenVZ / LXC containers where python3-systemd
-    # may not be installable (they lack systemd journal).
-    apt_install python3-systemd 2>/dev/null || true
-
-    backup_file "$SECURITY_FAIL2BAN_JAIL_LOCAL" >/dev/null 2>&1 || true
-    security_write_fail2ban_config
-
-    service_enable fail2ban
-    service_restart fail2ban
+    security_apply_fail2ban_ssh_state || return 1
 
     print_ok "fail2ban configured for OPS-managed SSH and nginx baseline."
     fail2ban-client status
@@ -820,13 +1053,15 @@ security_setup_fail2ban() {
 security_status() {
     print_section "Security Status"
     local ssh_port root_login password_auth transition_port runtime_user tcp_fwd_live tcp_fwd_conf
+    local sshd_state live_port conf_port
 
+    sshd_state="$(sshd -T 2>/dev/null || true)"
     ssh_port=$(security_get_current_ssh_port)
-    root_login=$(sshd -T 2>/dev/null | awk '/^permitrootlogin /{print $2; exit}' || true)
-    password_auth=$(sshd -T 2>/dev/null | awk '/^passwordauthentication /{print $2; exit}' || true)
+    root_login=$(awk '/^permitrootlogin /{print $2; exit}' <<< "$sshd_state")
+    password_auth=$(awk '/^passwordauthentication /{print $2; exit}' <<< "$sshd_state")
     transition_port=$(security_get_transition_port)
     runtime_user=$(security_get_runtime_user)
-    tcp_fwd_live=$(sshd -T 2>/dev/null | awk '/^allowtcpforwarding /{print $2; exit}' || true)
+    tcp_fwd_live=$(awk '/^allowtcpforwarding /{print $2; exit}' <<< "$sshd_state")
     tcp_fwd_conf=$(security_get_tcp_forwarding)
 
     echo "Locked SSH Port: ${ssh_port}"
@@ -841,8 +1076,7 @@ security_status() {
     echo ""
 
     # P5-E: SSH port drift detection — warn if live sshd port differs from ops.conf
-    local live_port conf_port
-    live_port=$(sshd -T 2>/dev/null | awk '/^port / {print $2; exit}' || true)
+    live_port=$(awk '/^port / {print $2; exit}' <<< "$sshd_state")
     conf_port=$(ops_conf_get "ops.conf" "OPS_SSH_PORT" || true)
     if [[ -n "$live_port" && -n "$conf_port" && "$live_port" != "$conf_port" ]]; then
         print_warn "DRIFT DETECTED: live SSH port ($live_port) != ops.conf ($conf_port)"
@@ -863,7 +1097,7 @@ security_status() {
 
     echo ""
     if command -v ufw >/dev/null 2>&1; then
-        ufw status verbose || true
+        ufw_status || true
     else
         print_warn "ufw not installed"
     fi
@@ -885,7 +1119,7 @@ security_change_ssh_port() {
     print_section "Change SSH Port"
     security_require_root || return 1
 
-    local current_port new_port current_password_auth
+    local current_port new_port current_password_auth admin_user
     current_port=$(security_get_current_ssh_port)
 
     prompt_input "Enter new SSH port" "$current_port"
@@ -899,6 +1133,13 @@ security_change_ssh_port() {
     if [[ "$current_password_auth" != "yes" && "$current_password_auth" != "no" ]]; then
         current_password_auth="yes"
     fi
+
+    admin_user="$(security_get_admin_user)"
+    if [[ "$current_password_auth" == "no" ]] && ! _security_has_authorized_keys "$admin_user"; then
+        print_warn "OPS_SSH_PASSWORD_AUTH is set to 'no', but no SSH key is currently authorized for '${admin_user}'."
+        print_warn "Falling back to PasswordAuthentication=yes during the port change to prevent SSH lockout."
+        current_password_auth="yes"
+    fi
     print_warn "PasswordAuthentication is currently: ${current_password_auth} (will be preserved on port change)"
 
     security_apply_sshd_hardening "$new_port" "$current_password_auth" || return 1
@@ -907,14 +1148,108 @@ security_change_ssh_port() {
     security_status
 }
 
+security_restore_finalize_backups() {
+    security_rollback_sshd_config "$@"
+}
+
+security_finalize_ssh_transition_apply() {
+    security_require_root || return 1
+
+    exec 8>/var/lock/ops-ssh-finalize.lock
+    if ! flock -n 8; then
+        print_warn "Another SSH finalize operation is already running."
+        log_info "security_finalize_ssh_transition_apply: finalize lock already held"
+        return 0
+    fi
+
+    local new_port old_port admin_user server_ip ssh_service
+    local prev_locked_port prev_transition_port prev_root_login prev_password_auth prev_runtime_user prev_tcp_forwarding current_tcp_forwarding
+    new_port=$(security_get_locked_ssh_port)
+    old_port=$(security_get_transition_port)
+    ssh_service=$(security_detect_ssh_service)
+    prev_locked_port="$new_port"
+    prev_transition_port="$old_port"
+    prev_root_login="$(ops_conf_get "ops.conf" "OPS_SSH_ROOT_LOGIN" 2>/dev/null || true)"
+    prev_password_auth="$(ops_conf_get "ops.conf" "OPS_SSH_PASSWORD_AUTH" 2>/dev/null || true)"
+    prev_runtime_user="$(ops_conf_get "ops.conf" "OPS_RUNTIME_USER" 2>/dev/null || true)"
+    prev_tcp_forwarding="$(ops_conf_get "ops.conf" "OPS_SSH_TCP_FORWARDING" 2>/dev/null || true)"
+    current_tcp_forwarding="${prev_tcp_forwarding:-$(security_get_tcp_forwarding)}"
+
+    if [[ -z "$old_port" || "$old_port" == "$new_port" ]]; then
+        print_warn "No SSH transition port is currently recorded."
+        return 0
+    fi
+
+    # Default must be 'yes' (safe), not 'no'. If OPS_SSH_PASSWORD_AUTH is absent
+    # from ops.conf (partial wizard run), defaulting to 'no' would lock out operators
+    # who have no SSH key. 'yes' lets them log in and reconfigure safely.
+    local final_pw_auth
+    final_pw_auth="$prev_password_auth"
+    if [[ -z "$final_pw_auth" ]]; then
+        final_pw_auth="yes"
+        print_warn "OPS_SSH_PASSWORD_AUTH not found in ops.conf — defaulting to 'yes' (safe). Set explicitly via Security → Manage SSH Keys."
+    fi
+
+    local sshd_backup include_state_snapshot ufw_state_snapshot fail2ban_state_snapshot=""
+    sshd_backup="$(backup_file "$SECURITY_SSHD_CONFIG" 2>/dev/null | tail -n1 || true)"
+    include_state_snapshot="$(security_snapshot_sshd_include_dir)"
+    ufw_state_snapshot="$(security_snapshot_ufw_state)"
+    fail2ban_state_snapshot=$(mktemp -d /tmp/ops-fail2ban-state-XXXXXX)
+    snapshot_path_state "$SECURITY_FAIL2BAN_JAIL_OPS" "$fail2ban_state_snapshot" "fail2ban-ops-jail"
+
+    security_reconcile_sshd_main_config
+    security_strip_cloud_init_overrides
+    security_write_sshd_hardening_include "$new_port" "$final_pw_auth" ""
+
+    if ! sshd -t >/dev/null 2>&1; then
+        print_error "sshd -t failed while finalizing transition. Restoring previous SSH config."
+        security_restore_finalize_backups "$sshd_backup" "$include_state_snapshot" "$ssh_service" "$ufw_state_snapshot" "$fail2ban_state_snapshot"
+        rm -rf "$include_state_snapshot" "$ufw_state_snapshot" "$fail2ban_state_snapshot"
+        return 1
+    fi
+
+    if ! service_restart "$ssh_service"; then
+        print_error "SSH service restart failed while finalizing transition. Restoring previous SSH config."
+        security_restore_finalize_backups "$sshd_backup" "$include_state_snapshot" "$ssh_service" "$ufw_state_snapshot" "$fail2ban_state_snapshot"
+        rm -rf "$include_state_snapshot" "$ufw_state_snapshot" "$fail2ban_state_snapshot"
+        return 1
+    fi
+
+    if ! security_finalize_ufw_transition "$new_port" "$old_port"; then
+        print_error "UFW finalize failed while closing the old SSH transition port. Restoring previous SSH and firewall state."
+        security_restore_finalize_backups "$sshd_backup" "$include_state_snapshot" "$ssh_service" "$ufw_state_snapshot" "$fail2ban_state_snapshot"
+        rm -rf "$include_state_snapshot" "$ufw_state_snapshot" "$fail2ban_state_snapshot"
+        return 1
+    fi
+
+    security_restore_ssh_ops_state "$new_port" "" "$prev_root_login" "$final_pw_auth" "$prev_runtime_user" "$current_tcp_forwarding"
+    if ! security_apply_fail2ban_ssh_state; then
+        print_error "fail2ban apply failed while finalizing the SSH transition. Restoring previous SSH, firewall, fail2ban, and OPS SSH state."
+        security_restore_ssh_ops_state "$prev_locked_port" "$prev_transition_port" "$prev_root_login" "$prev_password_auth" "$prev_runtime_user" "$prev_tcp_forwarding"
+        security_restore_finalize_backups "$sshd_backup" "$include_state_snapshot" "$ssh_service" "$ufw_state_snapshot" "$fail2ban_state_snapshot"
+        rm -rf "$include_state_snapshot" "$ufw_state_snapshot" "$fail2ban_state_snapshot"
+        return 1
+    fi
+
+    rm -rf "$include_state_snapshot" "$ufw_state_snapshot" "$fail2ban_state_snapshot"
+
+    admin_user=$(security_get_admin_user)
+    server_ip=$(security_get_server_ip)
+
+    print_ok "Old SSH port ${old_port} removed from managed config and firewall."
+    echo "You MUST now use: ssh -p ${new_port} ${admin_user}@${server_ip}"
+    if command -v ufw >/dev/null 2>&1; then
+        ufw_status
+    fi
+}
+
 security_finalize_ssh_transition() {
     print_section "Finalize SSH Transition"
     security_require_root || return 1
 
-    local new_port old_port admin_user server_ip ssh_service
+    local new_port old_port
     new_port=$(security_get_locked_ssh_port)
     old_port=$(security_get_transition_port)
-    ssh_service=$(security_detect_ssh_service)
 
     if [[ -z "$old_port" || "$old_port" == "$new_port" ]]; then
         print_warn "No SSH transition port is currently recorded."
@@ -927,37 +1262,7 @@ security_finalize_ssh_transition() {
         return 0
     fi
 
-    # Bug E fix: use parameter expansion to catch empty-string return (exit 0 bypasses || fallback)
-    # P1-3 fix: default must be 'yes' (safe), not 'no'. If OPS_SSH_PASSWORD_AUTH is absent
-    # from ops.conf (partial wizard run), defaulting to 'no' would lock out operators
-    # who have no SSH key. 'yes' lets them log in and reconfigure safely.
-    local _final_pw_auth
-    _final_pw_auth="$(ops_conf_get "ops.conf" "OPS_SSH_PASSWORD_AUTH" 2>/dev/null || true)"
-    if [[ -z "$_final_pw_auth" ]]; then
-        _final_pw_auth="yes"
-        print_warn "OPS_SSH_PASSWORD_AUTH not found in ops.conf — defaulting to 'yes' (safe). Set explicitly via Security → Manage SSH Keys."
-    fi
-    security_write_sshd_hardening_include "$new_port" "$_final_pw_auth"
-    if ! sshd -t >/dev/null 2>&1; then
-        print_error "sshd -t failed while finalizing transition."
-        return 1
-    fi
-
-    service_restart "$ssh_service"
-    ops_conf_set "ops.conf" "OPS_SSH_TRANSITION_PORT" ""
-    security_reconcile_ufw_rules
-
-    if command -v fail2ban-client >/dev/null 2>&1; then
-        security_write_fail2ban_config
-        service_restart fail2ban >/dev/null 2>&1 || true
-    fi
-
-    admin_user=$(security_get_admin_user)
-    server_ip=$(security_get_server_ip)
-
-    print_ok "Old SSH port ${old_port} removed from managed config and firewall."
-    echo "You MUST now use: ssh -p ${new_port} ${admin_user}@${server_ip}"
-    ufw status verbose
+    security_finalize_ssh_transition_apply
 }
 
 security_apply_host_baseline() {
@@ -967,18 +1272,11 @@ security_apply_host_baseline() {
     security_normalize_script_permissions
     security_apply_sysctl_baseline
     security_ensure_swap
-    security_reconcile_ufw_rules
+    security_reconcile_ufw_rules || return 1
 
-    # Ensure fail2ban is installed before attempting to configure it
-    if ! command -v fail2ban-client >/dev/null 2>&1; then
-        log_info "security_apply_host_baseline: fail2ban not found — installing..."
-        apt_install fail2ban
-    fi
-
-    if command -v fail2ban-client >/dev/null 2>&1; then
-        security_write_fail2ban_config
-        service_enable fail2ban >/dev/null 2>&1 || true
-        service_restart fail2ban >/dev/null 2>&1 || true
+    if ! security_apply_fail2ban_ssh_state; then
+        print_error "Failed to reconcile fail2ban as part of the OPS host baseline."
+        return 1
     fi
 
     print_ok "OPS host security baseline applied."
@@ -1035,24 +1333,50 @@ security_manage_ssh_keys() {
         echo "  4) Disable PasswordAuthentication (requires at least 1 key above)"
         echo "  0) Back"
         echo ""
-        read -r -p "  Select: " subchoice
+        prompt_menu_choice "  Select" "" subchoice
 
         case "$subchoice" in
             1)
                 echo ""
                 echo "  Paste your SSH public key below (one line, then Enter):"
-                read -r -p "  > " new_key
+                tty_write "  > "
+                tty_read new_key
                 if [[ -z "$new_key" ]]; then
                     print_warn "Empty input -- cancelled."
                 elif ! printf '%s' "$new_key" | \
                      grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp|sk-ssh) [A-Za-z0-9+/=]'; then
                     print_error "Input does not look like a valid SSH public key. Not added."
                 else
+                    local tmp_add
                     mkdir -p "${admin_home}/.ssh"
                     chmod 700 "${admin_home}/.ssh"
-                    printf '%s\n' "$new_key" >> "$auth_keys"
+                    chown "${admin_user}:${admin_user}" "${admin_home}/.ssh"
+
+                    if [[ -f "$auth_keys" ]] && grep -Fxq "$new_key" "$auth_keys" 2>/dev/null; then
+                        print_warn "That SSH public key is already authorized."
+                        continue
+                    fi
+
+                    if [[ -f "$auth_keys" ]] && ! backup_file "$auth_keys" >/dev/null 2>&1; then
+                        print_error "Failed to back up ${auth_keys}. Key not added."
+                        continue
+                    fi
+
+                    tmp_add=$(mktemp) || {
+                        print_error "Failed to create a temporary file for authorized_keys update."
+                        continue
+                    }
+                    if [[ -f "$auth_keys" ]]; then
+                        cat "$auth_keys" > "$tmp_add"
+                    fi
+                    printf '%s\n' "$new_key" >> "$tmp_add"
+                    if ! mv "$tmp_add" "$auth_keys"; then
+                        rm -f "$tmp_add"
+                        print_error "Failed to update ${auth_keys}. Key not added."
+                        continue
+                    fi
                     chmod 600 "$auth_keys"
-                    chown -R "${admin_user}:${admin_user}" "${admin_home}/.ssh"
+                    chown "${admin_user}:${admin_user}" "$auth_keys"
                     print_ok "Key added to ${auth_keys}."
                 fi
                 ;;
@@ -1062,7 +1386,8 @@ security_manage_ssh_keys() {
                     continue
                 fi
                 echo ""
-                read -r -p "  Enter key number to remove (1-${key_count}): " del_num
+                tty_write "  Enter key number to remove (1-${key_count}): "
+                tty_read del_num
                 if ! [[ "$del_num" =~ ^[0-9]+$ ]] || \
                    (( del_num < 1 || del_num > key_count )); then
                     print_warn "Invalid number. Must be between 1 and ${key_count}."
@@ -1072,17 +1397,32 @@ security_manage_ssh_keys() {
                     print_warn "Cancelled."
                     continue
                 fi
+                if ! backup_file "$auth_keys" >/dev/null 2>&1; then
+                    print_error "Failed to back up ${auth_keys}. Key not removed."
+                    continue
+                fi
                 local tmp_del counted=0
-                tmp_del=$(mktemp)
-                while IFS= read -r line; do
+                tmp_del=$(mktemp) || {
+                    print_error "Failed to create a temporary file for authorized_keys update."
+                    continue
+                }
+                if ! while IFS= read -r line; do
                     if printf '%s' "$line" | \
                        grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp|sk-ssh) '; then
                         ((counted++))
                         [[ "$counted" -eq "$del_num" ]] && continue
                     fi
                     printf '%s\n' "$line"
-                done < "$auth_keys" > "$tmp_del"
-                mv "$tmp_del" "$auth_keys"
+                done < "$auth_keys" > "$tmp_del"; then
+                    rm -f "$tmp_del"
+                    print_error "Failed to rebuild ${auth_keys}. Key not removed."
+                    continue
+                fi
+                if ! mv "$tmp_del" "$auth_keys"; then
+                    rm -f "$tmp_del"
+                    print_error "Failed to update ${auth_keys}. Key not removed."
+                    continue
+                fi
                 chmod 600 "$auth_keys"
                 chown "${admin_user}:${admin_user}" "$auth_keys"
                 print_ok "Key #${del_num} removed."
@@ -1090,22 +1430,25 @@ security_manage_ssh_keys() {
             3)
                 print_warn "WARNING: Enabling PasswordAuthentication allows password-based SSH login."
                 if prompt_confirm "Enable PasswordAuthentication?"; then
-                    local pw_port ssh_svc _pw_transition_port
+                    local pw_port ssh_svc _pw_transition_port _prev_pw
                     pw_port="$(security_get_locked_ssh_port)"
                     ssh_svc="$(security_detect_ssh_service)"
                     _pw_transition_port="$(security_get_transition_port)"
+                    _prev_pw="$(ops_conf_get "ops.conf" "OPS_SSH_PASSWORD_AUTH" 2>/dev/null || true)"
+                    _prev_pw="${_prev_pw:-yes}"
                     security_write_sshd_hardening_include "$pw_port" "yes" "$_pw_transition_port"
-                    if sshd -t >/dev/null 2>&1; then
-                        systemctl reload "$ssh_svc" >/dev/null 2>&1 || true
-                        ops_conf_set "ops.conf" "OPS_SSH_PASSWORD_AUTH" "yes"
-                        print_ok "PasswordAuthentication enabled. SSH reloaded."
-                    else
+                    if ! sshd -t >/dev/null 2>&1; then
                         print_error "sshd -t validation failed. Reverting include file."
-                        local _prev_pw
-                        _prev_pw="$(ops_conf_get "ops.conf" "OPS_SSH_PASSWORD_AUTH" 2>/dev/null || true)"
-                        _prev_pw="${_prev_pw:-yes}"
                         security_write_sshd_hardening_include "$pw_port" "$_prev_pw" "$_pw_transition_port"
+                        continue
                     fi
+                    if ! service_reload "$ssh_svc" >/dev/null 2>&1; then
+                        print_error "SSH reload failed. Reverting include file."
+                        security_write_sshd_hardening_include "$pw_port" "$_prev_pw" "$_pw_transition_port"
+                        continue
+                    fi
+                    ops_conf_set "ops.conf" "OPS_SSH_PASSWORD_AUTH" "yes"
+                    print_ok "PasswordAuthentication enabled. SSH reloaded."
                 fi
                 ;;
             4)
@@ -1115,22 +1458,25 @@ security_manage_ssh_keys() {
                 else
                     print_warn "WARNING: Only SSH key logins will work after this change."
                     if prompt_confirm "Disable PasswordAuthentication?"; then
-                        local lock_port ssh_svc _lock_transition_port
+                        local lock_port ssh_svc _lock_transition_port _prev_lock_pw
                         lock_port="$(security_get_locked_ssh_port)"
                         ssh_svc="$(security_detect_ssh_service)"
                         _lock_transition_port="$(security_get_transition_port)"
+                        _prev_lock_pw="$(ops_conf_get "ops.conf" "OPS_SSH_PASSWORD_AUTH" 2>/dev/null || true)"
+                        _prev_lock_pw="${_prev_lock_pw:-yes}"
                         security_write_sshd_hardening_include "$lock_port" "no" "$_lock_transition_port"
-                        if sshd -t >/dev/null 2>&1; then
-                            systemctl reload "$ssh_svc" >/dev/null 2>&1 || true
-                            ops_conf_set "ops.conf" "OPS_SSH_PASSWORD_AUTH" "no"
-                            print_ok "PasswordAuthentication disabled. SSH key-only mode active."
-                        else
+                        if ! sshd -t >/dev/null 2>&1; then
                             print_error "sshd -t validation failed. Reverting include file."
-                            local _prev_lock_pw
-                            _prev_lock_pw="$(ops_conf_get "ops.conf" "OPS_SSH_PASSWORD_AUTH" 2>/dev/null || true)"
-                            _prev_lock_pw="${_prev_lock_pw:-yes}"
                             security_write_sshd_hardening_include "$lock_port" "$_prev_lock_pw" "$_lock_transition_port"
+                            continue
                         fi
+                        if ! service_reload "$ssh_svc" >/dev/null 2>&1; then
+                            print_error "SSH reload failed. Reverting include file."
+                            security_write_sshd_hardening_include "$lock_port" "$_prev_lock_pw" "$_lock_transition_port"
+                            continue
+                        fi
+                        ops_conf_set "ops.conf" "OPS_SSH_PASSWORD_AUTH" "no"
+                        print_ok "PasswordAuthentication disabled. SSH key-only mode active."
                     fi
                 fi
                 ;;
@@ -1168,7 +1514,7 @@ security_manage_tcp_forwarding() {
     echo "  3) Show live sshd TCP forwarding status"
     echo "  0) Back"
     echo ""
-    read -r -p "  Select: " subchoice
+    prompt_menu_choice "  Select" "" subchoice
     case "$subchoice" in
         1)
             if [[ "$current" == "yes" ]]; then
@@ -1177,17 +1523,20 @@ security_manage_tcp_forwarding() {
             fi
             print_warn "Enabling AllowTcpForwarding reduces SSH hardening (tunnel / port-scan risk)."
             if prompt_confirm "Enable TCP Forwarding?"; then
-                ops_conf_set "ops.conf" "OPS_SSH_TCP_FORWARDING" "yes"
-                security_write_sshd_hardening_include "$locked_port" "$password_auth" "$transition_port"
-                if sshd -t >/dev/null 2>&1; then
-                    systemctl reload "$ssh_svc" >/dev/null 2>&1 || true
-                    print_ok "TCP Forwarding enabled. SSH reloaded."
-                    print_warn "Reconnect VSCode SSH Remote to use the new setting."
-                else
-                    print_error "sshd -t validation failed. Reverting ops.conf change."
-                    ops_conf_set "ops.conf" "OPS_SSH_TCP_FORWARDING" "no"
-                    security_write_sshd_hardening_include "$locked_port" "$password_auth" "$transition_port"
+                security_write_sshd_hardening_include "$locked_port" "$password_auth" "$transition_port" "yes"
+                if ! sshd -t >/dev/null 2>&1; then
+                    print_error "sshd -t validation failed. Reverting include file."
+                    security_write_sshd_hardening_include "$locked_port" "$password_auth" "$transition_port" "$current"
+                    return 1
                 fi
+                if ! service_reload "$ssh_svc" >/dev/null 2>&1; then
+                    print_error "SSH reload failed. Reverting include file."
+                    security_write_sshd_hardening_include "$locked_port" "$password_auth" "$transition_port" "$current"
+                    return 1
+                fi
+                ops_conf_set "ops.conf" "OPS_SSH_TCP_FORWARDING" "yes"
+                print_ok "TCP Forwarding enabled. SSH reloaded."
+                print_warn "Reconnect VSCode SSH Remote to use the new setting."
             else
                 print_warn "Cancelled."
             fi
@@ -1199,16 +1548,19 @@ security_manage_tcp_forwarding() {
             fi
             print_warn "Disabling TCP Forwarding will break VSCode SSH Remote connections."
             if prompt_confirm "Disable TCP Forwarding?"; then
-                ops_conf_set "ops.conf" "OPS_SSH_TCP_FORWARDING" "no"
-                security_write_sshd_hardening_include "$locked_port" "$password_auth" "$transition_port"
-                if sshd -t >/dev/null 2>&1; then
-                    systemctl reload "$ssh_svc" >/dev/null 2>&1 || true
-                    print_ok "TCP Forwarding disabled. SSH reloaded."
-                else
-                    print_error "sshd -t validation failed. Reverting ops.conf change."
-                    ops_conf_set "ops.conf" "OPS_SSH_TCP_FORWARDING" "yes"
-                    security_write_sshd_hardening_include "$locked_port" "$password_auth" "$transition_port"
+                security_write_sshd_hardening_include "$locked_port" "$password_auth" "$transition_port" "no"
+                if ! sshd -t >/dev/null 2>&1; then
+                    print_error "sshd -t validation failed. Reverting include file."
+                    security_write_sshd_hardening_include "$locked_port" "$password_auth" "$transition_port" "$current"
+                    return 1
                 fi
+                if ! service_reload "$ssh_svc" >/dev/null 2>&1; then
+                    print_error "SSH reload failed. Reverting include file."
+                    security_write_sshd_hardening_include "$locked_port" "$password_auth" "$transition_port" "$current"
+                    return 1
+                fi
+                ops_conf_set "ops.conf" "OPS_SSH_TCP_FORWARDING" "no"
+                print_ok "TCP Forwarding disabled. SSH reloaded."
             else
                 print_warn "Cancelled."
             fi
@@ -1264,7 +1616,7 @@ security_manage_unattended_upgrades() {
         echo "  4) Show status & recent log"
         echo "  0) Back"
         echo ""
-        read -r -p "  Select: " subchoice
+        prompt_menu_choice "  Select" "" subchoice
 
         case "$subchoice" in
             1)

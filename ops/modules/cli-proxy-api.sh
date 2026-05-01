@@ -615,6 +615,8 @@ EOF
         "SSL_HTTP_BLOCK=${ssl_http_block}" \
         "SSL_HTTPS_BLOCK=${ssl_https_block}" \
         | write_file "$vhost_path"
+    chmod 0644 "$vhost_path"
+    chown root:root "$vhost_path" 2>/dev/null || true
 
     safe_symlink "$vhost_path" "$enabled_path"
     _cliproxyapi_remove_legacy_domain_files "$domain"
@@ -812,7 +814,7 @@ link_cliproxyapi_domain() {
     local ssl_enabled
     ssl_enabled="$(_cliproxyapi_render_vhost "$domain")" || return 1
 
-    nginx -t
+    nginx_validate
     service_enable nginx
     service_reload nginx
 
@@ -1097,6 +1099,11 @@ bootstrap_cliproxyapi_auth() {
 }
 
 menu_cliproxyapi_bootstrap_auth() {
+    _cliproxyapi_bootstrap_auth_menu_run() {
+        "$@"
+        return 0
+    }
+
     while true; do
         print_section "Bootstrap auth providers"
         echo "  1) Antigravity"
@@ -1112,14 +1119,13 @@ menu_cliproxyapi_bootstrap_auth() {
         echo ""
         echo "  0) Back"
         echo ""
-        printf "  Select: " > /dev/tty
         local choice
-        read -r choice < /dev/tty
+        prompt_menu_choice "  Select" "" choice
         case "$choice" in
-            1) bootstrap_cliproxyapi_auth antigravity; press_enter ;;
-            2) bootstrap_cliproxyapi_auth gemini; press_enter ;;
-            3) bootstrap_cliproxyapi_auth claude-code; press_enter ;;
-            4) bootstrap_cliproxyapi_auth codex; press_enter ;;
+            1) _cliproxyapi_bootstrap_auth_menu_run bootstrap_cliproxyapi_auth antigravity; press_enter ;;
+            2) _cliproxyapi_bootstrap_auth_menu_run bootstrap_cliproxyapi_auth gemini; press_enter ;;
+            3) _cliproxyapi_bootstrap_auth_menu_run bootstrap_cliproxyapi_auth claude-code; press_enter ;;
+            4) _cliproxyapi_bootstrap_auth_menu_run bootstrap_cliproxyapi_auth codex; press_enter ;;
             0) return 0 ;;
             *) print_warn "Invalid option" ;;
         esac

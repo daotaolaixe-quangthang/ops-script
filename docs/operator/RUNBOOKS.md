@@ -13,15 +13,38 @@ Muc tieu: cung cap runbook ngan theo format `pre-check -> change -> verify -> ro
   - them port moi vao `sshd_config`: `Port <NEW_PORT>`
   - giu port 22 trong giai doan transition
   - verify login bang session SSH moi: `ssh -p <NEW_PORT> <ADMIN_USER>@host`
-  - chi dong port 22 sau khi verify xong: `ufw delete allow 22/tcp`
+  - chi finalize sau khi verify xong qua OPS menu: `Security -> Finalize SSH transition`
 - **Verify**:
-  - `sshd -t` â€” kiem tra syntax config
+  - `sshd -t` â€” kiem tra syntax config truoc khi apply
   - dang nhap bang `ssh -p <NEW_PORT> <ADMIN_USER>@host`
   - `ss -tlnp | grep <NEW_PORT>` â€” xac nhan port dang listen
+  - sau finalize: `sshd -T | awk '/^port / {print $2}'` chi con port moi
+  - sau finalize: `ufw status | grep 22/tcp` khong con rule ALLOW cho port 22
+  - sau finalize: `fail2ban-client status sshd` phai track desired OPS SSH state cuoi cung, khong track port transition cu hay port runtime doan tu live listener scan
 - **Rollback**:
-  - mo lai port 22: `ufw allow 22/tcp`
+  - neu `sshd -t`, `systemctl reload/restart ssh`, UFW reconcile, hoac fail2ban apply fail, OPS phai giu `OPS_SSH_TRANSITION_PORT` va KHONG bao finalize thanh cong
+  - OPS phai restore lai SSH config/include, UFW state, va fail2ban jail state truoc khi thoat failure
+  - mo lai port 22 neu can: `ufw allow 22/tcp`
   - khoi phuc `sshd_config`: `cp /etc/ssh/sshd_config.bak /etc/ssh/sshd_config`
   - restart `sshd`: `systemctl restart sshd`
+
+## 1a. Installer bootstrap rollback before activation
+
+- **Pre-check**:
+  - giu session SSH hien tai mo trong suot installer run
+  - note lai live SSH ports hien tai va admin user dang dung
+  - xac nhan neu rerun tren host multi-port thi OPS phai preserve tat ca live SSH port trong firewall va khong rewrite `OPS_SSH_PORT` / `OPS_SSH_TRANSITION_PORT` neu state managed van ambiguous
+- **Change**:
+  - installer co the sua `sshd_config`, `sshd_config.d`, UFW, tao admin user, them sudo group, them bootstrap SSH key, va ghi minimum SSH hardening truoc khi `/opt/ops` duoc activate
+- **Verify**:
+  - neu installer fail truoc activation, SSH/UFW/admin-user/bootstrap-key/minimum-hardening state phai tro ve trang thai truoc khi chay
+  - neu installer fail sau activation, ngoai pre-activation rollback con phai restore `/opt/ops`, symlink, `ops.conf`, login hook, va cac file state operator-facing khac
+- **Rollback**:
+  - restore `/etc/ssh/sshd_config` va `sshd_config.d/`
+  - restore UFW files (`user.rules`, `user6.rules`, `ufw.conf`) va reload/disable theo state cu
+  - remove admin user neu user do duoc tao boi run hien tai; neu chi moi add vao sudo thi go khoi sudo group
+  - restore `~/.ssh` bootstrap state neu key moi duoc add vao user da ton tai
+  - xoa minimum hardening include neu no khong ton tai truoc run
 
 ## 1b. SSH Key Setup and PasswordAuthentication Recovery
 
@@ -170,6 +193,7 @@ chown -R ${ADMIN_USER}:${ADMIN_USER} /home/${ADMIN_USER}/.ssh
 - **Verify**:
   - dang nhap shell interactive thay dashboard
   - `scp`/non-interactive shell khong bi anh huong
+  - legacy sudoers auto-finalize rule chi duoc remove sau khi rewrite hook thanh cong
 - **Rollback**:
   - bo hook
   - khoi phuc rc file backup

@@ -296,7 +296,7 @@ menu_backup() {
         echo "  5) List current backups"
         echo "  0) Back"
         echo ""
-        read -r -p "Select: " choice
+        prompt_menu_choice "Select" "" choice
         case "$choice" in
             1) _backup_menu_run _backup_menu_dump_one; press_enter ;;
             2) _backup_menu_run backup_dump_all_dbs; press_enter ;;

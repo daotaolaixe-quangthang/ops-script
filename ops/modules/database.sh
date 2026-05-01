@@ -453,7 +453,8 @@ install_mariadb() {
 
             # Require typed confirmation — not just Y/n
             local _confirm_text=""
-            read -r -p "  Nhap chinh xac chu 'REINSTALL' de xac nhan: " _confirm_text
+            tty_write "  Nhap chinh xac chu 'REINSTALL' de xac nhan: "
+            tty_read _confirm_text
             if [[ "$_confirm_text" != "REINSTALL" ]]; then
                 print_warn "Cancelled. MariaDB reinstall aborted (nhap: '${_confirm_text}')."
                 log_info "install_mariadb: cancelled at production guard (input='${_confirm_text}')"
@@ -762,7 +763,7 @@ menu_database() {
         echo "  9) Compliance audit"
         echo "  0) Back"
         echo ""
-        read -r -p "Select: " choice
+        prompt_menu_choice "Select" "" choice
         case "$choice" in
             1) _database_menu_run db_install ;;
             2) _database_menu_run db_secure ;;
@@ -984,7 +985,8 @@ db_drop() {
         done
         print_warn "Dropping this database will break the app(s) listed above."
         echo ""
-        read -r -p "  Type 'yes' to confirm you understand and want to drop '${db_name}': " _drop_confirm
+        tty_write "  Type 'yes' to confirm you understand and want to drop '${db_name}': "
+        tty_read _drop_confirm
         if [[ "$_drop_confirm" != "yes" ]]; then
             print_warn "Cancelled."
             return 0

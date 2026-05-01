@@ -15,6 +15,11 @@ apt_update() {
     DEBIAN_FRONTEND=noninteractive apt-get update -qq
 }
 
+apt_upgrade() {
+    log_info "apt-get upgrade"
+    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq
+}
+
 # Usage: apt_install nginx curl
 apt_install() {
     log_info "apt-get install: $*"
@@ -28,6 +33,42 @@ apt_remove() {
 }
 
 # ── systemctl wrappers ────────────────────────────────────────
+
+_service_default_timeout() {
+    local svc="$1"
+    if [[ "$svc" =~ ^(mariadb|mysql)$ ]]; then
+        printf '30'
+    else
+        printf '15'
+    fi
+}
+
+_service_wait_active() {
+    local svc="$1"
+    local timeout="$2"
+    local action="$3"
+    local elapsed=0
+    local interval=1
+    local attempt=0
+
+    while true; do
+        if systemctl is-active --quiet "$svc"; then
+            log_info "Health check OK: $svc is active after ${action} (${elapsed}s elapsed)."
+            return 0
+        fi
+        if (( elapsed >= timeout )); then
+            break
+        fi
+        sleep "$interval"
+        (( elapsed += interval ))
+        (( attempt++ ))
+        log_warn "Health check attempt ${attempt}: $svc not yet active after ${elapsed}s / ${timeout}s..."
+        (( interval = interval * 2 < 8 ? interval * 2 : 8 ))
+    done
+
+    log_error "Health check FAILED: $svc is not active after ${action} within ${timeout}s. Check: journalctl -u ${svc} -n 30"
+    return 1
+}
 
 service_enable()  { systemctl enable  "$1" && log_info "Enabled:  $1"; }
 service_start()   { systemctl start   "$1" && log_info "Started:  $1"; }
@@ -43,37 +84,24 @@ service_start()   { systemctl start   "$1" && log_info "Started:  $1"; }
 #     service_restart netdata 45
 service_restart() {
     local svc="$1"
-    # Determine timeout: caller-supplied > slow-service default > general default
     local _timeout
     if [[ -n "${2:-}" ]]; then
         _timeout="$2"
-    elif [[ "$svc" =~ ^(mariadb|mysql)$ ]]; then
-        _timeout=30   # InnoDB buffer-pool init on low-RAM VPS can take 10-15 s
     else
-        _timeout=15
+        _timeout="$(_service_default_timeout "$svc")"
     fi
 
     systemctl restart "$svc" && log_info "Restarted: $svc"
-
-    local _elapsed=0
-    local _interval=1   # start with 1 s; doubles each miss (1,2,4,8,…)
-    local _attempt=0
-    while (( _elapsed < _timeout )); do
-        sleep "$_interval"
-        (( _elapsed += _interval ))
-        (( _attempt++ ))
-        if systemctl is-active --quiet "$svc"; then
-            log_info "Health check OK: $svc is active after restart (${_elapsed}s elapsed)."
-            return 0
-        fi
-        log_warn "Health check attempt ${_attempt}: $svc not yet active after ${_elapsed}s / ${_timeout}s..."
-        # Double the interval up to a max of 8 s to avoid hammering systemd
-        (( _interval = _interval * 2 < 8 ? _interval * 2 : 8 ))
-    done
-    log_error "Health check FAILED: $svc is not active after ${_timeout}s. Check: journalctl -u ${svc} -n 30"
-    return 1
+    _service_wait_active "$svc" "$_timeout" "restart"
 }
-service_reload()  { systemctl reload  "$1" && log_info "Reloaded: $1"; }
+
+service_reload() {
+    local svc="$1"
+    local _timeout="${2:-5}"
+
+    systemctl reload "$svc" && log_info "Reloaded: $svc"
+    _service_wait_active "$svc" "$_timeout" "reload"
+}
 service_stop()    { systemctl stop    "$1" && log_info "Stopped:  $1"; }
 service_status()  { systemctl status  "$1" --no-pager; }
 service_active()  { systemctl is-active --quiet "$1"; }
@@ -91,34 +119,56 @@ svc_is_active() { service_active "$@"; }
 
 ops_runtime_user() {
     local runtime_user=""
+
     runtime_user="$(ops_conf_get "ops.conf" "OPS_RUNTIME_USER" 2>/dev/null || true)"
-    if [[ -z "$runtime_user" ]]; then
+    if ! _ops_non_root_user_exists "$runtime_user"; then
         runtime_user="$(ops_conf_get "ops.conf" "OPS_ADMIN_USER" 2>/dev/null || true)"
     fi
-    if [[ -z "$runtime_user" ]]; then
-        if [[ -n "${ADMIN_USER:-}" && "${ADMIN_USER}" != "root" ]]; then
-            runtime_user="$ADMIN_USER"
-        elif [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
-            runtime_user="$SUDO_USER"
-        else
-            runtime_user="$(whoami)"
-            if [[ "$runtime_user" == "root" ]]; then
-                log_warn "ops_runtime_user: resolved to 'root' — set OPS_RUNTIME_USER or OPS_ADMIN_USER in ops.conf."
-            fi
-        fi
+    if ! _ops_non_root_user_exists "$runtime_user"; then
+        runtime_user="${ADMIN_USER:-}"
     fi
+    if ! _ops_non_root_user_exists "$runtime_user"; then
+        runtime_user="${SUDO_USER:-}"
+    fi
+    if ! _ops_non_root_user_exists "$runtime_user"; then
+        runtime_user="${USER:-}"
+    fi
+
+    if ! _ops_non_root_user_exists "$runtime_user"; then
+        log_error "ops_runtime_user: unable to resolve a non-root runtime user — set OPS_RUNTIME_USER or OPS_ADMIN_USER in ops.conf."
+        return 1
+    fi
+
     echo "$runtime_user"
 }
 
 ops_runtime_home() {
-    local runtime_user="${1:-$(ops_runtime_user)}"
-    getent passwd "$runtime_user" | cut -d: -f6
+    local runtime_user="${1:-}"
+    local home_dir=""
+
+    if [[ -z "$runtime_user" ]]; then
+        runtime_user="$(ops_runtime_user)" || return 1
+    fi
+
+    ops_require_runtime_user "$runtime_user" || return 1
+    home_dir="$(getent passwd "$runtime_user" | cut -d: -f6)"
+    if [[ -z "$home_dir" || ! -d "$home_dir" ]]; then
+        log_error "ops_runtime_home: unable to resolve a valid home directory for runtime user '${runtime_user}'."
+        return 1
+    fi
+
+    echo "$home_dir"
 }
 
 ops_require_runtime_user() {
-    local runtime_user="${1:-$(ops_runtime_user)}"
-    if ! id "$runtime_user" >/dev/null 2>&1; then
-        print_error "OPS runtime user does not exist: ${runtime_user}"
+    local runtime_user="${1:-}"
+
+    if [[ -z "$runtime_user" ]]; then
+        runtime_user="$(ops_runtime_user)" || return 1
+    fi
+
+    if ! _ops_non_root_user_exists "$runtime_user"; then
+        print_error "OPS runtime user must be a real non-root user: ${runtime_user:-empty}"
         return 1
     fi
 }
@@ -127,12 +177,16 @@ ops_run_as_user() {
     local runtime_user home_dir
     runtime_user="$1"
     shift
-    home_dir="$(ops_runtime_home "$runtime_user")"
+
+    ops_require_runtime_user "$runtime_user" || return 1
+    home_dir="$(ops_runtime_home "$runtime_user")" || return 1
     runuser -u "$runtime_user" -- env HOME="$home_dir" PM2_HOME="$home_dir/.pm2" PATH="$PATH" "$@"
 }
 
 ops_run_as_runtime_user() {
-    ops_run_as_user "$(ops_runtime_user)" "$@"
+    local runtime_user
+    runtime_user="$(ops_runtime_user)" || return 1
+    ops_run_as_user "$runtime_user" "$@"
 }
 
 ops_pm2_jlist() {

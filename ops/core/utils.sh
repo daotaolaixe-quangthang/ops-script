@@ -15,9 +15,22 @@ _log_append() {
     local msg="$1"
     local logfile="${OPS_LOG_FILE:-/tmp/ops.log}"
     local logdir
+    local euid="${EUID:-$(id -u)}"
     logdir=$(dirname "$logfile")
-    mkdir -p "$logdir" 2>/dev/null || true
-    echo "$msg" >> "$logfile" 2>/dev/null || true
+
+    if [[ "$logfile" == /var/log/ops/* && "$euid" -eq 0 ]]; then
+        mkdir -p "$logdir" 2>/dev/null || true
+        chmod 755 "$logdir" 2>/dev/null || true
+        chown root:root "$logdir" 2>/dev/null || true
+        touch "$logfile" 2>/dev/null || true
+        chmod 640 "$logfile" 2>/dev/null || true
+        chown root:root "$logfile" 2>/dev/null || true
+    else
+        mkdir -p "$logdir" 2>/dev/null || true
+        touch "$logfile" 2>/dev/null || true
+    fi
+
+    printf '%s\n' "$msg" >> "$logfile" 2>/dev/null || true
 }
 
 log_info()  {
@@ -49,36 +62,102 @@ ensure_parent_dir() {
     ensure_dir "$(dirname "$file_path")"
 }
 
+# ── Snapshot / rollback helpers ───────────────────────────────
+snapshot_path_state() {
+    local path="$1"
+    local snapshot_root="$2"
+    local name="$3"
+
+    [[ -n "$snapshot_root" ]] || return 1
+    ensure_dir "$snapshot_root"
+
+    if [[ -e "$path" || -L "$path" ]]; then
+        printf 'yes' > "${snapshot_root}/${name}.exists"
+        cp -a "$path" "${snapshot_root}/${name}"
+    else
+        printf 'no' > "${snapshot_root}/${name}.exists"
+    fi
+}
+
+restore_path_snapshot() {
+    local path="$1"
+    local snapshot_root="$2"
+    local name="$3"
+    local marker="${snapshot_root}/${name}.exists"
+
+    [[ -n "$snapshot_root" && -d "$snapshot_root" ]] || return 0
+
+    if [[ -f "$marker" && "$(<"$marker")" == "yes" ]]; then
+        rm -rf "$path"
+        ensure_dir "$(dirname "$path")"
+        cp -a "${snapshot_root}/${name}" "$path"
+    else
+        rm -rf "$path"
+    fi
+}
+
+snapshot_ufw_state() {
+    local snapshot_root="$1"
+    snapshot_path_state "/etc/ufw/user.rules" "$snapshot_root" "ufw-user-rules"
+    snapshot_path_state "/etc/ufw/user6.rules" "$snapshot_root" "ufw-user6-rules"
+    snapshot_path_state "/etc/ufw/ufw.conf" "$snapshot_root" "ufw-conf"
+}
+
+restore_ufw_state() {
+    local snapshot_root="$1"
+    [[ -n "$snapshot_root" && -d "$snapshot_root" ]] || return 0
+
+    restore_path_snapshot "/etc/ufw/user.rules" "$snapshot_root" "ufw-user-rules"
+    restore_path_snapshot "/etc/ufw/user6.rules" "$snapshot_root" "ufw-user6-rules"
+    restore_path_snapshot "/etc/ufw/ufw.conf" "$snapshot_root" "ufw-conf"
+
+    if command -v ufw >/dev/null 2>&1; then
+        if grep -Eq '^ENABLED=yes' /etc/ufw/ufw.conf 2>/dev/null; then
+            ufw --force enable >/dev/null 2>&1 || ufw reload >/dev/null 2>&1 || true
+        else
+            ufw --force disable >/dev/null 2>&1 || true
+        fi
+    fi
+}
+
 # ── File backup ───────────────────────────────────────────────
 # Usage: backup_file /path/to/file
 # Creates /path/to/file.bak.YYYYMMDD_HHMMSS; prints backup path.
 backup_file() {
     local file="$1"
-    if [[ -f "$file" ]]; then
+    if [[ -e "$file" || -L "$file" ]]; then
         local backup="${file}.bak.$(date +%Y%m%d_%H%M%S)"
-        cp "$file" "$backup"
+        cp -a -- "$file" "$backup"
         log_info "Backup: $file → $backup"
         echo "$backup"   # caller can capture path for rollback
     fi
 }
 
 # ── Atomic write ──────────────────────────────────────────────
-# Write stdin to a temp file then move atomically — avoids partial writes.
+# Write stdin to a temp file in the destination directory, then rename.
+# Existing metadata is preserved when rewriting an existing file.
 # Usage: write_file /path/to/dest <<'EOF'
 #        content
 #        EOF
 write_file() {
     local dest="$1"
     local tmp
+
     ensure_parent_dir "$dest"
-    tmp=$(mktemp)
+    tmp=$(mktemp "${dest}.tmp.XXXXXX")
     cat > "$tmp"
+
     if [[ -f "$dest" ]] && cmp -s "$tmp" "$dest"; then
         rm -f "$tmp"
         return 0
     fi
-    mv "$tmp" "$dest"
-    chmod 644 "$dest"
+
+    if [[ -e "$dest" ]]; then
+        chmod --reference="$dest" "$tmp" 2>/dev/null || true
+        chown --reference="$dest" "$tmp" 2>/dev/null || true
+    fi
+
+    mv -f "$tmp" "$dest"
     log_info "Wrote: $dest"
 }
 
@@ -86,15 +165,56 @@ write_file() {
 safe_symlink() {
     local target="$1"
     local link_path="$2"
+    local current_target=""
+    local target_name
+    local link_dir
+    local link_name
+    local tmp_link
+    target_name=$(basename "$target")
 
     ensure_parent_dir "$link_path"
+    link_dir=$(dirname "$link_path")
+    link_name=$(basename "$link_path")
 
-    if [[ -L "$link_path" ]] && [[ "$(readlink "$link_path")" == "$target" ]]; then
-        return 0
+    if [[ -L "$link_path" ]]; then
+        current_target="$(readlink "$link_path")"
+        if [[ "$current_target" == "$target" ]]; then
+            return 0
+        fi
+
+        case "$current_target" in
+            /opt/ops/*|/opt/ops-script/*)
+                if [[ "$(basename "$current_target")" != "$target_name" ]]; then
+                    log_error "Refusing to replace unexpected OPS symlink: $link_path -> $current_target"
+                    return 1
+                fi
+                ;;
+            *)
+                log_error "Refusing to replace non-OPS symlink: $link_path -> $current_target"
+                return 1
+                ;;
+        esac
+    elif [[ -e "$link_path" ]]; then
+        if [[ -d "$link_path" ]]; then
+            log_error "Refusing to replace directory at $link_path"
+        else
+            log_error "Refusing to replace regular file at $link_path"
+        fi
+        return 1
     fi
 
-    [[ -e "$link_path" || -L "$link_path" ]] && rm -f "$link_path"
-    ln -s "$target" "$link_path"
+    tmp_link=$(mktemp -p "$link_dir" ".${link_name}.tmp.XXXXXX")
+    rm -f "$tmp_link"
+    if ! ln -s "$target" "$tmp_link"; then
+        log_error "Failed to stage symlink: $tmp_link -> $target"
+        return 1
+    fi
+    if ! mv -Tf "$tmp_link" "$link_path"; then
+        rm -f "$tmp_link"
+        log_error "Failed to replace symlink: $link_path"
+        return 1
+    fi
+
     log_info "Linked: $link_path -> $target"
 }
 

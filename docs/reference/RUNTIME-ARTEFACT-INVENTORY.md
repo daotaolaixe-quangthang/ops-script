@@ -12,7 +12,7 @@ Luu y: day la inventory cho feature hien tai cua stable line; neu runtime tao th
 | `/usr/local/bin/ops` | main entrypoint symlink |
 | `/usr/local/bin/ops-dashboard` | dashboard symlink |
 | `/etc/ops/ops.conf` | global config |
-| `/etc/ops/capacity.conf` or JSON | VPS capacity profile |
+| `/etc/ops/capacity.conf` | VPS capacity profile (shell-sourceable key=value) |
 | `/var/log/ops/ops.log` | high-level operations log |
 | `/etc/ops/notifications.conf` | global notification channels and policy |
 

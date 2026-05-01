@@ -238,9 +238,7 @@ configure_php_pool() {
         if [[ "${FORCE_OVERWRITE:-0}" != "1" ]]; then
             print_warn "PHP-FPM pool '${site}' (PHP ${ver}) already exists: $pool_file"
             print_warn "Re-running will overwrite any manual customisations (env vars, memory limits, security settings, etc)."
-            local _pool_ow_ans
-            read -r -p "Overwrite existing pool config for '${site}'? [y/N]: " _pool_ow_ans
-            if [[ "${_pool_ow_ans,,}" != "y" ]]; then
+            if ! prompt_confirm "Overwrite existing pool config for '${site}'?"; then
                 print_warn "Aborted. Existing pool config for '${site}' was NOT changed."
                 return 0
             fi
@@ -273,6 +271,9 @@ EOF_POOL
         [[ -z "$key" ]] && continue
         php_set_ini_key "$pool_file" "$key" "$value"
     done < <(php_pool_tuning_for_tier)
+
+    chmod 0644 "$pool_file"
+    chown root:root "$pool_file" 2>/dev/null || true
 
     ensure_dir "$PHP_SITES_DIR"
     write_file "${PHP_SITES_DIR}/${site}.conf" <<EOF_SITE
@@ -411,7 +412,7 @@ menu_php() {
         echo "  6) Reset .htaccess (PHP sites only)"
         echo "  0) Back"
         echo ""
-        read -r -p "Select: " choice
+        prompt_menu_choice "Select" "" choice
         case "$choice" in
             1) _php_menu_run php_list_versions; press_enter ;;
             2) _php_menu_run php_manage_version; press_enter ;;

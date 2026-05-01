@@ -23,7 +23,7 @@ OPS is split into three layers:
      - `bin/ops-dashboard` – login dashboard showing system info.
      - `bin/ops-setup.sh` – one‑time post‑clone setup (symlinks, login hook, base config).
    - Shared core code:
-     - `core/env.sh` – environment detection (OS, RAM/CPU, paths), global constants.
+     - `core/env.sh` – environment detection (OS, RAM/CPU/disk, RAM-only OPS_TIER, paths), global constants.
      - `core/ui.sh` – menu rendering, prompts, colours, confirmation helpers.
      - `core/utils.sh` – safe file writes, backups, logging, idempotence helpers.
      - `core/system.sh` – wrappers around apt, systemctl, ufw, etc.
@@ -38,7 +38,11 @@ OPS is split into three layers:
      - `modules/php.sh` - multi-PHP (7.4, 8.1, 8.2, 8.3) install and PHP-FPM tuning.
      - `modules/database.sh` - MySQL/MariaDB install, secure setup, tuning, DB/user management.
      - `modules/monitoring.sh` - basic + optional advanced monitoring.
+     - `modules/verify.sh` - PASS/WARN/FAIL stack verification helpers and health summaries.
+     - `modules/checks.sh` - scheduled checks, notifications, and alert dispatchers.
+     - `modules/backup.sh` - backup helper menus and dump/archive routines.
      - `modules/codex-cli.sh` - Codex CLI install and configuration.
+     - `modules/ai-agent.sh` - Claude Code / Telegram bot integration and AI-agent local setup.
     - Modules should be **stateless** where possible, deriving state from:
       - System inspection (systemctl, ps, config files).
       - A small set of config files under `/etc/ops/` (see below).
@@ -97,7 +101,11 @@ Expected layout inside this repo:
     - `php.sh`
     - `database.sh`
     - `monitoring.sh`
+    - `verify.sh`
+    - `checks.sh`
+    - `backup.sh`
     - `codex-cli.sh`
+    - `ai-agent.sh`
     - `templates/`
       - `nginx/`
         - `node_vhost.conf.tpl`
@@ -136,7 +144,7 @@ To keep the production control plane maintainable, OPS should add explicit state
 
 **Config files (key=value, shell-sourceable):**
 - `/etc/ops/ops.conf` - global install and defaults
-- `/etc/ops/capacity.conf` - captured VPS capacity profile
+- `/etc/ops/capacity.conf` - captured VPS capacity profile (`RAM_MB`, `CPU_CORES`, `DISK_GB`, `DISK_AVAIL_GB`, `OPS_TIER`, `TIER_SITES`, `TIER_USERS`)
 - `/etc/ops/apps/<app>.conf` - Node app manifests
 - `/etc/ops/domains/<domain>.conf` - domain to backend mapping
 - `/etc/ops/php-sites/<site>.conf` - PHP site metadata

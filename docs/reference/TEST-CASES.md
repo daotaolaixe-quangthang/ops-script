@@ -83,11 +83,11 @@ Khuyen nghi:
 | INS-02 | Install tren Ubuntu 24.04 fresh | VPS sach, login root | Chay installer one-liner | Ket qua nhu INS-01 |
 | INS-03 | Reject unsupported OS | dung distro/version khac | Chay installer | Script dung an toan, thong bao ro unsupported OS, khong sua he thong nua chung |
 | INS-04 | Admin user da ton tai | user admin trung ten da co | Rerun installer/setup | Khong tao user duplicate, xu ly idempotent hoac thong bao ro rang |
-| INS-05 | Rerun `ops-setup.sh` | OPS da cai dat | Chay `ops-setup.sh` 2 lan | Symlink, hook, config khong duplicate |
+| INS-05 | Rerun `ops-setup.sh` | OPS da cai dat | Chay `ops-setup.sh` 2 lan | Symlink, hook, config khong duplicate; hook duoc rewrite nhu 1 managed block va chi cleanup legacy sudoers auto-finalize sau khi migrate hook thanh cong; tu choi takeover file/link la khong do OPS quan ly; `/var/log/ops` khong group-writable, `ops.log` root-owned `0640`; `logrotate` duoc rewrite theo managed content; `OPS_SSH_PORT` va `OPS_SSH_TRANSITION_PORT` khong bi blank neu caller khong truyen env |
 | INS-06 | Login dashboard interactive | SSH vao bang admin user | Dang nhap lai | `ops-dashboard` hien dung trong shell interactive |
 | INS-07 | Non-interactive shell khong bi hook | Chay `ssh host command`, scp, rsync | Kiem tra shell hook | Dashboard khong chen vao non-interactive session |
-| INS-08 | Login hook dung `SSH_CONNECTION` | Hook da tao | Inspect hook + dang nhap | Dashboard hien on dinh voi client khong set `SSH_TTY` |
-| INS-09 | Installer failure rollback toi thieu | Gia lap loi giua qua trinh | Chay installer | Khong de state vo nua chung khien mat SSH/menu |
+| INS-08 | Login hook dung `SSH_CONNECTION` | Hook da tao | Inspect hook + dang nhap | Dashboard hien on dinh voi client khong set `SSH_TTY`; hook chi display-only, khong mutate SSH/firewall state |
+| INS-09 | Installer failure rollback toi thieu | Gia lap loi giua qua trinh | Chay installer | Khong de state vo nua chung khien mat SSH/menu; truoc activation phai snapshot va rollback `sshd_config`, `sshd_config.d`, UFW, admin user/group/key, minimum hardening; khong deploy tree `/opt/ops` partial; khong chay `ops-setup.sh` neu staged/live candidate fail; neu `ops-setup.sh` hoac ghi `capacity.conf` fail sau activation thi restore lai `/opt/ops`, symlink, `ops.conf`, va login hook ve trang thai truoc do |
 
 ### 4.2 TUI, menu, prompt, shell behavior
 
@@ -108,15 +108,15 @@ Khuyen nghi:
 
 | ID | Test case | Preconditions | Steps | Expected result |
 |---|---|---|---|---|
-| SEC-01 | Khong disable password auth khi chua co SSH key | `authorized_keys` rong | Chay Security Baseline | Prompt disable password auth khong duoc hien, gia tri giu `yes` |
-| SEC-02 | Co key moi cho disable password auth | Da co it nhat 1 public key | Chay Security Baseline | Co prompt va disable thanh cong neu user xac nhan |
-| SEC-03 | SSH transition mo ca 2 port | Dang doi port SSH | Chay flow doi port | Port moi va port transition cung hoat dong truoc khi finalize |
-| SEC-04 | Finalize SSH khong lockout | Da dang nhap duoc qua port moi | Dong 22/finalize | Van SSH duoc bang port moi |
+| SEC-01 | Khong disable password auth khi chua co SSH key | `authorized_keys` rong | Chay Security Baseline | Prompt disable password auth khong duoc hien, gia tri giu `yes`; neu `OPS_SSH_PASSWORD_AUTH=no` bi stale nhung khong con key hop le thi flow doi port phai fallback ve `yes` de tranh lockout |
+| SEC-02 | Co key moi cho disable password auth | Da co it nhat 1 public key | Chay Security Baseline | Co prompt va disable thanh cong neu user xac nhan; neu `sshd -t` hoac reload fail thi phai revert include va giu state cu |
+| SEC-03 | SSH transition mo ca 2 port | Dang doi port SSH | Chay flow doi port | Port moi va port transition cung hoat dong truoc khi finalize; neu host dang co nhieu live SSH port thi bootstrap phai preserve tat ca live port do trong UFW, khong collapse ve 1 port guessed, va khong rewrite `OPS_SSH_PORT` / `OPS_SSH_TRANSITION_PORT` khi state managed chua unambiguous |
+| SEC-04 | Finalize SSH khong lockout | Da dang nhap duoc qua port moi | Dong 22/finalize | Van SSH duoc bang port moi; port cu bi go khoi effective sshd config; UFW va fail2ban duoc reconcile theo single-port state; neu fail2ban chua co thi installer/menu phai cai va reconcile no; fail2ban policy phai duoc sinh tu desired OPS SSH state (`OPS_SSH_PORT` va `OPS_SSH_TRANSITION_PORT` neu con), khong suy doan tu runtime listener scan; `OPS_SSH_TRANSITION_PORT` chi duoc clear sau khi `sshd -t`, reload/restart SSH, UFW finalize, va fail2ban apply deu thanh cong; neu fail2ban restart/status fail thi transition state van phai duoc giu; rollback OPS state phai gom ca `OPS_SSH_TCP_FORWARDING` |
 | SEC-05 | UFW baseline mo dung port | Da harden xong | Kiem tra `ufw status` | Chi mo SSH managed port, `80`, `443`, va transition port neu con |
 | SEC-06 | 8317 khong public allow | CLIProxyAPI da cai | Kiem tra UFW | Khong co `ALLOW 8317` |
 | SEC-07 | fail2ban sshd jail dung port | Doi SSH port | Chay verify | jail `sshd` map dung port theo OPS state |
 | SEC-08 | Root login bi khoa | Hardening xong | Kiem tra `sshd -T` | `PermitRootLogin no` |
-| SEC-09 | Forwarding flags bi tat | Hardening xong | Kiem tra `sshd -T` | `x11forwarding no`, `allowtcpforwarding no`, `allowagentforwarding no` |
+| SEC-09 | Forwarding flags bi tat | Hardening xong | Kiem tra `sshd -T` | `x11forwarding no`, `allowtcpforwarding no`, `allowagentforwarding no`; neu toggle TCP forwarding thi `ops.conf` chi duoc persist sau `sshd -t` + reload thanh cong |
 
 ### 4.4 Nginx, domain, SSL
 
@@ -198,6 +198,7 @@ Khuyen nghi:
 | MON-03 | Monitoring menu khong thoat khi 1 check fail | Gia lap service down | Vao System & Monitoring | Menu van song |
 | MON-04 | Scheduler/check scripts idempotent | Cron/timer da ton tai | Rerun install checks | Khong duplicate job |
 | MON-05 | Notification disable path an toan | Telegram chưa config | Chay test notification / disable | Khong crash, thong bao ro missing config |
+| MON-06 | Monitoring baseline reconcile dung log path + rotation | `logrotate` da co; co/khong co Nginx, PHP-FPM, PM2 | Chay `Setup Wizard -> Install Logging & Monitoring` | `/var/log/ops/ops.log` duoc bootstrap, `/etc/logrotate.d/ops` duoc reconcile; neu Nginx/PHP-FPM/PM2 da cai thi log rotation cho cac thanh phan do phai san sang, neu chua san sang thi step tra non-zero va khong duoc mark done |
 
 ### 4.10 Secrets, permissions, files
 
@@ -218,8 +219,8 @@ Day la nhom bug phai retest moi khi co thay doi lien quan, vi da xuat hien hoac 
 | REG-01 | Prompt bi mat do `read -p ... < /dev/tty 2>/dev/null` | sua prompt/menu/confirm/input |
 | REG-02 | Menu thoat do action return non-zero duoi `set -e` | sua `bin/ops`, `menu_*`, verify actions |
 | REG-03 | Verify action FAIL lam thoat menu | sua monitoring/verify/checks |
-| REG-04 | SSH lockout do disable password auth khi chua co key | sua installer, security, setup wizard |
-| REG-05 | Login hook pha shell non-interactive | sua `ops-dashboard`, hook shell, `ops-setup.sh` |
+| REG-04 | SSH lockout do disable password auth truoc khi operator verify dang nhap bang key/new port | sua installer, security, setup wizard |
+| REG-05 | Login hook pha shell non-interactive hoac mutate SSH/firewall state | sua `ops-dashboard`, hook shell, `ops-setup.sh` |
 | REG-06 | CLIProxyAPI bi expose cong khai | sua module provider, nginx, ufw, verify |
 | REG-07 | PM2 startup chay root | sua node install, PM2 integration |
 | REG-08 | `pm2 list` false empty do sai runtime user | sua node menu, runtime wrappers |
@@ -227,6 +228,11 @@ Day la nhom bug phai retest moi khi co thay doi lien quan, vi da xuat hien hoac 
 | REG-10 | Config rewrite duplicate/sai vi tri lam vo syntax | sua logic `sed`, append, template rendering |
 | REG-11 | Nginx CLIProxyAPI vhost vo `proxy_buffering off` hoac proxy sai port | sua nginx hardening/template |
 | REG-12 | Log grow vo han / filename suffix drift | sua PM2 ecosystem, logrotate |
+| REG-15.1 | Menu boundary contract bi drift ve caller `|| true` hoac submenu thieu local wrapper | sua `bin/ops`, `menu_*`, wrapper/menu dispatch |
+| REG-24 | High-risk SSH/service mutation nuot reload fail hoac bypass shared wrapper | sua `security.sh`, `node.sh`, `nginx.sh`, `cli-proxy-api.sh` |
+| REG-27 | Prompt TTY bi drift ve `read -p` / direct-stdin trong TUI flow | sua prompt/menu/confirm/input helpers |
+| REG-30 | Security state drift: persist `ops.conf` truoc khi live SSH/sysctl apply thanh cong, hoac mutate `authorized_keys` khong backup/dedup | sua `security.sh`, `setup-wizard.sh`, regression/docs lien quan |
+| REG-31 | Setup wizard drift: stale `WIZARD_DONE_*`, missing monitoring baseline, mat handoff PHP versions, hoac ghi `FULL_WIZARD` truoc khi verify pass | sua `setup-wizard.sh`, `monitoring.sh`, regression/docs lien quan |
 
 ## 6. Quy trinh test khi them/chinh sua 1 chuc nang moi
 
@@ -248,6 +254,7 @@ Day la nhom bug phai retest moi khi co thay doi lien quan, vi da xuat hien hoac 
 - Moi `menu_*` boundary van `return 0`.
 - Verify functions van return 0 va chi render ket qua.
 - Moi thay doi Nginx/SSH/PHP/systemd deu co syntax test truoc reload/restart.
+- Khong nuot live-apply fail bang `|| true` neu state persisted phu thuoc vao ket qua reload/apply do (dac biet SSH toggle va sysctl baseline).
 - Khong co secret hard-code trong repo, log, docs.
 - Secret files moi co `chmod 600` va `chown` dung user.
 - Node services van di qua PM2, khong drift sang wrapper tu phat.
@@ -318,8 +325,8 @@ Bat buoc chay:
 
 - `PHP-01` den `PHP-06`
 - `DB-01` den `DB-06`
-- `MON-01` den `MON-05`
-- `REG-03`, `REG-09`, `REG-10`
+- `MON-01` den `MON-06`
+- `REG-03`, `REG-09`, `REG-10`, `REG-31`
 
 ## 10. Huong mo rong sau nay
 
@@ -344,7 +351,7 @@ Repo hien co shell regression harness contract-level tai:
 Pham vi cover hien tai:
 
 - `TUI-01..TUI-10`
-- `REG-01..REG-15`
+- `REG-01..REG-31`
 - contract/static coverage cho `SEC-01..SEC-09`, `INS-01..INS-09`, `WEB-01..WEB-10`, `NODE-01..NODE-10`, `PHP-01..PHP-06`, `DB-01..DB-06`, `CPA-01..CPA-08`, `MON-01..MON-05`, `FILE-01..FILE-04`
 
 Muc dich:

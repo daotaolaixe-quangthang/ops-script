@@ -29,7 +29,7 @@ menu_node() {
         echo "  5) Show app logs"
         echo "  0) Back"
         echo ""
-        read -r -p "Select: " choice
+        prompt_menu_choice "Select" "" choice
         case "$choice" in
             1) _node_menu_run node_list_apps ;;
             2) _node_menu_run node_add_app ;;
@@ -61,6 +61,23 @@ _node_require_runtime_user() {
 
 _node_run_as_runtime_user() {
     ops_run_as_user "$(_node_runtime_user)" "$@"
+}
+
+node_ensure_pm2_logrotate() {
+    local runtime_user
+    runtime_user="$(_node_runtime_user)"
+
+    log_info "Installing pm2-logrotate module for runtime user: $runtime_user"
+    if ! _node_run_as_runtime_user pm2 install pm2-logrotate >/dev/null 2>&1; then
+        print_error "pm2-logrotate install failed for runtime user: ${runtime_user}."
+        return 1
+    fi
+    _node_run_as_runtime_user pm2 set pm2-logrotate:max_size 20M >/dev/null 2>&1 || return 1
+    _node_run_as_runtime_user pm2 set pm2-logrotate:retain 7 >/dev/null 2>&1 || return 1
+    _node_run_as_runtime_user pm2 set pm2-logrotate:compress true >/dev/null 2>&1 || return 1
+    _node_run_as_runtime_user pm2 set pm2-logrotate:dateFormat YYYY-MM-DD >/dev/null 2>&1 || return 1
+    _node_run_as_runtime_user pm2 set pm2-logrotate:rotateInterval '0 0 * * *' >/dev/null 2>&1 || return 1
+    print_ok "pm2-logrotate configured: 20MB/file, 7 days, daily rotate, compressed."
 }
 
 _node_reconcile_app_ownership() {
@@ -269,26 +286,27 @@ node_install_pm2() {
             "${_startup_args[@]}"
         fi
         log_info "PM2 startup configured via systemd."
+    elif systemctl list-unit-files 2>/dev/null | grep -q "^pm2-${runtime_user}\\.service"; then
+        log_info "PM2 startup service already present for runtime user: ${runtime_user}"
     else
-        log_warn "Could not extract PM2 startup command — may already be configured."
-        log_warn "If needed, run manually: pm2 startup systemd -u ${runtime_user} --hp ${home_dir}"
+        print_error "Could not configure PM2 startup for runtime user: ${runtime_user}."
+        print_error "Run manually: pm2 startup systemd -u ${runtime_user} --hp ${home_dir}"
+        return 1
     fi
 
     _node_run_as_runtime_user pm2 ping >/dev/null 2>&1 || true
 
     # Install pm2-logrotate: prevents /var/log/ops/*.log growing unbounded.
     # Logs rotate daily, max 20MB/file, 7 days retention, gzip compressed.
-    log_info "Installing pm2-logrotate module for runtime user: $runtime_user"
-    _node_run_as_runtime_user pm2 install pm2-logrotate >/dev/null 2>&1 || \
-        log_warn "pm2-logrotate install failed — run manually: pm2 install pm2-logrotate"
-    _node_run_as_runtime_user pm2 set pm2-logrotate:max_size 20M   2>/dev/null || true
-    _node_run_as_runtime_user pm2 set pm2-logrotate:retain 7        2>/dev/null || true
-    _node_run_as_runtime_user pm2 set pm2-logrotate:compress true   2>/dev/null || true
-    _node_run_as_runtime_user pm2 set pm2-logrotate:dateFormat YYYY-MM-DD 2>/dev/null || true
-    _node_run_as_runtime_user pm2 set pm2-logrotate:rotateInterval '0 0 * * *' 2>/dev/null || true
-    print_ok "pm2-logrotate configured: 20MB/file, 7 days, daily rotate, compressed."
+    if ! node_ensure_pm2_logrotate; then
+        print_error "PM2 log rotation is required for production readiness."
+        return 1
+    fi
 
-    _node_run_as_runtime_user pm2 save || true
+    if ! _node_run_as_runtime_user pm2 save; then
+        print_error "Failed to save PM2 process list for runtime user: ${runtime_user}."
+        return 1
+    fi
     ops_conf_set "ops.conf" "OPS_RUNTIME_USER" "$runtime_user"
     print_ok "PM2 startup configured for runtime user: $runtime_user"
 
@@ -448,9 +466,7 @@ node_add_app() {
         if [[ "${FORCE_OVERWRITE:-0}" != "1" ]]; then
             print_warn "ecosystem.config.js already exists: $eco_dest"
             print_warn "Overwriting will replace any manual PM2 customisations (cluster mode, env, cron_restart, etc)."
-            local _eco_ow_ans
-            read -r -p "Overwrite existing ecosystem.config.js? [y/N]: " _eco_ow_ans
-            if [[ "${_eco_ow_ans,,}" != "y" ]]; then
+            if ! prompt_confirm "Overwrite existing ecosystem.config.js?"; then
                 print_warn "Kept existing ecosystem.config.js — PM2 will use it as-is."
                 log_info "P-02: ecosystem.config.js kept unchanged for app '${app_name}'."
                 _write_eco=0
@@ -579,11 +595,11 @@ node_remove_app() {
                 rm -f "$vhost_enabled"
                 rm -f "$vhost_available"
                 rm -f "$domain_state"
-                if nginx -t > /dev/null 2>&1; then
+                if nginx_validate > /dev/null 2>&1; then
                     service_reload nginx > /dev/null 2>&1 || true
                     print_ok "Nginx vhost for '${app_domain}' removed and nginx reloaded."
                 else
-                    print_warn "nginx -t failed after vhost removal — check /etc/nginx/nginx.conf manually."
+                    print_warn "nginx validation failed after vhost removal — check /etc/nginx/nginx.conf manually."
                 fi
             else
                 print_warn "Nginx vhost kept. Domain '${app_domain}' will serve 502 until vhost is removed manually."

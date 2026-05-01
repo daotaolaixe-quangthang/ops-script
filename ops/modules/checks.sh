@@ -802,7 +802,11 @@ EOF
     # Ensure log file exists
     local log_dir="/var/log/ops"
     mkdir -p "$log_dir" 2>/dev/null || true
+    chown root:root "$log_dir" 2>/dev/null || true
+    chmod 755 "$log_dir" 2>/dev/null || true
     touch "$log_dir/checks.log" 2>/dev/null || true
+    chown root:root "$log_dir/checks.log" 2>/dev/null || true
+    chmod 640 "$log_dir/checks.log" 2>/dev/null || true
 
     # Also create the ops-check dispatcher script
     _checks_write_dispatcher
@@ -990,7 +994,7 @@ menu_checks() {
         echo "  12) Send daily health digest now"
         echo "  0) Back"
         echo ""
-        read -r -p "Select: " choice
+        prompt_menu_choice "Select" "" choice
         case "$choice" in
             1)  _checks_menu_run checks_install_cron; press_enter ;;
             2)  _checks_menu_run checks_remove_cron; press_enter ;;

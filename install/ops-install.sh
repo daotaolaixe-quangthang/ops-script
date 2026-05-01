@@ -39,6 +39,181 @@ info() { echo -e "${GRN}[INFO]${RST}  $*"; }
 warn() { echo -e "${YLW}[WARN]${RST}  $*"; }
 ok()   { echo -e "${GRN}[OK]${RST}    $*"; }
 
+SSH_CURRENT_PORTS=()
+SSH_BOOTSTRAP_PORTS=()
+SSH_BOOTSTRAP_MODE="fresh"
+OPS_SSH_STATE_PERSIST="no"
+OPS_MANAGED_SSH_PORT=""
+OPS_MANAGED_SSH_TRANSITION_PORT=""
+OPS_PRE_ACTIVATION_SNAPSHOT_DIR=""
+OPS_PRE_ACTIVATION_ROLLBACK_ARMED="no"
+OPS_BOOTSTRAP_USER_CREATED="no"
+OPS_BOOTSTRAP_SUDO_ADDED="no"
+OPS_BOOTSTRAP_ADMIN_SSH_PATH=""
+OPS_INSTALL_PREVIOUS_BACKUP=""
+OPS_POST_DEPLOY_SNAPSHOT_DIR=""
+OPS_INSTALL_STAGE_DIR=""
+OPS_INSTALL_SOURCE_ROOT=""
+OPS_INSTALL_SOURCE_OPS=""
+OPS_INSTALL_CANDIDATE_ROOT=""
+OPS_SHARED_HELPERS_LOADED="no"
+
+port_list_contains() {
+    local needle="$1"
+    shift || true
+    local item
+    for item in "$@"; do
+        [[ "$item" == "$needle" ]] && return 0
+    done
+    return 1
+}
+
+format_port_list() {
+    local joined=""
+    local item
+    for item in "$@"; do
+        [[ -n "$item" ]] || continue
+        if [[ -n "$joined" ]]; then
+            joined+=" "
+        fi
+        joined+="$item"
+    done
+    printf '%s' "$joined"
+}
+
+cleanup_install_artifacts() {
+    if [[ -n "${OPS_INSTALL_STAGE_DIR:-}" && -d "${OPS_INSTALL_STAGE_DIR}" ]]; then
+        rm -rf "${OPS_INSTALL_STAGE_DIR}"
+    fi
+    OPS_INSTALL_STAGE_DIR=""
+    OPS_INSTALL_SOURCE_ROOT=""
+    OPS_INSTALL_SOURCE_OPS=""
+
+    if [[ -n "${OPS_INSTALL_CANDIDATE_ROOT:-}" && -e "${OPS_INSTALL_CANDIDATE_ROOT}" ]]; then
+        rm -rf "${OPS_INSTALL_CANDIDATE_ROOT}"
+    fi
+    OPS_INSTALL_CANDIDATE_ROOT=""
+}
+
+prepare_install_source_tree() {
+    [[ -n "${OPS_INSTALL_SOURCE_ROOT:-}" && -d "${OPS_INSTALL_SOURCE_ROOT}" ]] && return 0
+
+    local tarball_url="https://github.com/${OPS_GITHUB_REPO}/archive/refs/heads/${OPS_GITHUB_BRANCH}.tar.gz"
+    local tarball extract_dir size
+
+    OPS_INSTALL_STAGE_DIR=$(mktemp -d /tmp/ops-install-XXXXXX)
+    tarball="${OPS_INSTALL_STAGE_DIR}/ops-source.tar.gz"
+    extract_dir="${OPS_INSTALL_STAGE_DIR}/extracted"
+
+    info "Downloading source tarball from GitHub..."
+    if ! curl -fsSL --max-time 120 --connect-timeout 15 -o "$tarball" "$tarball_url" 2>&1; then
+        cleanup_install_artifacts
+        die "Download failed. Check network connectivity and try again."
+    fi
+    size=$(du -sh "$tarball" 2>/dev/null | cut -f1)
+    ok "Downloaded (${size})"
+
+    if ! tar -tzf "$tarball" >/dev/null 2>&1; then
+        cleanup_install_artifacts
+        die "Downloaded file is not a valid tar.gz archive. Aborting."
+    fi
+
+    mkdir -p "$extract_dir"
+    tar -xzf "$tarball" -C "$extract_dir" 2>/dev/null
+
+    OPS_INSTALL_SOURCE_ROOT=$(find "$extract_dir" -maxdepth 1 -type d -name 'ops-script-*' | head -1)
+    if [[ -z "$OPS_INSTALL_SOURCE_ROOT" ]]; then
+        cleanup_install_artifacts
+        die "Unexpected archive structure — expected ops-script-*/ inside tarball."
+    fi
+
+    OPS_INSTALL_SOURCE_OPS="${OPS_INSTALL_SOURCE_ROOT}/${OPS_SOURCE_SUBDIR}"
+    if [[ ! -d "${OPS_INSTALL_SOURCE_OPS}/bin" ]]; then
+        cleanup_install_artifacts
+        die "Missing ${OPS_SOURCE_SUBDIR}/bin/ inside tarball. Archive may be corrupted."
+    fi
+
+    if [[ "${OPS_SHARED_HELPERS_LOADED:-no}" != "yes" ]]; then
+        # shellcheck source=/dev/null
+        source "${OPS_INSTALL_SOURCE_OPS}/core/utils.sh"
+        OPS_SHARED_HELPERS_LOADED="yes"
+    fi
+}
+
+prepare_pre_activation_rollback_state() {
+    [[ -z "${OPS_PRE_ACTIVATION_SNAPSHOT_DIR:-}" ]] || return 0
+
+    OPS_PRE_ACTIVATION_SNAPSHOT_DIR=$(mktemp -d /tmp/ops-pre-activation-XXXXXX)
+    snapshot_path_state "/etc/ssh/sshd_config" "$OPS_PRE_ACTIVATION_SNAPSHOT_DIR" "sshd-config"
+    snapshot_path_state "/etc/ssh/sshd_config.d" "$OPS_PRE_ACTIVATION_SNAPSHOT_DIR" "sshd-include-dir"
+    snapshot_ufw_state "$OPS_PRE_ACTIVATION_SNAPSHOT_DIR"
+    OPS_PRE_ACTIVATION_ROLLBACK_ARMED="yes"
+}
+
+prepare_admin_ssh_rollback_state() {
+    local admin_home="$1"
+
+    [[ "$OPS_BOOTSTRAP_USER_CREATED" == "yes" ]] && return 0
+    [[ -n "${OPS_PRE_ACTIVATION_SNAPSHOT_DIR:-}" ]] || return 0
+    [[ -n "$admin_home" && -d "$admin_home" ]] || return 0
+    [[ -n "${OPS_BOOTSTRAP_ADMIN_SSH_PATH:-}" ]] && return 0
+
+    OPS_BOOTSTRAP_ADMIN_SSH_PATH="${admin_home}/.ssh"
+    snapshot_path_state "$OPS_BOOTSTRAP_ADMIN_SSH_PATH" "$OPS_PRE_ACTIVATION_SNAPSHOT_DIR" "admin-ssh-dir"
+}
+
+cleanup_pre_activation_snapshots() {
+    if [[ -n "${OPS_PRE_ACTIVATION_SNAPSHOT_DIR:-}" && -d "${OPS_PRE_ACTIVATION_SNAPSHOT_DIR}" ]]; then
+        rm -rf "${OPS_PRE_ACTIVATION_SNAPSHOT_DIR}"
+    fi
+    OPS_PRE_ACTIVATION_SNAPSHOT_DIR=""
+    OPS_PRE_ACTIVATION_ROLLBACK_ARMED="no"
+    OPS_BOOTSTRAP_USER_CREATED="no"
+    OPS_BOOTSTRAP_SUDO_ADDED="no"
+    OPS_BOOTSTRAP_ADMIN_SSH_PATH=""
+}
+
+rollback_pre_activation_failure() {
+    [[ "${OPS_PRE_ACTIVATION_ROLLBACK_ARMED:-no}" == "yes" ]] || return 0
+
+    warn "Installer failed before activation completed. Restoring previous SSH, firewall, and admin bootstrap state."
+
+    local ssh_service
+    ssh_service=$(detect_ssh_service)
+
+    restore_path_snapshot "/etc/ssh/sshd_config" "$OPS_PRE_ACTIVATION_SNAPSHOT_DIR" "sshd-config"
+    restore_path_snapshot "/etc/ssh/sshd_config.d" "$OPS_PRE_ACTIVATION_SNAPSHOT_DIR" "sshd-include-dir"
+
+    if sshd -t >/dev/null 2>&1; then
+        systemctl reload "$ssh_service" >/dev/null 2>&1 || true
+    else
+        warn "Restored SSH config still fails validation. Manual SSH recovery may be required."
+    fi
+
+    restore_ufw_state "$OPS_PRE_ACTIVATION_SNAPSHOT_DIR"
+
+    if [[ "$OPS_BOOTSTRAP_USER_CREATED" == "yes" && -n "${ADMIN_USER:-}" ]] && id "$ADMIN_USER" >/dev/null 2>&1; then
+        userdel -r "$ADMIN_USER" >/dev/null 2>&1 || userdel "$ADMIN_USER" >/dev/null 2>&1 || true
+    else
+        if [[ -n "${OPS_BOOTSTRAP_ADMIN_SSH_PATH:-}" ]]; then
+            restore_path_snapshot "$OPS_BOOTSTRAP_ADMIN_SSH_PATH" "$OPS_PRE_ACTIVATION_SNAPSHOT_DIR" "admin-ssh-dir"
+        fi
+        if [[ "$OPS_BOOTSTRAP_SUDO_ADDED" == "yes" && -n "${ADMIN_USER:-}" ]] && id "$ADMIN_USER" >/dev/null 2>&1; then
+            gpasswd -d "$ADMIN_USER" sudo >/dev/null 2>&1 || deluser "$ADMIN_USER" sudo >/dev/null 2>&1 || true
+        fi
+    fi
+
+    cleanup_pre_activation_snapshots
+}
+
+installer_exit_trap() {
+    local exit_code=$?
+    if [[ "$exit_code" -ne 0 && "${OPS_PRE_ACTIVATION_ROLLBACK_ARMED:-no}" == "yes" ]]; then
+        rollback_pre_activation_failure || true
+    fi
+    cleanup_install_artifacts || true
+}
+
 # ── 1. Preflight checks ───────────────────────────────────────
 
 preflight_check() {
@@ -77,15 +252,34 @@ preflight_check() {
 
 ensure_deps() {
     info "Checking required dependencies..."
-    local missing=()
+
+    local -A cmd_pkg_map=(
+        [curl]="curl"
+        [tar]="tar"
+        [awk]="gawk"
+        [nproc]="coreutils"
+        [df]="coreutils"
+        [ss]="iproute2"
+        [rsync]="rsync"
+    )
+    local missing_cmds=()
+    local missing_pkgs=()
+    local cmd pkg
+
     for cmd in curl tar awk nproc df ss rsync; do
-        command -v "$cmd" &>/dev/null || missing+=("$cmd")
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            missing_cmds+=("$cmd")
+            pkg="${cmd_pkg_map[$cmd]}"
+            if [[ -n "$pkg" ]] && ! port_list_contains "$pkg" "${missing_pkgs[@]}"; then
+                missing_pkgs+=("$pkg")
+            fi
+        fi
     done
 
-    if (( ${#missing[@]} > 0 )); then
-        warn "Missing: ${missing[*]} — installing..."
+    if (( ${#missing_pkgs[@]} > 0 )); then
+        warn "Missing commands: ${missing_cmds[*]} — installing packages: ${missing_pkgs[*]}"
         apt-get update -qq
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${missing[@]}"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${missing_pkgs[@]}"
     fi
     ok "Dependencies ready."
 }
@@ -93,11 +287,14 @@ ensure_deps() {
 # ── 3. VPS resource detection & tier calculation ──────────────
 
 detect_vps_info() {
+    local disk_total disk_avail
+
     RAM_MB=$(awk '/MemTotal/ { printf "%d", $2/1024 }' /proc/meminfo)
     CPU_CORES=$(nproc)
-    DISK_GB=$(df -BG / | awk 'NR==2 { gsub("G","",$2); print $2 }')
-    DISK_AVAIL=$(df -BG / | awk 'NR==2 { gsub("G","",$4); print $4 }')
-    export RAM_MB CPU_CORES DISK_GB DISK_AVAIL
+    IFS=' ' read -r disk_total disk_avail < <(df -BG / | awk 'NR==2 { gsub("G","",$2); gsub("G","",$4); print $2, $4 }')
+    DISK_GB="$disk_total"
+    DISK_AVAIL_GB="$disk_avail"
+    export RAM_MB CPU_CORES DISK_GB DISK_AVAIL_GB
 }
 
 compute_tier() {
@@ -122,97 +319,148 @@ print_vps_summary() {
     echo -e "${CYN}${BLD}━━━ VPS Resources ━━━${RST}"
     echo -e "  RAM:       ${RAM_MB}MB"
     echo -e "  CPUs:      ${CPU_CORES} core(s)"
-    echo -e "  Disk:      ${DISK_GB}GB total, ${DISK_AVAIL}GB available"
+    echo -e "  Disk:      ${DISK_GB}GB total, ${DISK_AVAIL_GB}GB available"
     echo -e "  OPS Tier:  ${BLD}${OPS_TIER}${RST}  (sites: ${TIER_SITES}, concurrent users/site: ~${TIER_USERS})"
     echo ""
 }
 
 # ── 4. SSH port configuration ─────────────────────────────────
 
-# detect_ssh_state: đọc trạng thái SSH hiện tại từ sshd_config.
-# Xuất:
-#   SSH_ALREADY_CONFIGURED=yes|no
-#   SSH_PORT_22_OPEN=yes|no
+# detect_ssh_state: derive live SSH ports conservatively.
+# Outputs:
+#   SSH_BOOTSTRAP_MODE=fresh|managed|ambiguous
 #   SSH_CURRENT_PORTS=( ... )
-#   NEW_SSH_PORT   — port non-22 đã có, hoặc rỗng nếu chưa đặt
+#   SSH_BOOTSTRAP_PORTS=( ... )  # ports that must stay allowed during bootstrap
+#   OPS_MANAGED_SSH_PORT / OPS_MANAGED_SSH_TRANSITION_PORT when state is safe to persist
 detect_ssh_state() {
     local sshd_conf="/etc/ssh/sshd_config"
-    SSH_ALREADY_CONFIGURED="no"
-    SSH_PORT_22_OPEN="no"
+    local existing_locked_port=""
+    local existing_transition_port=""
+    local non22_ports=()
+    local sshd_t_out port_source=""
+    local has_port_22="no"
+
     SSH_CURRENT_PORTS=()
-    NEW_SSH_PORT=""
+    SSH_BOOTSTRAP_PORTS=()
+    SSH_BOOTSTRAP_MODE="fresh"
+    OPS_SSH_STATE_PERSIST="no"
+    OPS_MANAGED_SSH_PORT=""
+    OPS_MANAGED_SSH_TRANSITION_PORT=""
+
+    if [[ -f "${OPS_CONFIG_DIR}/ops.conf" ]]; then
+        existing_locked_port=$(grep '^OPS_SSH_PORT=' "${OPS_CONFIG_DIR}/ops.conf" 2>/dev/null | head -n1 | cut -d= -f2- | sed 's/^"//; s/"$//' || true)
+        existing_transition_port=$(grep '^OPS_SSH_TRANSITION_PORT=' "${OPS_CONFIG_DIR}/ops.conf" 2>/dev/null | head -n1 | cut -d= -f2- | sed 's/^"//; s/"$//' || true)
+    fi
 
     # F-09: Use sshd -T (merged effective config) as primary detection.
-    # Cloud providers inject SSH ports via sshd_config.d/ includes (e.g. 50-cloud-init.conf),
-    # which grep on sshd_config alone would miss. sshd -T reads the fully merged result.
-    local sshd_t_out
     sshd_t_out=$(sshd -T 2>/dev/null || true)
-
-    local port_source
     if [[ -n "$sshd_t_out" ]]; then
-        # Primary path: parse sshd -T output (field: "port <N>")
         port_source=$(printf '%s\n' "$sshd_t_out" | awk '/^port / {print $2}')
     elif [[ -f "$sshd_conf" ]]; then
-        # Fallback 1: grep main sshd_config (misses sshd_config.d/ includes)
         port_source=$(grep -E '^[[:space:]]*Port[[:space:]]+[0-9]+' "$sshd_conf" | awk '{print $2}')
     fi
 
     # F-01b fix: if still empty, try live socket detection via ss.
-    # Covers restricted containers (OpenVZ/LXC) where sshd -T returns nothing.
-    if [[ -z "$port_source" ]] && command -v ss > /dev/null 2>&1; then
-        local _live_ports
-        _live_ports=$(ss -tlnp 2>/dev/null \
+    if [[ -z "$port_source" ]] && command -v ss >/dev/null 2>&1; then
+        local live_ports
+        live_ports=$(ss -tlnp 2>/dev/null \
             | awk '/sshd/{match($4,/[0-9]+$/); if(RSTART) print substr($4,RSTART,RLENGTH)}' \
             | sort -un | head -5 || true)
-        if [[ -n "$_live_ports" ]]; then
+        if [[ -n "$live_ports" ]]; then
             warn "sshd -T returned no output — using live ss port detection."
-            port_source="$_live_ports"
+            port_source="$live_ports"
         fi
     fi
 
-    # Safety guard: if sshd is running but we still cannot detect any port,
-    # abort rather than continue with unknown SSH/UFW state.
-    if [[ -z "$port_source" ]] && pgrep -x sshd > /dev/null 2>&1; then
+    if [[ -z "$port_source" ]] && pgrep -x sshd >/dev/null 2>&1; then
         warn "Cannot determine active SSH port(s)."
         warn "Check 'ss -tlnp' manually, then re-run: bash ops-install.sh"
-        die "Aborting installation to avoid writing incorrect SSH state or UFW rules."
+        return 1
     fi
 
     local port
     while IFS= read -r port; do
-        [[ -z "$port" ]] && continue
-        SSH_CURRENT_PORTS+=("$port")
-        if [[ "$port" == "22" ]]; then
-            SSH_PORT_22_OPEN="yes"
-        else
-            NEW_SSH_PORT="$port"   # first non-22 port found
+        [[ "$port" =~ ^[0-9]+$ ]] || continue
+        if ! port_list_contains "$port" "${SSH_CURRENT_PORTS[@]}"; then
+            SSH_CURRENT_PORTS+=("$port")
         fi
     done <<< "$port_source"
 
-    if [[ -n "$NEW_SSH_PORT" ]]; then
-        SSH_ALREADY_CONFIGURED="yes"
+    if [[ ${#SSH_CURRENT_PORTS[@]} -eq 0 ]]; then
+        warn "No active SSH port could be derived from the current host state."
+        return 1
     fi
 
-    export SSH_ALREADY_CONFIGURED SSH_PORT_22_OPEN NEW_SSH_PORT
+    for port in "${SSH_CURRENT_PORTS[@]}"; do
+        if [[ "$port" == "22" ]]; then
+            has_port_22="yes"
+        else
+            non22_ports+=("$port")
+        fi
+    done
+
+    SSH_BOOTSTRAP_PORTS=("${SSH_CURRENT_PORTS[@]}")
+
+    if [[ ${#SSH_CURRENT_PORTS[@]} -eq 1 && "${SSH_CURRENT_PORTS[0]}" == "22" ]]; then
+        return 0
+    fi
+
+    if [[ ${#non22_ports[@]} -eq 1 ]]; then
+        SSH_BOOTSTRAP_MODE="managed"
+        OPS_MANAGED_SSH_PORT="${non22_ports[0]}"
+        if [[ "$has_port_22" == "yes" ]]; then
+            OPS_MANAGED_SSH_TRANSITION_PORT="22"
+        fi
+        OPS_SSH_STATE_PERSIST="yes"
+        return 0
+    fi
+
+    SSH_BOOTSTRAP_MODE="ambiguous"
+    if [[ -n "$existing_locked_port" ]] && port_list_contains "$existing_locked_port" "${SSH_CURRENT_PORTS[@]}"; then
+        if [[ -n "$existing_transition_port" && "$existing_transition_port" != "$existing_locked_port" ]]; then
+            if port_list_contains "$existing_transition_port" "${SSH_CURRENT_PORTS[@]}"; then
+                OPS_MANAGED_SSH_TRANSITION_PORT="$existing_transition_port"
+                OPS_MANAGED_SSH_PORT="$existing_locked_port"
+                OPS_SSH_STATE_PERSIST="yes"
+            fi
+        else
+            OPS_MANAGED_SSH_PORT="$existing_locked_port"
+            OPS_SSH_STATE_PERSIST="yes"
+        fi
+    fi
 }
 
 setup_ssh_port() {
-    detect_ssh_state
+    detect_ssh_state || return 1
 
-    if [[ "$SSH_ALREADY_CONFIGURED" == "yes" ]]; then
+    if [[ "$SSH_BOOTSTRAP_MODE" != "fresh" ]]; then
         echo ""
         echo -e "${CYN}${BLD}━━━ SSH Port Configuration ━━━${RST}"
-        ok "SSH port đã được cấu hình: port ${NEW_SSH_PORT}."
-        if [[ "$SSH_PORT_22_OPEN" == "yes" ]]; then
-            warn "Port 22 vẫn mở (transition mode). Dùng 'ops → Security → Finalise SSH port' để đóng nếu cần."
+
+        if [[ "$SSH_BOOTSTRAP_MODE" == "ambiguous" ]]; then
+            warn "Detected multiple live SSH ports: $(format_port_list "${SSH_CURRENT_PORTS[@]}")"
+            if [[ "$OPS_SSH_STATE_PERSIST" == "yes" && -n "$OPS_MANAGED_SSH_PORT" ]]; then
+                ok "Preserving existing OPS locked SSH port: ${OPS_MANAGED_SSH_PORT}"
+                if [[ -n "$OPS_MANAGED_SSH_TRANSITION_PORT" ]]; then
+                    warn "Existing OPS transition port remains recorded: ${OPS_MANAGED_SSH_TRANSITION_PORT}"
+                fi
+            else
+                warn "Bootstrap will preserve all live SSH access and will not rewrite OPS_SSH_PORT / OPS_SSH_TRANSITION_PORT on this run."
+            fi
         else
-            ok "Port 22 đã đóng — giữ nguyên."
+            ok "SSH port already configured: port ${OPS_MANAGED_SSH_PORT}"
+            if [[ -n "$OPS_MANAGED_SSH_TRANSITION_PORT" ]]; then
+                warn "Transition port ${OPS_MANAGED_SSH_TRANSITION_PORT} is still open. Use 'ops → Security → Finalise SSH port' after verifying the locked port."
+            else
+                ok "No SSH transition port is currently recorded."
+            fi
         fi
+
         echo ""
         return 0
     fi
 
-    # Fresh state — port 22 là duy nhất, cần hỏi port mới
+    # Fresh state — port 22 is the only effective SSH port.
     echo ""
     echo -e "${CYN}${BLD}━━━ SSH Port Configuration ━━━${RST}"
     echo "  Current SSH port is 22."
@@ -220,24 +468,29 @@ setup_ssh_port() {
     echo "  Port 22 will remain open until you manually close it via OPS security menu."
     echo ""
 
+    local new_port
     while true; do
-        read -r -p "  Enter new SSH port (> 1024, not currently in use) [default: 2222]: " NEW_SSH_PORT
-        NEW_SSH_PORT="${NEW_SSH_PORT:-2222}"
+        read -r -p "  Enter new SSH port (> 1024, not currently in use) [default: 2222]: " new_port
+        new_port="${new_port:-2222}"
 
-        if ! [[ "$NEW_SSH_PORT" =~ ^[0-9]+$ ]] || (( NEW_SSH_PORT <= 1024 || NEW_SSH_PORT > 65535 )); then
+        if ! [[ "$new_port" =~ ^[0-9]+$ ]] || (( new_port <= 1024 || new_port > 65535 )); then
             warn "Port must be a number between 1025 and 65535. Try again."
             continue
         fi
 
-        if ss -H -ltn | awk '{print $4}' | grep -Eq "(^|:)${NEW_SSH_PORT}$"; then
-            warn "Port ${NEW_SSH_PORT} is already in use. Choose a different port."
+        if ss -H -ltn | awk '{print $4}' | grep -Eq "(^|:)${new_port}$"; then
+            warn "Port ${new_port} is already in use. Choose a different port."
             continue
         fi
 
         break
     done
-    export NEW_SSH_PORT
-    ok "New SSH port set to: ${NEW_SSH_PORT}"
+
+    OPS_MANAGED_SSH_PORT="$new_port"
+    OPS_MANAGED_SSH_TRANSITION_PORT="22"
+    OPS_SSH_STATE_PERSIST="yes"
+    SSH_BOOTSTRAP_PORTS=("22" "$new_port")
+    ok "New SSH port set to: ${OPS_MANAGED_SSH_PORT}"
 
     _configure_sshd_fresh
 }
@@ -267,7 +520,7 @@ _restore_sshd_include_backups() {
 
 _configure_sshd_fresh() {
     local sshd_conf="/etc/ssh/sshd_config"
-    info "Configuring sshd: adding port ${NEW_SSH_PORT} (keeping port 22 during transition)..."
+    info "Configuring sshd: adding port ${OPS_MANAGED_SSH_PORT} (keeping port 22 during transition)..."
 
     local backup="${sshd_conf}.bak.$(date +%Y%m%d_%H%M%S)"
     cp "$sshd_conf" "$backup"
@@ -280,7 +533,7 @@ _configure_sshd_fresh() {
     tmp=$(mktemp)
     {
         echo "Port 22"
-        echo "Port ${NEW_SSH_PORT}"
+        echo "Port ${OPS_MANAGED_SSH_PORT}"
         grep -Ev '^[[:space:]]*Port[[:space:]]+[0-9]+' "$sshd_conf"
     } > "$tmp"
     mv "$tmp" "$sshd_conf"
@@ -295,7 +548,7 @@ _configure_sshd_fresh() {
         cp "$backup" "$sshd_conf"
         _restore_sshd_include_backups "$include_backup_dir"
         rm -rf "$include_backup_dir"
-        die "sshd -t failed after adding port ${NEW_SSH_PORT}. Restored previous SSH config."
+        die "sshd -t failed after adding port ${OPS_MANAGED_SSH_PORT}. Restored previous SSH config."
     fi
 
     local ssh_service
@@ -305,11 +558,11 @@ _configure_sshd_fresh() {
         _restore_sshd_include_backups "$include_backup_dir"
         rm -rf "$include_backup_dir"
         systemctl reload "$ssh_service" > /dev/null 2>&1 || true
-        die "SSH reload failed after adding port ${NEW_SSH_PORT}. Restored previous SSH config."
+        die "SSH reload failed after adding port ${OPS_MANAGED_SSH_PORT}. Restored previous SSH config."
     fi
 
     rm -rf "$include_backup_dir"
-    ok "sshd reloaded — now listening on ports 22 and ${NEW_SSH_PORT}."
+    ok "sshd reloaded — now listening on ports 22 and ${OPS_MANAGED_SSH_PORT}."
 }
 
 # _strip_cloud_init_ssh_overrides
@@ -319,7 +572,7 @@ _configure_sshd_fresh() {
 # lines to the main sshd_config; any Port directive left in sshd_config.d/ would
 # cause sshd to listen on a stale cloud-init port in addition to the OPS-managed
 # ports (e.g. cloud-init sets Port 5022 → after fresh‑configure sshd would listen
-# on 22, NEW_PORT, AND 5022 if this strip were not applied).
+# on 22, the OPS-managed locked port, and 5022 if this strip were not applied).
 # Idempotent: safe to call multiple times.
 _strip_cloud_init_ssh_overrides() {
     local backup_dir="${1:-}"
@@ -358,9 +611,10 @@ _strip_cloud_init_ssh_overrides() {
 #   5. If sshd -t fails → warn + delete tmpfile (never apply bad config)
 #   6. If reload fails → warn (SSH keeps running on old config — no lockout)
 #
-# PasswordAuthentication is set by SSH_KEY_CONFIGURED:
-#   yes → "no"  (key available — password auth can be disabled safely)
-#   no  → "yes" (no key yet — keep password auth so user isn't locked out)
+# PasswordAuthentication stays "yes" during installer-time hardening.
+# The installer only establishes a safe transition baseline; disabling
+# password auth belongs to the wizard/security flow after the operator has
+# verified SSH access on the admin user and locked port.
 #
 # Note: Wizard security_write_sshd_hardening_include() always OVERWRITES
 # this file with a fuller config later — no conflict.
@@ -388,42 +642,41 @@ _apply_minimum_ssh_hardening() {
         return 0
     fi
 
-    # ── Guard 3: Ensure Include /etc/ssh/sshd_config.d/*.conf is the FIRST
-    # directive in sshd_config (OpenSSH uses first-match-wins semantics).
-    # If the Include line exists but is not first, move it to the top.
+    # ── Guard 3: Stage any sshd_config Include change in a temp file first.
+    # Do not mutate the live sshd_config until the combined config validates.
+    local include_line="Include /etc/ssh/sshd_config.d/*.conf"
+    local tmp_main main_changed="no"
+    tmp_main=$(mktemp "${sshd_conf}.tmp.XXXXXX")
+
     if [[ -f "$sshd_conf" ]]; then
-        local include_line="Include /etc/ssh/sshd_config.d/*.conf"
         local first_directive
         first_directive=$(grep -m1 -v '^[[:space:]]*#' "$sshd_conf" 2>/dev/null | grep -v '^[[:space:]]*$' || true)
 
         if ! grep -qF "$include_line" "$sshd_conf" 2>/dev/null; then
-            # Include line missing entirely — prepend it
-            local tmp_main
-            tmp_main=$(mktemp)
-            { echo "$include_line"; cat "$sshd_conf"; } > "$tmp_main"
-            mv "$tmp_main" "$sshd_conf"
-            info "FIX-05: Added '${include_line}' to top of sshd_config."
+            {
+                echo "$include_line"
+                cat "$sshd_conf"
+            } > "$tmp_main"
+            main_changed="yes"
+            info "FIX-05: Staged '${include_line}' at the top of sshd_config."
         elif [[ "$first_directive" != "$include_line" ]]; then
-            # Include exists but is not first — move it to the top
-            local tmp_main
-            tmp_main=$(mktemp)
             {
                 echo "$include_line"
                 grep -v "^[[:space:]]*Include[[:space:]]" "$sshd_conf"
             } > "$tmp_main"
-            mv "$tmp_main" "$sshd_conf"
-            info "FIX-05: Moved '${include_line}' to top of sshd_config (first-match-wins)."
+            main_changed="yes"
+            info "FIX-05: Staged '${include_line}' as the first sshd_config directive (first-match-wins)."
+        else
+            cp "$sshd_conf" "$tmp_main"
         fi
     fi
+    chmod 644 "$tmp_main"
 
-    # ── Step 4: Determine PasswordAuthentication based on SSH key status
+    # ── Step 4: Keep PasswordAuthentication enabled during installer-time hardening.
+    # SSH key presence alone is not enough to prove the operator has successfully
+    # verified login on the admin user and locked port.
     local password_auth="yes"
-    if [[ "${SSH_KEY_CONFIGURED:-no}" == "yes" ]]; then
-        password_auth="no"
-        info "FIX-05: SSH key was configured — disabling PasswordAuthentication."
-    else
-        info "FIX-05: No SSH key configured — keeping PasswordAuthentication=yes to prevent lockout."
-    fi
+    info "FIX-05: Installer keeps PasswordAuthentication=yes until the wizard/security flow finalizes SSH access."
 
     # ── Step 5: Write to tmp first (never touch the real file until validated)
     # NOTE: Port directives are intentionally NOT written here.
@@ -432,7 +685,7 @@ _apply_minimum_ssh_hardening() {
     # Mixing port management between the two files creates finalize/reconcile conflicts.
     mkdir -p "$(dirname "$hardening_conf")"
     local tmp_conf
-    tmp_conf=$(mktemp /tmp/ops-ssh-hardening-XXXXXX.conf)
+    tmp_conf=$(mktemp "${hardening_conf}.tmp.XXXXXX")
 
     {
         echo "# Managed by OPS — written by ops-install.sh (FIX-05 minimum hardening)"
@@ -451,12 +704,12 @@ _apply_minimum_ssh_hardening() {
         # in this file after the full wizard runs. Mixing port management
         # between the two files causes finalize/reconcile conflicts.
     } > "$tmp_conf"
+    chmod 600 "$tmp_conf"
 
-    # ── Step 7: Validate with sshd -t BEFORE touching the real path
-    if ! sshd -t -f "$sshd_conf" > /dev/null 2>&1; then
-        # sshd_config itself may already be broken — warn but do not abort
-        warn "FIX-05: sshd_config validation failed before applying hardening. Skipping."
-        rm -f "$tmp_conf"
+    # ── Step 7: Validate the staged main config before touching the real path.
+    if ! sshd -t -f "$tmp_main" > /dev/null 2>&1; then
+        warn "FIX-05: Staged sshd_config validation failed before applying hardening. Skipping."
+        rm -f "$tmp_main" "$tmp_conf"
         return 0
     fi
 
@@ -467,21 +720,26 @@ _apply_minimum_ssh_hardening() {
 
     # Build a test sshd_config pointing at our temp dir
     local tmp_test_conf
-    tmp_test_conf=$(mktemp)
-    sed "s|Include /etc/ssh/sshd_config.d/\*\.conf|Include ${tmp_include_dir}/*.conf|g" \
-        "$sshd_conf" > "$tmp_test_conf"
+    tmp_test_conf=$(mktemp "${sshd_conf}.test.XXXXXX")
+    sed "1s|^Include /etc/ssh/sshd_config.d/\*\.conf$|Include ${tmp_include_dir}/*.conf|" \
+        "$tmp_main" > "$tmp_test_conf"
 
     if ! sshd -t -f "$tmp_test_conf" > /dev/null 2>&1; then
         warn "FIX-05: Hardening config validation failed (sshd -t). Not applying to avoid lockout."
         warn "       Check: sshd -t -f ${tmp_conf}"
-        rm -f "$tmp_conf" "$tmp_test_conf"
+        rm -f "$tmp_main" "$tmp_conf" "$tmp_test_conf"
         rm -rf "$tmp_include_dir"
         return 0
     fi
     rm -f "$tmp_test_conf"
     rm -rf "$tmp_include_dir"
 
-    # ── Step 8: Atomic move into place
+    # ── Step 8: Commit the already-validated files to their live paths
+    if [[ "$main_changed" == "yes" ]]; then
+        mv "$tmp_main" "$sshd_conf"
+    else
+        rm -f "$tmp_main"
+    fi
     mv "$tmp_conf" "$hardening_conf"
     chmod 600 "$hardening_conf"
 
@@ -503,38 +761,27 @@ configure_ufw() {
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ufw
     fi
 
-    ufw default deny incoming   >/dev/null
-    ufw default allow outgoing  >/dev/null
+    ufw default deny incoming >/dev/null
+    ufw default allow outgoing >/dev/null
 
-    # ── P2-A fix: track SSH rule success before enabling UFW.
-    # If no SSH allow rule succeeds, enabling UFW with 'deny incoming'
-    # would cause immediate lockout. Abort rather than risk that.
+    # Preserve every live SSH port detected during bootstrap. Do not collapse
+    # rerun state down to a guessed single port.
     local ssh_rules_added=0
-
-    # Allow new SSH port (always present after setup_ssh_port)
-    if [[ -n "$NEW_SSH_PORT" ]]; then
-        if ufw allow "${NEW_SSH_PORT}/tcp" comment "ops: SSH port" >/dev/null 2>&1; then
+    local port
+    for port in "${SSH_BOOTSTRAP_PORTS[@]}"; do
+        [[ -n "$port" ]] || continue
+        if ufw allow "${port}/tcp" comment "ops: SSH bootstrap" >/dev/null 2>&1; then
             (( ssh_rules_added++ )) || true
         else
-            warn "UFW: failed to add rule for new SSH port ${NEW_SSH_PORT}/tcp"
+            warn "UFW: failed to add SSH bootstrap rule for ${port}/tcp"
         fi
-    fi
+    done
 
-    # Allow port 22 only if sshd still has it open (transition mode)
-    if [[ "$SSH_PORT_22_OPEN" == "yes" || "$SSH_ALREADY_CONFIGURED" == "no" ]]; then
-        if ufw allow 22/tcp comment "ops: SSH legacy port (transition)" >/dev/null 2>&1; then
-            (( ssh_rules_added++ )) || true
-        else
-            warn "UFW: failed to add rule for port 22/tcp"
-        fi
-    fi
-
-    # Abort if no SSH rules were added — enabling UFW now would lock us out
     if [[ "$ssh_rules_added" -eq 0 ]]; then
         die "UFW setup aborted: could not add any SSH allow rule. Enable UFW manually after verifying SSH access."
     fi
 
-    ufw allow 80/tcp  comment "ops: HTTP"  >/dev/null 2>&1 || warn "UFW: could not add 80/tcp rule"
+    ufw allow 80/tcp comment "ops: HTTP" >/dev/null 2>&1 || warn "UFW: could not add 80/tcp rule"
     ufw allow 443/tcp comment "ops: HTTPS" >/dev/null 2>&1 || warn "UFW: could not add 443/tcp rule"
 
     if ufw status 2>/dev/null | grep -qi "Status: active"; then
@@ -542,7 +789,7 @@ configure_ufw() {
     else
         ufw --force enable >/dev/null
     fi
-    ok "UFW configured. HTTP/HTTPS open. SSH port(s) allowed per current sshd state."
+    ok "UFW configured. HTTP/HTTPS open. Live SSH port(s) preserved during bootstrap."
 }
 
 # ── 5. Admin user ─────────────────────────────────────────────
@@ -586,6 +833,7 @@ setup_admin_user() {
         # Đảm bảo sudo group (safe, idempotent)
         if ! id -nG "$ADMIN_USER" | grep -qw sudo; then
             usermod -aG sudo "$ADMIN_USER"
+            OPS_BOOTSTRAP_SUDO_ADDED="yes"
             ok "User '${ADMIN_USER}' added to sudo group."
         fi
         export ADMIN_USER
@@ -595,6 +843,7 @@ setup_admin_user() {
     # User chưa tồn tại → tạo mới
     info "Creating user: ${ADMIN_USER}..."
     useradd -m -s /bin/bash "$ADMIN_USER"
+    OPS_BOOTSTRAP_USER_CREATED="yes"
     ok "User '${ADMIN_USER}' created."
 
     usermod -aG sudo "$ADMIN_USER"
@@ -662,6 +911,7 @@ setup_ssh_key() {
         return 0
     fi
 
+    prepare_admin_ssh_rollback_state "$admin_home"
     mkdir -p "${admin_home}/.ssh"
     chmod 700 "${admin_home}/.ssh"
     echo "$pub_key" >> "${admin_home}/.ssh/authorized_keys"
@@ -678,117 +928,166 @@ setup_ssh_key() {
 # Dung tarball thay vi git clone -- nhat quan voi self-update menu 16.
 # Khong yeu cau git tren VPS.
 
+cleanup_post_deploy_snapshots() {
+    if [[ -n "${OPS_POST_DEPLOY_SNAPSHOT_DIR:-}" && -d "${OPS_POST_DEPLOY_SNAPSHOT_DIR}" ]]; then
+        rm -rf "${OPS_POST_DEPLOY_SNAPSHOT_DIR}"
+        OPS_POST_DEPLOY_SNAPSHOT_DIR=""
+    fi
+}
+
+prepare_post_deploy_rollback_state() {
+    OPS_POST_DEPLOY_SNAPSHOT_DIR=$(mktemp -d /tmp/ops-post-deploy-XXXXXX)
+
+    snapshot_path_state "/etc/ops/ops.conf" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "ops-conf"
+    snapshot_path_state "/etc/ops/setup.conf" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "setup-conf"
+    snapshot_path_state "/etc/ops/capacity.conf" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "capacity-conf"
+    snapshot_path_state "/etc/logrotate.d/ops" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "logrotate-ops"
+    snapshot_path_state "/usr/local/bin/ops" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "bin-ops"
+    snapshot_path_state "/usr/local/bin/ops-dashboard" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "bin-ops-dashboard"
+
+    local admin_home
+    admin_home=$(getent passwd "$ADMIN_USER" 2>/dev/null | cut -d: -f6 || true)
+    if [[ -n "$admin_home" ]]; then
+        snapshot_path_state "${admin_home}/.bash_profile" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "admin-bash-profile"
+    fi
+}
+
+rollback_post_deploy_failure() {
+    warn "Post-deploy setup failed. Restoring previous OPS runtime and operator-facing state."
+
+    rm -rf "$OPS_INSTALL_DIR"
+    if [[ -n "${OPS_INSTALL_PREVIOUS_BACKUP:-}" && -d "${OPS_INSTALL_PREVIOUS_BACKUP}" ]]; then
+        if mv "${OPS_INSTALL_PREVIOUS_BACKUP}" "$OPS_INSTALL_DIR"; then
+            info "Previous OPS install restored to ${OPS_INSTALL_DIR}."
+        else
+            warn "Failed to restore previous OPS install from ${OPS_INSTALL_PREVIOUS_BACKUP}."
+        fi
+        OPS_INSTALL_PREVIOUS_BACKUP=""
+    fi
+
+    restore_path_snapshot "/etc/ops/ops.conf" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "ops-conf"
+    restore_path_snapshot "/etc/ops/setup.conf" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "setup-conf"
+    restore_path_snapshot "/etc/ops/capacity.conf" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "capacity-conf"
+    restore_path_snapshot "/etc/logrotate.d/ops" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "logrotate-ops"
+    restore_path_snapshot "/usr/local/bin/ops" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "bin-ops"
+    restore_path_snapshot "/usr/local/bin/ops-dashboard" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "bin-ops-dashboard"
+
+    local admin_home
+    admin_home=$(getent passwd "$ADMIN_USER" 2>/dev/null | cut -d: -f6 || true)
+    if [[ -n "$admin_home" ]]; then
+        restore_path_snapshot "${admin_home}/.bash_profile" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "admin-bash-profile"
+    fi
+
+    cleanup_post_deploy_snapshots
+}
+
 install_ops_core() {
     info "Installing OPS core to ${OPS_INSTALL_DIR} (via tarball)..."
+    prepare_install_source_tree
 
-    local tarball_url="https://github.com/${OPS_GITHUB_REPO}/archive/refs/heads/${OPS_GITHUB_BRANCH}.tar.gz"
-    local tmp_dir
-    tmp_dir=$(mktemp -d /tmp/ops-install-XXXXXX)
-    local tarball="${tmp_dir}/ops-source.tar.gz"
+    local parent_dir backup_root
+    parent_dir=$(dirname "$OPS_INSTALL_DIR")
+    OPS_INSTALL_CANDIDATE_ROOT="${parent_dir}/.ops-install-candidate.$$"
+    backup_root=""
+    OPS_INSTALL_PREVIOUS_BACKUP=""
 
-    # ── Step 1: Download
-    info "Downloading source tarball from GitHub..."
-    if ! curl -fsSL --max-time 120 --connect-timeout 15 \
-            -o "$tarball" "$tarball_url" 2>&1; then
-        rm -rf "$tmp_dir"
-        die "Download failed. Check network connectivity and try again."
+    rm -rf "$OPS_INSTALL_CANDIDATE_ROOT"
+    mkdir -p "$parent_dir" "$OPS_INSTALL_CANDIDATE_ROOT"
+
+    if ! rsync -a --delete --exclude='*.log' \
+        "${OPS_INSTALL_SOURCE_OPS}/" \
+        "${OPS_INSTALL_CANDIDATE_ROOT}/"; then
+        die "Failed to build the candidate OPS runtime tree."
     fi
-    local size
-    size=$(du -sh "$tarball" 2>/dev/null | cut -f1)
-    ok "Downloaded (${size})"
-
-    # ── Step 2: Verify
-    if ! tar -tzf "$tarball" >/dev/null 2>&1; then
-        rm -rf "$tmp_dir"
-        die "Downloaded file is not a valid tar.gz archive. Aborting."
-    fi
-
-    # ── Step 3: Extract
-    local extract_dir="${tmp_dir}/extracted"
-    mkdir -p "$extract_dir"
-    tar -xzf "$tarball" -C "$extract_dir" 2>/dev/null
-
-    # GitHub tarballs extract as <repo>-<branch>/
-    local source_root
-    source_root=$(find "$extract_dir" -maxdepth 1 -type d -name "ops-script-*" | head -1)
-    if [[ -z "$source_root" ]]; then
-        rm -rf "$tmp_dir"
-        die "Unexpected archive structure — expected ops-script-*/ inside tarball."
-    fi
-
-    # Runtime files are in ops/ inside tarball
-    local source_ops="${source_root}/${OPS_SOURCE_SUBDIR}"
-    if [[ ! -d "${source_ops}/bin" ]]; then
-        rm -rf "$tmp_dir"
-        die "Missing ${OPS_SOURCE_SUBDIR}/bin/ inside tarball. Archive may be corrupted."
-    fi
-
-    # ── Step 4: Build a staged runtime tree first
-    local staged_root="${tmp_dir}/staged-root"
-    mkdir -p "$staged_root"
-
-    rsync -a --delete --exclude='*.log' \
-        "${source_ops}/" \
-        "${staged_root}/" 2>&1 | grep -v '^sending\|^sent\|^total\|speedup' || true
 
     # Also copy install/ docs/ rules/ agents/ from source root (outside ops/)
     for extra_dir in install docs rules agents; do
-        if [[ -d "${source_root}/${extra_dir}" ]]; then
-            rsync -a --delete "${source_root}/${extra_dir}/" \
-                "${staged_root}/${extra_dir}/" 2>/dev/null || true
+        if [[ -d "${OPS_INSTALL_SOURCE_ROOT}/${extra_dir}" ]]; then
+            if ! rsync -a --delete "${OPS_INSTALL_SOURCE_ROOT}/${extra_dir}/" \
+                "${OPS_INSTALL_CANDIDATE_ROOT}/${extra_dir}/"; then
+                die "Failed to copy '${extra_dir}' into the candidate OPS tree."
+            fi
         fi
     done
 
-    # Validate staged shell entrypoints before touching the live tree.
+    # Validate required candidate entrypoints before touching the live tree.
+    for required_path in \
+        "${OPS_INSTALL_CANDIDATE_ROOT}/bin/ops" \
+        "${OPS_INSTALL_CANDIDATE_ROOT}/bin/ops-dashboard" \
+        "${OPS_INSTALL_CANDIDATE_ROOT}/bin/ops-setup.sh"; do
+        [[ -f "$required_path" ]] || die "Missing required candidate entrypoint: ${required_path}"
+    done
+
+    # Validate candidate shell scripts before touching the live tree.
     local shell_script
     while IFS= read -r -d '' shell_script; do
         if ! bash -n "$shell_script"; then
-            rm -rf "$tmp_dir"
-            die "Syntax check failed for staged script: ${shell_script}"
+            die "Syntax check failed for candidate script: ${shell_script}"
         fi
-    done < <(find "$staged_root" -type f -name '*.sh' -print0)
+    done < <(find "$OPS_INSTALL_CANDIDATE_ROOT" -type f -name '*.sh' -print0)
 
-    # ── Step 5: Apply permissions in staging, then sync with delete semantics
-    find "${staged_root}/bin"     -type f             -exec chmod +x {} \;
-    find "${staged_root}/modules" -type f -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
-    find "${staged_root}/core"    -type f -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
-    find "${staged_root}/install" -type f -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
+    # Validate extensionless Bash entrypoints in bin/ as well.
+    local shell_entry
+    while IFS= read -r -d '' shell_entry; do
+        if ! bash -n "$shell_entry"; then
+            die "Syntax check failed for candidate entrypoint: ${shell_entry}"
+        fi
+    done < <(find "${OPS_INSTALL_CANDIDATE_ROOT}/bin" -maxdepth 1 -type f ! -name '*.sh' -print0)
 
-    [[ -f "${staged_root}/bin/ops-setup.sh" ]] \
-        || die "Missing bin/ops-setup.sh after install. Tarball may be incomplete."
-    chmod +x "${staged_root}/bin/ops-setup.sh"
-
-    mkdir -p "$OPS_INSTALL_DIR"
-    rsync -a --delete --exclude='*.log' \
-        "${staged_root}/" \
-        "${OPS_INSTALL_DIR}/" 2>&1 | grep -v '^sending\|^sent\|^total\|speedup' || true
-
-    # ── Step 6: Cleanup + ownership
-    rm -rf "$tmp_dir"
+    # Apply permissions directly to the validated candidate tree.
+    find "${OPS_INSTALL_CANDIDATE_ROOT}/bin"     -type f               -exec chmod +x {} \;
+    find "${OPS_INSTALL_CANDIDATE_ROOT}/modules" -type f -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
+    find "${OPS_INSTALL_CANDIDATE_ROOT}/core"    -type f -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
+    find "${OPS_INSTALL_CANDIDATE_ROOT}/install" -type f -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
 
     # F-05 fix: executable scripts (bin/, modules/, core/, install/) must be
     # owned root:root so a compromised or malicious ADMIN_USER cannot modify
     # files that subsequently execute as root (re-install, sudo paths).
     # Only non-executable content dirs (docs/, agents/) are admin-user writable.
     # SECURITY-RULES §1: non-root user must not own files that execute as root.
-    chown root:root "$OPS_INSTALL_DIR"
-    chmod 755 "$OPS_INSTALL_DIR"
+    chown root:root "$OPS_INSTALL_CANDIDATE_ROOT"
+    chmod 755 "$OPS_INSTALL_CANDIDATE_ROOT"
 
     for _exec_dir in bin modules core install; do
-        if [[ -d "${OPS_INSTALL_DIR}/${_exec_dir}" ]]; then
-            chown -R root:root "${OPS_INSTALL_DIR}/${_exec_dir}"
+        if [[ -d "${OPS_INSTALL_CANDIDATE_ROOT}/${_exec_dir}" ]]; then
+            chown -R root:root "${OPS_INSTALL_CANDIDATE_ROOT}/${_exec_dir}"
         fi
     done
 
     # Non-executable content: admin user may read/write (docs, agents)
     for _data_dir in docs agents; do
-        if [[ -d "${OPS_INSTALL_DIR}/${_data_dir}" ]]; then
-            chown -R "${ADMIN_USER}:${ADMIN_USER}" "${OPS_INSTALL_DIR}/${_data_dir}"
+        if [[ -d "${OPS_INSTALL_CANDIDATE_ROOT}/${_data_dir}" ]]; then
+            chown -R "${ADMIN_USER}:${ADMIN_USER}" "${OPS_INSTALL_CANDIDATE_ROOT}/${_data_dir}"
         fi
     done
-    unset _data_dir _exec_dir shell_script
+    unset _data_dir _exec_dir shell_script shell_entry required_path
 
+    # Activate the fully prepared candidate tree atomically.
+    if [[ -e "$OPS_INSTALL_DIR" ]]; then
+        backup_root="${parent_dir}/.ops-install-backup.$(date +%Y%m%d_%H%M%S)"
+        if ! mv "$OPS_INSTALL_DIR" "$backup_root"; then
+            die "Failed to preserve the previous OPS install for rollback."
+        fi
+    fi
+
+    if ! mv "$OPS_INSTALL_CANDIDATE_ROOT" "$OPS_INSTALL_DIR"; then
+        if [[ -n "$backup_root" && -e "$backup_root" ]]; then
+            mv "$backup_root" "$OPS_INSTALL_DIR" >/dev/null 2>&1 || warn "Failed to restore previous OPS install from ${backup_root}."
+        fi
+        die "Failed to activate the new OPS tree. Previous installation was restored."
+    fi
+
+    OPS_INSTALL_CANDIDATE_ROOT=""
+    OPS_INSTALL_PREVIOUS_BACKUP="$backup_root"
+    cleanup_install_artifacts
     ok "OPS core installed at ${OPS_INSTALL_DIR} (from tarball — no git required)."
+}
+
+cleanup_install_backup() {
+    if [[ -n "${OPS_INSTALL_PREVIOUS_BACKUP:-}" && -d "${OPS_INSTALL_PREVIOUS_BACKUP}" ]]; then
+        rm -rf "${OPS_INSTALL_PREVIOUS_BACKUP}"
+        OPS_INSTALL_PREVIOUS_BACKUP=""
+    fi
 }
 
 # ── 7. Write capacity.conf ────────────────────────────────────
@@ -805,6 +1104,7 @@ write_capacity_conf() {
 RAM_MB="${RAM_MB}"
 CPU_CORES="${CPU_CORES}"
 DISK_GB="${DISK_GB}"
+DISK_AVAIL_GB="${DISK_AVAIL_GB}"
 OPS_TIER="${OPS_TIER}"
 TIER_SITES="${TIER_SITES}"
 TIER_USERS="${TIER_USERS}"
@@ -818,23 +1118,22 @@ EOF
 
 run_setup() {
     local setup_script="${OPS_INSTALL_DIR}/bin/ops-setup.sh"
+    local env_vars=()
 
     if [[ ! -f "$setup_script" ]]; then
         die "ops-setup.sh not found at ${setup_script}. Install may have failed."
     fi
 
-    local transition_port=""
-    if [[ "${SSH_PORT_22_OPEN:-no}" == "yes" ]]; then
-        transition_port="22"
+    env_vars+=("ADMIN_USER=${ADMIN_USER}")
+    if [[ "${OPS_SSH_STATE_PERSIST:-no}" == "yes" && -n "${OPS_MANAGED_SSH_PORT:-}" ]]; then
+        env_vars+=("OPS_SSH_PORT=${OPS_MANAGED_SSH_PORT}")
+        env_vars+=("OPS_SSH_TRANSITION_PORT=${OPS_MANAGED_SSH_TRANSITION_PORT:-}")
+    else
+        warn "Preserving existing OPS SSH state without rewriting ops.conf on this run."
     fi
 
     info "Running ops-setup.sh as root (will use ADMIN_USER=${ADMIN_USER})..."
-    # Pass SSH port state so ops-setup.sh can persist it in ops.conf.
-    # Record port 22 as transition only when it is actually still open.
-    ADMIN_USER="$ADMIN_USER" \
-    OPS_SSH_PORT="${NEW_SSH_PORT:-}" \
-    OPS_SSH_TRANSITION_PORT="$transition_port" \
-    bash "$setup_script"
+    env "${env_vars[@]}" bash "$setup_script"
 }
 
 # ── 9. Detect server IP for final instructions ────────────────
@@ -847,6 +1146,8 @@ detect_server_ip() {
 # ── Main ──────────────────────────────────────────────────────
 
 main() {
+    trap installer_exit_trap EXIT
+
     # F-06: Exclusive install lock — prevents two concurrent installer invocations
     # (e.g. cloud-init retry on timeout) from writing to ops.conf, sshd_config,
     # and UFW rules simultaneously. Waits up to 5 s then aborts cleanly.
@@ -875,6 +1176,9 @@ main() {
         exit 0
     fi
 
+    prepare_install_source_tree
+    prepare_pre_activation_rollback_state
+
     setup_ssh_port
     configure_ufw
 
@@ -886,9 +1190,19 @@ main() {
     # partial install leaves the server with PermitRootLogin=no.
     _apply_minimum_ssh_hardening
 
-    write_capacity_conf
     install_ops_core
-    run_setup
+    prepare_post_deploy_rollback_state
+    if ! run_setup; then
+        rollback_post_deploy_failure
+        die "ops-setup.sh failed after activating the new OPS tree. Previous state was restored."
+    fi
+    if ! write_capacity_conf; then
+        rollback_post_deploy_failure
+        die "Failed to write capacity.conf after activating the new OPS tree. Previous state was restored."
+    fi
+    cleanup_post_deploy_snapshots
+    cleanup_install_backup
+    cleanup_pre_activation_snapshots
 
     detect_server_ip
 
@@ -900,23 +1214,32 @@ main() {
     echo -e "  ${BLD}IMPORTANT — Save these details:${RST}"
     echo ""
     echo -e "  Admin user : ${BLD}${ADMIN_USER}${RST}"
-    echo -e "  SSH port   : ${BLD}${NEW_SSH_PORT:-22}${RST}"
-    echo -e "  SSH command: ${CYN}${BLD}ssh -p ${NEW_SSH_PORT:-22} ${ADMIN_USER}@${SERVER_IP}${RST}"
-    echo ""
-    if [[ "$SSH_PORT_22_OPEN" == "yes" && "$SSH_ALREADY_CONFIGURED" == "yes" ]]; then
-        echo -e "  ${YLW}⚠  Port 22 vẫn mở (transition mode).${RST}"
-        echo -e "  ${YLW}   Dùng 'ops → Security → Finalise SSH port' để đóng nếu muốn.${RST}"
-    elif [[ "$SSH_PORT_22_OPEN" == "no" && "$SSH_ALREADY_CONFIGURED" == "yes" ]]; then
-        echo -e "  ${GRN}✓  Port 22 đã đóng — giữ nguyên.${RST}"
+    if [[ "${OPS_SSH_STATE_PERSIST:-no}" == "yes" && -n "${OPS_MANAGED_SSH_PORT:-}" ]]; then
+        echo -e "  SSH port   : ${BLD}${OPS_MANAGED_SSH_PORT}${RST}"
+        echo -e "  SSH command: ${CYN}${BLD}ssh -p ${OPS_MANAGED_SSH_PORT} ${ADMIN_USER}@${SERVER_IP}${RST}"
+        echo ""
+        if [[ -n "${OPS_MANAGED_SSH_TRANSITION_PORT:-}" ]]; then
+            echo -e "  ${YLW}Port ${OPS_MANAGED_SSH_TRANSITION_PORT} remains open during transition.${RST}"
+            echo -e "  ${YLW}Use 'ops' menu → Security → Finalise SSH port after verifying login on port ${OPS_MANAGED_SSH_PORT}.${RST}"
+        else
+            echo -e "  ${GRN}No SSH transition port is currently recorded.${RST}"
+        fi
+        echo ""
+        echo -e "  Next steps:"
+        echo -e "    1. Open a NEW terminal and test:  ${CYN}ssh -p ${OPS_MANAGED_SSH_PORT} ${ADMIN_USER}@${SERVER_IP}${RST}"
+        echo -e "    2. After verifying login, run:    ${CYN}ops${RST}"
+        echo -e "    3. Select 'Production Setup Wizard' to complete the stack."
     else
-        echo -e "  ${YLW}⚠  Port 22 remains open during transition.${RST}"
-        echo -e "  ${YLW}   Use 'ops' menu → Security → Finalise SSH port to close port 22.${RST}"
+        echo -e "  SSH ports  : ${BLD}$(format_port_list "${SSH_CURRENT_PORTS[@]}")${RST}"
+        echo ""
+        echo -e "  ${YLW}OPS preserved all detected live SSH ports and did not rewrite managed SSH state on this run.${RST}"
+        echo -e "  ${YLW}Review Security → SSH settings before finalizing or removing any SSH port.${RST}"
+        echo ""
+        echo -e "  Next steps:"
+        echo -e "    1. Open a NEW terminal and verify SSH on your existing live port for user ${CYN}${ADMIN_USER}${RST}"
+        echo -e "    2. After verifying login, run:    ${CYN}ops${RST}"
+        echo -e "    3. Review the SSH state in the Security menu before making port changes."
     fi
-    echo ""
-    echo -e "  Next steps:"
-    echo -e "    1. Open a NEW terminal and test:  ${CYN}ssh -p ${NEW_SSH_PORT:-22} ${ADMIN_USER}@${SERVER_IP}${RST}"
-    echo -e "    2. After verifying login, run:    ${CYN}ops${RST}"
-    echo -e "    3. Select 'Production Setup Wizard' to complete the stack."
     echo ""
 }
 
