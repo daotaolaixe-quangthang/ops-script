@@ -36,7 +36,7 @@ OPS is split into three layers:
      - `modules/node.sh` - Node.js LTS install, PM2 setup, Node service management.
      - `modules/cli-proxy-api.sh` - CLIProxyAPI install, systemd lifecycle, and domain integration. The file path is legacy, but the runtime contract is CLIProxyAPI.
      - `modules/php.sh` - multi-PHP (7.4, 8.1, 8.2, 8.3) install and PHP-FPM tuning.
-     - `modules/database.sh` - MySQL/MariaDB install, secure setup, tuning, DB/user management.
+     - `modules/database.sh` - MariaDB install, socket-auth hardening baseline, tuning, and DB/user management.
      - `modules/monitoring.sh` - basic + optional advanced monitoring.
      - `modules/verify.sh` - PASS/WARN/FAIL stack verification helpers and health summaries.
      - `modules/checks.sh` - scheduled checks, notifications, and alert dispatchers.
@@ -118,6 +118,7 @@ Expected layout inside this repo:
       - `pm2/`
         - `ecosystem.config.js.tpl`
         - legacy provider PM2 template (deprecated, unused)
+      - NOTE: managed Nginx vhost templates contain the HTTP base `server {}` block only; HTTPS/TLS `server {}` blocks are appended at render time by `modules/nginx.sh` and `modules/cli-proxy-api.sh`.
 - `docs/`
   - (this file and other documentation)
 - `rules/`
@@ -134,9 +135,15 @@ In production, OPS is expected to use:
   - `ops.conf` – global config (install version, paths, defaults).
   - `capacity.json` or `.conf` – captured VPS capacity estimate.
   - Module‑specific configs (e.g. `codex-cli.conf`).
+- **Default-deny TLS artefacts**:
+  - `/etc/nginx/ssl/ops-default.crt`
+  - `/etc/nginx/ssl/ops-default.key`
 - **Log path**:
   - `/var/log/ops/ops.log` – high-level operations log.
-  - Module logs as needed (or reuse system logs).
+  - `/var/log/ops/pm2-<app>-out.log` and `/var/log/ops/pm2-<app>-err.log` – PM2 per-app logs.
+- **Managed rotation config**:
+  - `/etc/logrotate.d/ops` – OPS core log rotation.
+  - `/etc/logrotate.d/nginx-ops` – OPS-managed Nginx per-domain log rotation.
 
 ### 3.1 Suggested source-of-truth state layout
 
@@ -150,14 +157,17 @@ To keep the production control plane maintainable, OPS should add explicit state
 - `/etc/ops/php-sites/<site>.conf` - PHP site metadata
 - `/etc/ops/cli-proxy-api.conf` - CLIProxyAPI state (`CLIPROXYAPI_INSTALLED`, domain, SSL, API key mode, request logs)
 - `/etc/ops/codex-cli.conf` - Codex CLI state
-- `/etc/ops/database.conf` - DB engine (MariaDB default), version
+- `/etc/ops/database.conf` - DB engine (`mariadb`), version, and root-auth mode metadata
 - `/etc/ops/notifications.conf` - Telegram CHAT_ID, TELEGRAM_ENABLED
 
 **Secret files (0600, owned by admin user - NEVER in config files above):**
 - `/etc/ops/.cli-proxy-api-key` - local client key for CLIProxyAPI when API key mode is enabled
-- `/etc/ops/.db-root-password` - MariaDB root password
-- `/etc/ops/.codex-api-key` - Codex CLI API key
-- `/etc/ops/.telegram-bot-token` - Telegram bot token
+- `/etc/ops/db-credentials/<db>__<user>.conf` - OPS-managed per-database application credentials
+- `/etc/ops/.db-root-password` - legacy/fallback MariaDB root password file when password auth is explicitly in use
+- `/etc/ops/.codex-api-key` - Codex CLI API key for OpenAI API / custom endpoint modes
+- `~/.claude-api-key` - Claude Code CLI API key
+- `~/claude-telegram/.env` - Claude Telegram bot secret/config env file
+- `/etc/ops/.telegram-bot-token` - monitoring notification Telegram bot token
 - `/opt/cli-proxy-api/config.yaml` - CLIProxyAPI runtime config (contains endpoint and auth toggles; keep root-readable only as required by the service setup)
 
 Neu module nao chua emit day du cac state file nay, docs cua module do phai ghi ro phan runtime truth hien tai thay vi invent them path moi.

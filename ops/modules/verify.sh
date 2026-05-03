@@ -422,10 +422,40 @@ _vs_check_mariadb() {
     fi
 
     # ── Deep security checks (OPS audit requirements) ───────────
-    # Helper: read a single MariaDB variable value via unix socket.
-    _vs_db_var() {
-        mysql --protocol=socket -u root -sNe "SHOW VARIABLES LIKE '${1}';" 2>/dev/null | awk '{print $2}'
+    trap 'unset -f _vs_db_query _vs_db_var 2>/dev/null' RETURN
+    _vs_db_query() {
+        local sql="$1"
+        local pass_file="${DB_ROOT_PASSWORD_FILE:-${OPS_CONFIG_DIR:-/etc/ops}/.db-root-password}"
+
+        if declare -F _db_mysql_root_query >/dev/null 2>&1; then
+            _db_mysql_root_query "$sql"
+            return $?
+        fi
+
+        if mysql --protocol=socket -u root -e "SELECT 1;" >/dev/null 2>&1; then
+            mysql --protocol=socket -u root -sNe "$sql"
+            return $?
+        fi
+
+        if [[ -f "$pass_file" ]]; then
+            local pw
+            pw=$(cat "$pass_file")
+            MYSQL_PWD="$pw" mysql -u root -sNe "$sql"
+            return $?
+        fi
+
+        return 1
     }
+
+    _vs_db_var() {
+        _vs_db_query "SHOW VARIABLES LIKE '${1}';" 2>/dev/null | awk 'NR==1 {print $2}'
+    }
+
+    if ! _vs_db_query "SELECT 1;" >/dev/null 2>&1; then
+        _vs_fail "Database (${svc})" "root auth unavailable for verify" "restore unix_socket root auth or ensure legacy /etc/ops/.db-root-password is current"
+        _vs_set_result fail
+        return 0
+    fi
 
     local any_fail=0 any_warn=0
 
@@ -449,7 +479,7 @@ _vs_check_mariadb() {
     local sfp
     sfp="$(_vs_db_var "secure_file_priv")"
     if [[ -z "$sfp" ]]; then
-        _vs_warn "DB secure_file_priv" "empty (unrestricted)" "set secure_file_priv=NULL via OPS: Database → Apply tuning"
+        _vs_warn "DB secure_file_priv" "empty (unrestricted)" "set secure_file_priv to a disabled non-existent path via OPS: Database → Apply tuning"
         any_warn=1
     fi
 
@@ -477,7 +507,7 @@ _vs_check_mariadb() {
         any_warn=1
     fi
 
-    unset -f _vs_db_var
+    unset -f _vs_db_query _vs_db_var
 
     if [[ "$any_fail" -eq 1 ]]; then
         _vs_set_result fail

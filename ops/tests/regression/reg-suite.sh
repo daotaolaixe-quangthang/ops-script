@@ -120,32 +120,58 @@ case_reg_08_pm2_runtime_user_wrapper_present() {
 }
 
 case_reg_09_secret_permission_contract_present() {
-    local content
-    content="$(<"${REPO_ROOT}/docs/reference/KNOWN-RISKS-PATTERNS.md")"
-    test::assert_contains "$content" 'chmod 600 <file> && chown $ADMIN_USER:$ADMIN_USER <file>' 'secret permission contract missing' || return 1
+    local database_content cliproxyapi_content codex_content
+    database_content="$(<"${OPS_ROOT}/modules/database.sh")"
+    cliproxyapi_content="$(<"${OPS_ROOT}/modules/cli-proxy-api.sh")"
+    codex_content="$(<"${OPS_ROOT}/modules/codex-cli.sh")"
+
+    test::assert_contains "$database_content" '_db_secret_owner()' 'database secret ownership helper missing' || return 1
+    test::assert_contains "$database_content" 'chmod 600 "$path"' 'database secret writer must enforce 0600' || return 1
+    test::assert_contains "$database_content" 'chown "$owner":"$owner" "$path"' 'database secret writer must preserve admin-owned secrets' || return 1
+    test::assert_contains "$cliproxyapi_content" 'chown "$ADMIN_USER:$ADMIN_USER" "$CLIPROXYAPI_CLIENT_KEY_FILE"' 'CLIProxyAPI secret owner contract missing' || return 1
+    test::assert_contains "$codex_content" 'chown "$ADMIN_USER:$ADMIN_USER" "$CODEX_API_KEY_FILE"' 'Codex secret owner contract missing' || return 1
 }
 
 case_reg_10_config_rewrite_must_validate_syntax() {
-    local content
-    content="$(<"${REPO_ROOT}/rules/BASH-STYLE.md")"
-    test::assert_contains "$content" 'nginx -t' 'syntax validation contract missing' || return 1
+    local db_content php_content nginx_content validation_count
+    db_content="$(<"${OPS_ROOT}/modules/database.sh")"
+    php_content="$(<"${OPS_ROOT}/modules/php.sh")"
+    nginx_content="$(<"${OPS_ROOT}/modules/nginx.sh")"
+    validation_count="$(OPS_ROOT_ENV="$OPS_ROOT" python3 - <<'PY'
+import os
+from pathlib import Path
+text = (Path(os.environ['OPS_ROOT_ENV']) / 'modules/database.sh').read_text()
+print(text.count('_db_validate_mariadb_config || return 1'))
+PY
+)"
+    test::assert_contains "$db_content" '_db_validate_mariadb_config()' 'shared MariaDB config validation helper missing' || return 1
+    test::assert_eq "4" "$validation_count" 'MariaDB rewrite/restart paths must validate config before restart' || return 1
+    test::assert_contains "$php_content" 'php_fpm_validate_and_apply()' 'PHP config rewrite validation/apply helper missing' || return 1
+    test::assert_contains "$php_content" 'snapshot_path_state' 'PHP config rewrite snapshot helper missing' || return 1
+    test::assert_contains "$php_content" 'restore_path_snapshot' 'PHP config rewrite rollback helper missing' || return 1
+    test::assert_contains "$nginx_content" '_nginx_commit_vhost' 'Nginx transactional commit helper missing' || return 1
 }
 
 case_reg_11_cliproxyapi_vhost_preserves_global_rate_limit_zone() {
     local content
     content="$(<"${OPS_ROOT}/modules/templates/nginx/cli-proxy-api.vhost.conf.tpl")"
     test::assert_contains "$content" 'cli-proxy-api.' 'CLIProxyAPI vhost naming contract missing' || return 1
+    test::assert_contains "$content" 'listen [::]:80;' 'CLIProxyAPI HTTP vhost must expose dual-stack listener' || return 1
     test::assert_contains "$content" 'proxy_buffering       off' 'CLIProxyAPI proxy buffering contract missing' || return 1
 }
 
 case_reg_12_pm2_logrotate_and_merge_logs_contract_present() {
-    local content node_content
+    local content node_content monitoring_content
     content="$(<"${REPO_ROOT}/docs/reference/KNOWN-RISKS-PATTERNS.md")"
     node_content="$(<"${OPS_ROOT}/modules/node.sh")"
+    monitoring_content="$(<"${OPS_ROOT}/modules/monitoring.sh")"
     test::assert_contains "$content" 'pm2-logrotate' 'pm2 logrotate regression contract missing' || return 1
     test::assert_contains "$content" 'merge_logs: true' 'merge_logs regression contract missing' || return 1
+    test::assert_contains "$content" '/var/log/ops/pm2-<app>-{out,err}.log' 'PM2 per-app log path risk contract missing' || return 1
     # Assert inline fallback path in node.sh also sets merge_logs (template is checked by NODE-08).
     test::assert_contains "$node_content" 'merge_logs:           true' 'node.sh inline fallback ecosystem must include merge_logs: true' || return 1
+    test::assert_contains "$node_content" '_node_prepare_pm2_log_files' 'node module must prepare PM2 per-app log files before app start' || return 1
+    test::assert_contains "$monitoring_content" '_monitoring_reconcile_pm2_app_logs()' 'monitoring baseline must reconcile PM2 app log files for existing apps' || return 1
 }
 
 case_reg_13_pm2_read_helpers_centralized() {
@@ -249,9 +275,13 @@ case_sec_04_finalize_transition_contract_present() {
     test::assert_contains "$content" 'security_apply_fail2ban_ssh_state' 'finalize must refresh fail2ban before success' || return 1
     test::assert_contains "$content" 'apt_install fail2ban' 'finalize must install fail2ban when it is absent' || return 1
     test::assert_contains "$content" 'fail2ban-client status sshd' 'finalize must require active fail2ban sshd jail before success' || return 1
+    test::assert_contains "$content" 'Cannot finalize SSH transition while PasswordAuthentication is still enabled for the final steady state.' 'finalize must refuse insecure steady-state password auth' || return 1
+    test::assert_contains "$content" "Use Security -> Manage SSH Keys and choose 'Disable PasswordAuthentication after transition completes' first." 'finalize must guide operators to disable password auth before steady state' || return 1
+    test::assert_contains "$content" 'Cannot finalize SSH transition: no valid SSH key is authorized for' 'finalize must require a valid admin SSH key before success' || return 1
     test::assert_contains "$content" 'Restoring previous SSH, firewall, fail2ban, and OPS SSH state.' 'finalize rollback message missing' || return 1
     test::assert_contains "$content" 'Old SSH port ${old_port} removed from managed config and firewall.' 'port finalization success message missing' || return 1
-    test::assert_contains "$wrapper_content" 'security_finalize_ssh_transition_apply' 'legacy finalize wrapper must delegate to shared helper' || return 1
+    test::assert_contains "$wrapper_content" 'security_finalize_ssh_transition' 'legacy finalize wrapper must use the gated finalize path' || return 1
+    test::assert_not_contains "$wrapper_content" 'security_finalize_ssh_transition_apply' 'legacy finalize wrapper must not bypass the finalize confirmation gate' || return 1
 }
 
 case_sec_05_ufw_baseline_ports_present() {
@@ -392,6 +422,7 @@ case_ins_05_rerun_setup_contract_present() {
     test::assert_contains "$content" 'if [[ ${OPS_SSH_PORT+x} ]]; then' 'ops-setup rerun must preserve OPS_SSH_PORT when env is absent' || return 1
     test::assert_contains "$content" 'if [[ ${OPS_SSH_TRANSITION_PORT+x} ]]; then' 'ops-setup rerun must preserve OPS_SSH_TRANSITION_PORT when env is absent' || return 1
     test::assert_contains "$content" '# OPS login hook end' 'ops-setup must manage the login hook as a bounded block' || return 1
+    test::assert_not_contains "$content" 'Login hook ${hook_version} already present in ${profile} — skipping.' 'ops-setup must not accept OPS_HOOK_V3 alone as a valid hook' || return 1
     test::assert_contains "$content" '/etc/sudoers.d/99-ops-ssh-finalize' 'ops-setup must reconcile the legacy auto-finalize sudoers rule' || return 1
     test::assert_contains "$content" $'setup_login_hook\n    cleanup_legacy_ssh_finalize_sudoers' 'legacy sudoers cleanup must run only after hook migration succeeds' || return 1
 }
@@ -402,6 +433,7 @@ case_ins_06_07_08_login_hook_contract_present() {
     test::assert_contains "$content" 'SSH_CONNECTION' 'login hook must key off SSH_CONNECTION' || return 1
     test::assert_not_contains "$content" 'SSH_TTY' 'stale SSH_TTY-only login hook contract must stay absent' || return 1
     test::assert_contains "$content" 'OPS_HOOK_V3' 'current login hook version marker missing' || return 1
+    test::assert_contains "$content" 'Refusing to rewrite incomplete OPS login hook block' 'login hook must fail closed on incomplete managed blocks' || return 1
     test::assert_contains "$content" '# OPS login hook end' 'login hook end marker missing' || return 1
 }
 
@@ -414,6 +446,8 @@ case_ins_09_installer_rollback_contract_present() {
     test::assert_contains "$content" 'admin-ssh-dir' 'installer must snapshot bootstrap SSH key state for existing admin users' || return 1
     test::assert_contains "$content" 'OPS_INSTALL_PREVIOUS_BACKUP' 'installer rollback backup tracking missing' || return 1
     test::assert_contains "$content" 'OPS_POST_DEPLOY_SNAPSHOT_DIR' 'installer must snapshot operator-facing state before post-deploy setup' || return 1
+    test::assert_contains "$content" '/etc/sudoers.d/99-ops-ssh-finalize' 'installer post-deploy rollback must snapshot legacy finalize sudoers state' || return 1
+    test::assert_contains "$content" 'ssh-finalize-sudoers' 'installer post-deploy rollback must restore legacy finalize sudoers state' || return 1
     test::assert_contains "$content" 'Failed to activate the new OPS tree. Previous installation was restored.' 'installer activation rollback message missing' || return 1
     test::assert_contains "$content" 'ops-setup.sh failed after activating the new OPS tree. Previous state was restored.' 'installer must restore previous state when ops-setup fails after activation' || return 1
     test::assert_contains "$content" 'Failed to write capacity.conf after activating the new OPS tree. Previous state was restored.' 'installer must restore previous state when capacity.conf write fails after activation' || return 1
@@ -466,6 +500,8 @@ case_web_07_ssl_issue_contract_present() {
     local content
     content="$(<"${OPS_ROOT}/modules/nginx.sh")"
     test::assert_contains "$content" 'certbot' 'certbot integration missing' || return 1
+    test::assert_contains "$content" '_rebuild_domain_vhost "$domain"' 'SSL issuance must rebuild managed vhosts from OPS state' || return 1
+    test::assert_contains "$content" 'DOMAIN_SSL_MODE="cloudflare_origin"' 'Cloudflare origin cert flow must persist ssl mode in OPS domain state' || return 1
 }
 
 case_web_08_ssl_status_contract_present() {
@@ -478,8 +514,33 @@ case_web_09_web_10_cliproxyapi_nginx_boundary_contract_present() {
     local tpl_content verify_content
     tpl_content="$(<"${OPS_ROOT}/modules/templates/nginx/cli-proxy-api.vhost.conf.tpl")"
     verify_content="$(<"${OPS_ROOT}/modules/verify.sh")"
+    test::assert_contains "$tpl_content" 'listen [::]:80;' 'CLIProxyAPI HTTP vhost must expose dual-stack listener' || return 1
     test::assert_contains "$tpl_content" 'proxy_buffering       off' 'CLIProxyAPI nginx boundary contract missing' || return 1
+    test::assert_not_contains "$tpl_content" '{{SSL_HTTPS_BLOCK}}' 'CLIProxyAPI template must not carry dead SSL_HTTPS_BLOCK placeholder' || return 1
     test::assert_contains "$verify_content" '/v1/models returned JSON' 'CLIProxyAPI localhost verify contract missing' || return 1
+}
+
+case_web_11_transactional_vhost_commit_contract_present() {
+    local content real_ip_tpl arch_content inventory_content menu_content
+    content="$(<"${OPS_ROOT}/modules/nginx.sh")"
+    real_ip_tpl="$(<"${OPS_ROOT}/modules/templates/nginx/cloudflare-real-ip.conf.tpl")"
+    arch_content="$(<"${REPO_ROOT}/docs/reference/ARCHITECTURE.md")"
+    inventory_content="$(<"${REPO_ROOT}/docs/reference/RUNTIME-ARTEFACT-INVENTORY.md")"
+    menu_content="$(<"${REPO_ROOT}/docs/operator/MENU-REFERENCE.md")"
+    test::assert_contains "$content" '_nginx_commit_vhost()' 'Transactional vhost commit helper missing' || return 1
+    test::assert_contains "$content" 'snapshot_path_state "$available" "$snapshot_root" "available"' 'Transactional vhost commit must snapshot live available config before mutation' || return 1
+    test::assert_contains "$content" 'restore_path_snapshot "$available" "$snapshot_root" "available"' 'Transactional vhost commit must restore live config on failure' || return 1
+    test::assert_contains "$content" 'safe_symlink "$available" "$enabled"' 'Transactional vhost commit must update symlinks through the safe helper' || return 1
+    test::assert_contains "$content" '_nginx_commit_vhost "$NGINX_DEFAULT_DENY_NAME" "$staged"' 'Default deny vhost must use transactional commit helper' || return 1
+    test::assert_contains "$content" 'create_default_deny || return 1' 'Callers must fail closed when default deny vhost refresh fails' || return 1
+    test::assert_contains "$content" '_nginx_write_cf_real_ip_snippet "$snippet" "$ranges"' 'Cloudflare real IP snippet must be generated from live CIDR ranges' || return 1
+    test::assert_contains "$real_ip_tpl" '{{LAST_REFRESH}}' 'Cloudflare real IP template must expose LAST_REFRESH placeholder' || return 1
+    test::assert_contains "$real_ip_tpl" '{{REAL_IP_RANGES}}' 'Cloudflare real IP template must expose REAL_IP_RANGES placeholder' || return 1
+    test::assert_contains "$content" 'render_template "$tpl" "VALUE=${header_value}" | write_file "$snippet"' 'Custom powered-by snippet must use template rendering and atomic writes' || return 1
+    test::assert_contains "$content" 'double quotes, backslashes, or newlines' 'Custom powered-by header validation missing' || return 1
+    test::assert_contains "$arch_content" 'HTTP base `server {}` block only' 'Architecture docs must describe HTTP-only nginx templates with TLS appended at render time' || return 1
+    test::assert_contains "$inventory_content" '/etc/nginx/ssl/ops-default.crt' 'Runtime inventory must document default deny self-signed cert artefact' || return 1
+    test::assert_contains "$menu_content" 'explicit `include` snippet' 'Operator docs must state that nginx snippets need explicit include lines' || return 1
 }
 
 case_node_01_node_lts_install_contract_present() {
@@ -511,46 +572,132 @@ case_node_08_09_10_pm2_template_contract_present() {
     tpl_content="$(<"${OPS_ROOT}/modules/templates/pm2/ecosystem.config.js.tpl")"
     node_content="$(<"${OPS_ROOT}/modules/node.sh")"
     test::assert_contains "$tpl_content" 'merge_logs: true' 'PM2 merge_logs contract missing' || return 1
+    test::assert_contains "$tpl_content" 'cwd: "{{APP_DIR}}"' 'PM2 template cwd must use APP_DIR placeholder' || return 1
+    test::assert_contains "$tpl_content" '/var/log/ops/pm2-{{APP_NAME}}-out.log' 'PM2 template must write stdout to OPS per-app log path' || return 1
+    test::assert_contains "$tpl_content" '/var/log/ops/pm2-{{APP_NAME}}-err.log' 'PM2 template must write stderr to OPS per-app log path' || return 1
     test::assert_contains "$node_content" 'pm2-logrotate' 'PM2 logrotate contract missing' || return 1
     test::assert_contains "$tpl_content" 'max_memory_restart' 'PM2 max_memory_restart contract missing' || return 1
     # NODE-10: template must include node_args to cap V8 heap (KNOWN-RISKS §22).
     test::assert_contains "$tpl_content" 'node_args' 'PM2 template must include node_args for V8 heap cap (NODE-10 / KNOWN-RISKS §22)' || return 1
     test::assert_contains "$tpl_content" 'NODE_ARGS_MAX_OLD_SPACE' 'PM2 template node_args must use NODE_ARGS_MAX_OLD_SPACE placeholder' || return 1
+    test::assert_contains "$node_content" '"APP_DIR=${app_dir}"' 'node app render must pass APP_DIR into PM2 template' || return 1
+    test::assert_contains "$node_content" '_node_assert_ecosystem_safe_value "App directory" "$app_dir"' 'node app render must validate app directory before templating' || return 1
+    test::assert_contains "$node_content" '_node_assert_pm2_name_safe "$pm2_name"' 'node app render must validate PM2 process names' || return 1
+    test::assert_contains "$node_content" '_node_prepare_pm2_log_files "$pm2_name"' 'node app add flow must pre-create PM2 per-app log files before pm2 start' || return 1
+    test::assert_contains "$node_content" 'node_reconcile_pm2_log_files()' 'node module must expose PM2 app log reconcile helper for existing apps' || return 1
+    test::assert_contains "$node_content" '| write_file "$eco_dest"' 'node app template render must use atomic write_file helper' || return 1
 }
 
 case_php_01_php_versions_contract_present() {
     local content
     content="$(<"${OPS_ROOT}/modules/php.sh")"
-    test::assert_contains "$content" '7.4' 'PHP 7.4 support contract missing' || return 1
-    test::assert_contains "$content" '8.3' 'PHP 8.3 support contract missing' || return 1
+    test::assert_contains "$content" 'PHP_SUPPORTED_VERSIONS=("7.4" "8.1" "8.2" "8.3")' 'PHP supported versions contract missing' || return 1
+    test::assert_contains "$content" 'Cannot remove PHP ${ver} while it is still referenced by OPS state.' 'PHP version removal guard missing' || return 1
+    test::assert_contains "$content" 'Default CLI currently points to /usr/bin/php${ver}' 'PHP version removal must block current CLI default' || return 1
 }
 
-case_php_02_03_php_pool_and_domain_contract_present() {
-    local content
-    content="$(<"${OPS_ROOT}/modules/php.sh")"
-    test::assert_contains "$content" 'php_get_socket_path()' 'PHP socket helper missing' || return 1
-    test::assert_contains "$content" 'echo "/run/php/php${ver}-fpm-${site}.sock"' 'PHP socket naming contract missing' || return 1
+case_php_02_php_pool_socket_contract_present() {
+    local php_content nginx_content tpl_content
+    php_content="$(<"${OPS_ROOT}/modules/php.sh")"
+    nginx_content="$(<"${OPS_ROOT}/modules/nginx.sh")"
+    tpl_content="$(<"${OPS_ROOT}/modules/templates/nginx/php_vhost.conf.tpl")"
+    test::assert_contains "$php_content" 'php_get_socket_path()' 'PHP socket helper missing' || return 1
+    test::assert_contains "$php_content" 'echo "/run/php/php${ver}-fpm-${site}.sock"' 'PHP socket naming contract missing' || return 1
+    test::assert_contains "$php_content" 'php_socket_matches_contract()' 'PHP socket/version/pool contract helper missing' || return 1
+    test::assert_contains "$php_content" 'php_verify_domain_contracts_for_version()' 'PHP verify must audit domain/pool/socket/vhost coherence' || return 1
+    test::assert_contains "$nginx_content" 'DOMAIN_PHP_POOL' 'domain state must persist explicit PHP pool identity' || return 1
+    test::assert_contains "$nginx_content" 'prompt_input "Enter PHP-FPM pool name" "$domain"' 'PHP domain add flow must prompt for pool name' || return 1
+    test::assert_contains "$nginx_content" 'configure_php_pool "$php_pool" "$php_version" "$domain" "$web_root" 1' 'PHP domain add flow must configure the explicit pool name' || return 1
+    test::assert_contains "$nginx_content" '"PHP_SOCKET=${php_socket}"' 'PHP domain render must pass explicit socket path into nginx template' || return 1
+    test::assert_contains "$tpl_content" 'unix:{{PHP_SOCKET}};' 'PHP vhost template must render explicit PHP socket placeholders' || return 1
+    test::assert_contains "$php_content" 'pool file ${pool_file} points listen=' 'PHP verify must compare pool listen socket with expected contract' || return 1
+    test::assert_contains "$nginx_content" "php_socket '\${php_socket}' does not match version/pool contract '\${expected_socket}'" 'PHP domain state validation must reject socket/pool/version drift' || return 1
 }
 
-case_php_04_05_06_php_override_contract_present() {
-    local content
-    content="$(<"${REPO_ROOT}/docs/reference/TEST-CASES.md")"
-    test::assert_contains "$content" 'PHP-04' 'PHP regression testcase coverage missing' || return 1
-    test::assert_contains "$content" 'PHP-06' 'PHP pool override testcase coverage missing' || return 1
+case_php_03_php_domain_state_contract_present() {
+    local php_content nginx_content
+    php_content="$(<"${OPS_ROOT}/modules/php.sh")"
+    nginx_content="$(<"${OPS_ROOT}/modules/nginx.sh")"
+    test::assert_contains "$php_content" 'SITE_DIR="${site_dir}"' 'PHP site state must persist site directory' || return 1
+    test::assert_contains "$php_content" 'SITE_DOMAIN="${site_domain}"' 'PHP site state must persist site domain' || return 1
+    test::assert_contains "$nginx_content" 'echo "  Current pool name : ${php_pool}"' 'PHP domain edit flow must surface the stored pool name' || return 1
+    test::assert_contains "$nginx_content" '[[ -n "$php_pool" ]] || php_pool="$(_php_pool_from_socket "$php_socket")"' 'PHP domain flows must fall back to stored socket-derived pool names for legacy state' || return 1
+    test::assert_contains "$nginx_content" '_restore_php_pool_snapshot "$php_snapshot_root" "$php_target_pool_file" "$php_state_file" "$php_version" "$php_previous_pool_file" "$php_previous_version"' 'PHP add-domain flow must restore PHP state on Nginx commit failure' || return 1
+    test::assert_contains "$nginx_content" '_validate_domain_state "$domain" "${backend_type:-}" "$php_version" "$php_socket" "$php_pool" ""' 'PHP domain removal must validate current state before cleanup' || return 1
+    test::assert_contains "$nginx_content" 'snapshot_root=$(mktemp -d "/tmp/ops-nginx-remove.${domain}.XXXXXX")' 'PHP domain removal must snapshot current state before deleting files' || return 1
+    test::assert_contains "$nginx_content" 'print_error "remove_domain: failed to commit removal for ${domain}. Restored the previous domain and PHP state."' 'PHP domain removal must restore prior state on failure' || return 1
+}
+
+case_php_04_fpm_only_hardening_contract_present() {
+    local php_content security_content
+    php_content="$(<"${OPS_ROOT}/modules/php.sh")"
+    security_content="$(<"${REPO_ROOT}/docs/operator/SECURITY-RULES.md")"
+    test::assert_contains "$php_content" 'php_ini_cli_tuning()' 'PHP CLI tuning helper missing' || return 1
+    test::assert_contains "$php_content" 'php_ini_fpm_security_tuning()' 'PHP FPM security tuning helper missing' || return 1
+    test::assert_contains "$php_content" 'echo "opcache.enable_cli=1"' 'CLI tuning must stay separate from FPM hardening' || return 1
+    test::assert_contains "$php_content" 'echo "allow_url_fopen=Off"' 'FPM hardening must disable allow_url_fopen' || return 1
+    test::assert_contains "$php_content" 'pm.status_path and ping.path intentionally omitted' 'Default PHP-FPM pool baseline must keep status/ping disabled' || return 1
+    test::assert_contains "$security_content" 'security-sensitive hardening' 'security rules must document FPM-only PHP hardening scope' || return 1
+    test::assert_contains "$security_content" 'pm.status_path' 'security rules must document PHP-FPM status/ping lockdown' || return 1
+    test::assert_contains "$security_content" 'localhost-only Nginx location' 'security rules must require localhost-only exposure if status/ping is re-enabled' || return 1
+}
+
+case_php_05_per_pool_override_contract_present() {
+    local php_content risk_content security_content
+    php_content="$(<"${OPS_ROOT}/modules/php.sh")"
+    risk_content="$(<"${REPO_ROOT}/docs/reference/KNOWN-RISKS-PATTERNS.md")"
+    security_content="$(<"${REPO_ROOT}/docs/operator/SECURITY-RULES.md")"
+    test::assert_contains "$php_content" 'keep custom per-pool directives such as env[...], php_admin_value, and php_admin_flag entries.' 'PHP pool refresh must preserve custom per-pool directives' || return 1
+    test::assert_contains "$php_content" 'cp -a "$old_pool_file" "$pool_file"' 'PHP pool migration must seed from the old pool file to preserve overrides' || return 1
+    test::assert_contains "$risk_content" 'php_admin_value disable_functions ""' 'disable_functions workaround must stay per-pool' || return 1
+    test::assert_contains "$risk_content" 'php_admin_value allow_url_fopen On' 'allow_url_fopen workaround must stay per-pool' || return 1
+    test::assert_contains "$security_content" 'php_admin_flag' 'security rules must require preserving php_admin_flag overrides' || return 1
+}
+
+case_php_06_transaction_and_diagnostics_contract_present() {
+    local php_content
+    php_content="$(<"${OPS_ROOT}/modules/php.sh")"
+    test::assert_contains "$php_content" 'snapshot_path_state "$pool_file"' 'PHP pool changes must snapshot the current pool config' || return 1
+    test::assert_contains "$php_content" 'restore_path_snapshot "/etc/php/${ver}/fpm/php.ini"' 'PHP tuning must restore php.ini on failure' || return 1
+    test::assert_contains "$php_content" 'if service_active "$svc"; then' 'PHP-FPM apply path must detect active service before deciding reload vs restart' || return 1
+    test::assert_contains "$php_content" 'service_reload "$svc" 15' 'PHP-FPM apply path must prefer reload for active services' || return 1
+    test::assert_contains "$php_content" 'service_restart "$svc"' 'PHP-FPM apply path must fall back to restart when the service is inactive' || return 1
+    test::assert_contains "$php_content" "printf 'Default CLI: '" 'PHP verify output must label default CLI version' || return 1
+    test::assert_contains "$php_content" "printf 'Target CLI : '" 'PHP verify output must label target CLI version' || return 1
+    test::assert_contains "$php_content" 'service_status "php${ver}-fpm" || true' 'PHP verify output must include FPM service status' || return 1
+    test::assert_contains "$php_content" 'echo "PHP domain contract checks:"' 'PHP verify output must include domain contract diagnostics' || return 1
 }
 
 case_db_01_02_03_04_05_db_contracts_present() {
-    local content
-    content="$(<"${OPS_ROOT}/modules/database.sh")"
-    test::assert_contains "$content" '.db-root-password' 'DB root secret file contract missing' || return 1
-    test::assert_contains "$content" 'bind-address = 127.0.0.1' 'DB bind-address contract missing' || return 1
-    test::assert_contains "$content" 'CREATE DATABASE' 'DB create database helper missing' || return 1
+    local database_content verify_content
+    database_content="$(<"${OPS_ROOT}/modules/database.sh")"
+    verify_content="$(<"${OPS_ROOT}/modules/verify.sh")"
+    test::assert_contains "$database_content" 'DB_ROOT_AUTH_MODE="socket"' 'DB install must default to unix_socket root auth' || return 1
+    test::assert_contains "$database_content" '_db_secret_owner()' 'DB secret ownership helper missing' || return 1
+    test::assert_contains "$database_content" 'ops_conf_unset "database.conf" "DB_ROOT_PASSWORD_FILE"' 'DB config must clear stale root password metadata when socket auth is active' || return 1
+    test::assert_contains "$database_content" 'chmod 600 "$path"' 'DB secret files must be 0600' || return 1
+    test::assert_contains "$database_content" 'bind-address = 127.0.0.1' 'DB bind-address contract missing' || return 1
+    test::assert_contains "$database_content" '_db_set_bind_localhost || return 1' 'db_secure/db_apply_tuning must re-assert bind-address baseline' || return 1
+    test::assert_contains "$database_content" 'prompt_confirm "Restart MariaDB now?"' 'db_secure must require explicit restart confirmation' || return 1
+    test::assert_contains "$database_content" 'prompt_confirm "Restart MariaDB ngay bay gio de ap dung tuning?"' 'db_apply_tuning must require explicit restart confirmation' || return 1
+    test::assert_contains "$database_content" 'DB_REDO_RESIZE_PENDING=1' 'redo-log resize cancel path must block restart' || return 1
+    test::assert_contains "$database_content" 'credential_files_to_remove' 'db_drop must track OPS credential files for cleanup' || return 1
+    test::assert_contains "$database_content" '%s/%s__%s.conf' 'DB credential files must be keyed by db and user' || return 1
+    test::assert_contains "$database_content" 'Password was left unchanged.' 'existing-user rerun safety message missing' || return 1
+    test::assert_contains "$database_content" 'No new credentials file was written because OPS cannot safely recover the current password.' 'existing-user rerun must not persist fake credentials' || return 1
+    test::assert_contains "$database_content" 'CREATE DATABASE' 'DB create database helper missing' || return 1
+    test::assert_contains "$verify_content" '_vs_db_query()' 'verify must use a DB query helper instead of socket-only inline reads' || return 1
+    test::assert_contains "$verify_content" '.db-root-password' 'verify must support legacy DB root password fallback' || return 1
 }
 
 case_db_06_backup_helper_contract_present() {
     local content
     content="$(<"${OPS_ROOT}/modules/backup.sh")"
     test::assert_contains "$content" '/var/backups/ops/db' 'DB backup output path missing' || return 1
+    test::assert_contains "$content" 'individual per-database files' 'dump-all backup contract must stay per-database' || return 1
+    test::assert_contains "$content" 'sudo mysql --database="<dbname>"' 'restore guidance must show a valid DB restore command' || return 1
+    test::assert_contains "$content" 'chmod 700 /etc/ops/db-credentials' 'restore guidance must repair db-credentials directory permissions' || return 1
+    test::assert_contains "$content" 'chown <ADMIN_USER>:<ADMIN_USER>' 'restore guidance must repair admin-owned secret ownership' || return 1
 }
 
 case_cpa_01_02_03_04_05_06_07_08_09_cliproxyapi_contracts_present() {
@@ -560,6 +707,8 @@ case_cpa_01_02_03_04_05_06_07_08_09_cliproxyapi_contracts_present() {
     test::assert_contains "$content" 'host: "127.0.0.1"' 'CLIProxyAPI loopback bind contract missing' || return 1
     test::assert_contains "$content" '.cli-proxy-api-key' 'CLIProxyAPI secret file contract missing' || return 1
     test::assert_contains "$content" 'proxy_buffering       off' 'CLIProxyAPI nginx proxy contract missing' || return 1
+    test::assert_contains "$content" 'create_default_deny || return 1' 'CLIProxyAPI domain link must fail closed if default deny refresh fails' || return 1
+    test::assert_not_contains "$content" '"SSL_HTTPS_BLOCK="' 'CLIProxyAPI vhost render must not pass dead SSL_HTTPS_BLOCK placeholder' || return 1
     test::assert_contains "$content" 'api-keys:' 'CLIProxyAPI API key toggle contract missing' || return 1
     test::assert_contains "$content" 'remote-management:' 'CLIProxyAPI remote management contract missing' || return 1
     test::assert_contains "$content" 'service_restart "$CLIPROXYAPI_SERVICE_NAME"' 'CLIProxyAPI service restart contract missing' || return 1
@@ -629,14 +778,23 @@ case_mon_01_02_03_04_05_monitoring_contracts_present() {
 }
 
 case_file_01_02_03_04_file_contracts_present() {
-    local utils_content codex_content setup_content
+    local utils_content codex_content database_content setup_content claude_content
     utils_content="$(<"${OPS_ROOT}/core/utils.sh")"
     codex_content="$(<"${OPS_ROOT}/modules/codex-cli.sh")"
+    database_content="$(<"${OPS_ROOT}/modules/database.sh")"
     setup_content="$(<"${OPS_ROOT}/bin/ops-setup.sh")"
+    claude_content="$(<"${OPS_ROOT}/modules/ai-agent.sh")"
     test::assert_contains "$utils_content" 'backup_file' 'backup helper missing' || return 1
     test::assert_contains "$utils_content" 'write_file' 'safe write helper missing' || return 1
-    test::assert_contains "$codex_content" 'chmod 600' 'secret permission contract missing in codex-cli module' || return 1
+    test::assert_contains "$codex_content" 'chmod 600 "$CODEX_API_KEY_FILE"' 'Codex secret permission contract missing in codex-cli module' || return 1
+    test::assert_contains "$claude_content" 'chmod 600 "$api_key_file"' 'Claude secret permission contract missing in ai-agent module' || return 1
+    test::assert_contains "$claude_content" 'chmod 600 "${tg_env}"' 'Telegram env permission contract missing in ai-agent module' || return 1
+    test::assert_contains "$database_content" 'db-credentials' 'database credential secret path contract missing' || return 1
     test::assert_contains "$setup_content" 'OPS_CONFIG_DIR' 'shell-sourceable config contract missing' || return 1
+    test::assert_contains "$codex_content" 'cp -a -- "$file" "$backup_path"' 'Codex managed shell rewrites must create backups' || return 1
+    test::assert_contains "$codex_content" 'bash -n "$file"' 'Codex managed shell rewrites must validate bash syntax' || return 1
+    test::assert_contains "$claude_content" 'cp -a -- "$file" "$backup_path"' 'Claude managed shell rewrites must create backups' || return 1
+    test::assert_contains "$claude_content" 'bash -n "$file"' 'Claude managed shell rewrites must validate bash syntax' || return 1
 }
 
 case_reg_17_admin_user_resolution_prefers_persisted_then_sudo_user() {
@@ -873,8 +1031,8 @@ case_reg_24_high_risk_callers_use_shared_wrappers() {
     security_content="$(<"${OPS_ROOT}/modules/security.sh")"
     nginx_content="$(<"${OPS_ROOT}/modules/nginx.sh")"
 
-    test::assert_contains "$cliproxyapi_content" $'    nginx_validate\n    service_enable nginx\n    service_reload nginx' 'CLIProxyAPI domain link must validate nginx through shared wrapper' || return 1
-    test::assert_not_contains "$cliproxyapi_content" $'    nginx -t\n    service_enable nginx\n    service_reload nginx' 'CLIProxyAPI domain link must not bypass nginx_validate' || return 1
+    test::assert_contains "$cliproxyapi_content" '_nginx_commit_vhost "$vhost_name" "$staged_file" || return 1' 'CLIProxyAPI domain link must delegate validation/reload/rollback to the shared transactional wrapper' || return 1
+    test::assert_not_contains "$cliproxyapi_content" $'    nginx -t\n    service_enable nginx\n    service_reload nginx' 'CLIProxyAPI domain link must not bypass nginx_validate via legacy direct reload sequence' || return 1
 
     test::assert_contains "$node_content" 'if nginx_validate > /dev/null 2>&1; then' 'Node app removal must validate nginx through shared wrapper' || return 1
     test::assert_not_contains "$node_content" 'if nginx -t > /dev/null 2>&1; then' 'Node app removal must not bypass nginx_validate' || return 1
@@ -947,10 +1105,10 @@ case_reg_28_ownership_sensitive_writers_normalize_modes() {
 
     test::assert_contains "$php_content" 'chmod 0644 "$pool_file"' 'PHP pool writer must normalize new pool files to 0644' || return 1
     test::assert_contains "$php_content" 'chown root:root "$pool_file"' 'PHP pool writer must normalize pool ownership to root:root' || return 1
-    test::assert_contains "$cliproxyapi_content" 'chmod 0644 "$vhost_path"' 'CLIProxyAPI vhost writer must normalize nginx vhost mode' || return 1
-    test::assert_contains "$cliproxyapi_content" 'chown root:root "$vhost_path"' 'CLIProxyAPI vhost writer must normalize nginx vhost ownership' || return 1
-    test::assert_contains "$nginx_content" 'chmod 0644 "${OPS_DOMAINS_DIR}/${domain}.conf"' 'Domain state writer must normalize state-file mode' || return 1
-    test::assert_contains "$nginx_content" 'chown root:root "${OPS_DOMAINS_DIR}/${domain}.conf"' 'Domain state writer must normalize state-file ownership' || return 1
+    test::assert_contains "$cliproxyapi_content" 'chmod 0644 "$staged_file"' 'CLIProxyAPI staged vhost writer must normalize nginx vhost mode before commit' || return 1
+    test::assert_contains "$cliproxyapi_content" 'chown root:root "$staged_file"' 'CLIProxyAPI staged vhost writer must normalize nginx vhost ownership before commit' || return 1
+    test::assert_contains "$nginx_content" 'chmod 0644 "$state_file"' 'Domain state writer must normalize state-file mode' || return 1
+    test::assert_contains "$nginx_content" 'chown root:root "$state_file"' 'Domain state writer must normalize state-file ownership' || return 1
     test::assert_contains "$nginx_content" 'chmod 0644 "$output"' 'Template-based nginx writers must normalize config mode' || return 1
     test::assert_contains "$nginx_content" 'chown root:root "$output"' 'Template-based nginx writers must normalize config ownership' || return 1
     test::assert_contains "$nginx_content" 'chmod 0644 "$available"' 'PHP vhost writer must normalize generated config mode after append' || return 1
@@ -1004,8 +1162,75 @@ case_reg_31_setup_wizard_flow_stays_fail_closed() {
     test::assert_contains "$wizard_content" 'WIZARD_PHP_VERSIONS_LAST_RUN="${versions_to_install[*]}"' 'setup wizard must record selected PHP versions for final verification' || return 1
     test::assert_contains "$wizard_content" 'WIZARD_DONE_FULL_WIZARD was not written' 'setup wizard must fail closed when final verification is incomplete' || return 1
     test::assert_contains "$wizard_content" 'for step in system_update security nginx node php database monitoring verification; do' 'setup wizard summary must include monitoring and verification steps' || return 1
+    test::assert_contains "$wizard_content" '/etc/logrotate.d/nginx-ops' 'setup wizard must validate the OPS-managed nginx logrotate artefact' || return 1
     test::assert_contains "$monitoring_content" 'monitoring_apply_baseline()' 'monitoring baseline helper missing' || return 1
     test::assert_contains "$monitoring_content" '/etc/logrotate.d/ops' 'monitoring baseline must reconcile OPS logrotate state' || return 1
+    test::assert_contains "$monitoring_content" '/etc/logrotate.d/nginx-ops' 'monitoring baseline must validate the OPS-managed nginx logrotate artefact' || return 1
+    if [[ -e "${OPS_ROOT}/modules/templates/logrotate/ops-log-rotation.sh" ]]; then
+        printf 'orphaned ops-log-rotation.sh must be removed from the active tree\n' >&2
+        return 1
+    fi
+}
+
+case_reg_32_cf_credentials_split_contract_present() {
+    local nginx_content
+    nginx_content="$(<"${OPS_ROOT}/modules/nginx.sh")"
+
+    test::assert_contains "$nginx_content" 'CF_CERTBOT_CREDS_FILE="/etc/ops/cloudflare-certbot.ini"' 'Cloudflare DNS-01 flow must use a dedicated certbot credentials file' || return 1
+    test::assert_contains "$nginx_content" 'CF_CREDS_FILE is shell-sourceable only — NEVER overwrite it with INI format.' 'Cloudflare token state must remain separated from certbot INI credentials' || return 1
+    test::assert_contains "$nginx_content" "printf 'dns_cloudflare_api_token = %s\\n' \"\$CF_API_TOKEN\" > \"\$CF_CERTBOT_CREDS_FILE\"" 'DNS-01 issuance must write INI credentials to the dedicated certbot file' || return 1
+    test::assert_contains "$nginx_content" "printf 'CF_API_TOKEN=\"%s\"\\n' \"\$new_token\" > \"\$CF_CREDS_FILE\"" 'Cloudflare token save path must keep cloudflare.conf shell-sourceable' || return 1
+    test::assert_not_contains "$nginx_content" "printf 'dns_cloudflare_api_token = %s\\n' \"\$new_token\" > \"\$CF_CREDS_FILE\"" 'Cloudflare token save path must not overwrite cloudflare.conf with certbot INI format' || return 1
+}
+
+case_reg_33_ai_shell_secret_contracts_present() {
+    local codex_content claude_content
+    codex_content="$(<"${OPS_ROOT}/modules/codex-cli.sh")"
+    claude_content="$(<"${OPS_ROOT}/modules/ai-agent.sh")"
+
+    test::assert_contains "$codex_content" '_codex_admin_bash_profile()' 'Codex bash_profile helper missing' || return 1
+    test::assert_not_contains "$codex_content" '/home/$ADMIN_USER/.bash_profile' 'Codex must not hardcode /home/$ADMIN_USER/.bash_profile' || return 1
+    test::assert_contains "$codex_content" "tr -d '\\\\r\\\\n' < \${quoted_key_file}" 'Codex managed shell blocks must load secrets from canonical files' || return 1
+    test::assert_not_contains "$codex_content" 'export CLI_PROXY_API_KEY="${api_key}"' 'Codex must not inline raw CLIProxyAPI secrets into shell blocks' || return 1
+    test::assert_not_contains "$codex_content" 'api_key = "' 'Codex config templates must not inline api_key in TOML' || return 1
+
+    test::assert_contains "$claude_content" 'api_key_status="SET"' 'Claude CLI test must report API key presence, not secret contents' || return 1
+    test::assert_contains "$claude_content" 'echo "  API Key       : $api_key_status"' 'Claude CLI test output must stay status-only' || return 1
+    test::assert_contains "$claude_content" '_claude_env_quote()' 'Telegram env writer must use shared dotenv quoting helper' || return 1
+    test::assert_contains "$claude_content" '_claude_env_append_line "${tg_env}" "TELEGRAM_BOT_TOKEN" "$bot_token"' 'Telegram env writer must write quoted dotenv entries' || return 1
+    test::assert_contains "$claude_content" 'ops_run_as_user "$ADMIN_USER" bash -c "$launch_cmd"' 'Telegram fallback launch must run as admin user' || return 1
+    test::assert_contains "$claude_content" 'Continue installing the Vietnamese fix?' 'Vietnamese fix install must require explicit confirmation' || return 1
+    test::assert_contains "$claude_content" 'This action clones and executes third-party code from GitHub.' 'Vietnamese fix install must warn before executing third-party code' || return 1
+    test::assert_contains "$claude_content" 'Continue installing the Telegram bot?' 'Telegram bot install must require explicit confirmation' || return 1
+    test::assert_contains "$claude_content" 'This action clones and installs third-party code from GitHub via pip.' 'Telegram bot install must warn before executing third-party code' || return 1
+}
+
+case_reg_34_ai_runtime_docs_aligned() {
+    local codex_spec claude_spec architecture_content inventory_content trace_content menu_reference_content user_guide_content
+    codex_spec="$(<"${REPO_ROOT}/docs/reference/CODEX-CLI-SPEC.md")"
+    claude_spec="$(<"${REPO_ROOT}/docs/reference/CLAUDE-CODE-SPEC.md")"
+    architecture_content="$(<"${REPO_ROOT}/docs/reference/ARCHITECTURE.md")"
+    inventory_content="$(<"${REPO_ROOT}/docs/reference/RUNTIME-ARTEFACT-INVENTORY.md")"
+    trace_content="$(<"${REPO_ROOT}/docs/reference/SOURCE-TO-RUNTIME-TRACE.md")"
+    menu_reference_content="$(<"${REPO_ROOT}/docs/operator/MENU-REFERENCE.md")"
+    user_guide_content="$(<"${REPO_ROOT}/USER_GUIDE.md")"
+
+    test::assert_contains "$codex_spec" '/etc/ops/.cli-proxy-api-key' 'Codex spec must document the CLIProxyAPI canonical key path' || return 1
+    test::assert_contains "$codex_spec" '/etc/ops/.codex-api-key' 'Codex spec must document the direct/custom canonical key path' || return 1
+    test::assert_contains "$codex_spec" 'http://127.0.0.1:8317/v1' 'Codex spec must preserve the local /v1 endpoint contract' || return 1
+
+    test::assert_contains "$claude_spec" '~/.claude-api-key' 'Claude spec must document the canonical Claude key path' || return 1
+    test::assert_not_contains "$claude_spec" 'masked API key' 'Claude spec must not claim test output prints masked API key content' || return 1
+    test::assert_contains "$claude_spec" 'secret-file presence status' 'Claude spec must describe secret-file presence status, not key previews' || return 1
+    test::assert_contains "$claude_spec" '~/claude-telegram/claude-telegram-bot.pid' 'Claude spec must document the Telegram PID path' || return 1
+    test::assert_contains "$claude_spec" '~/claude-telegram-bot.log' 'Claude spec must document the Telegram log path' || return 1
+    test::assert_contains "$claude_spec" 'http://127.0.0.1:8317' 'Claude spec must preserve the local endpoint without /v1' || return 1
+
+    test::assert_contains "$architecture_content" '~/.claude-api-key' 'Architecture doc must include the canonical Claude key path' || return 1
+    test::assert_contains "$inventory_content" '~/claude-telegram/.env' 'Runtime inventory must include the Telegram env path' || return 1
+    test::assert_contains "$trace_content" '~/claude-telegram/claude-telegram-bot.pid' 'Source-to-runtime trace must include the Telegram PID path' || return 1
+    test::assert_contains "$menu_reference_content" 'CLIProxyAPI, OpenAI API key, ChatGPT OAuth, custom endpoint' 'Menu reference must document all four Codex modes' || return 1
+    test::assert_contains "$user_guide_content" '~/.claude-api-key' 'User guide must document the canonical Claude key path' || return 1
 }
 
 test::run_case 'REG-01' 'tty prompt anti-pattern absent' case_reg_01_tty_prompt_antipattern_absent
@@ -1040,6 +1265,9 @@ test::run_case 'REG-28' 'ownership-sensitive writers normalize modes' case_reg_2
 test::run_case 'REG-29' 'rollback helpers shared and installer stages once' case_reg_29_rollback_helpers_shared_and_installer_stages_once
 test::run_case 'REG-30' 'security state changes fail closed' case_reg_30_security_state_changes_fail_closed
 test::run_case 'REG-31' 'setup wizard flow stays fail closed' case_reg_31_setup_wizard_flow_stays_fail_closed
+test::run_case 'REG-32' 'Cloudflare credentials split contract present' case_reg_32_cf_credentials_split_contract_present
+test::run_case 'REG-33' 'AI shell secret contract present' case_reg_33_ai_shell_secret_contracts_present
+test::run_case 'REG-34' 'AI runtime docs stay aligned' case_reg_34_ai_runtime_docs_aligned
 test::run_case 'SEC-01' 'password auth guard without key present' case_sec_01_password_auth_guard_without_key_present
 test::run_case 'SEC-02' 'disable password auth requires key contract present' case_sec_02_disable_password_auth_requires_key_contract_present
 test::run_case 'SEC-03' 'SSH transition keeps two ports contract present' case_sec_03_transition_keeps_two_ports_contract_present
@@ -1072,6 +1300,7 @@ test::run_case 'WEB-07' 'SSL issue contract present' case_web_07_ssl_issue_contr
 test::run_case 'WEB-08' 'SSL status contract present' case_web_08_ssl_status_contract_present
 test::run_case 'WEB-09' 'CLIProxyAPI nginx boundary contract present' case_web_09_web_10_cliproxyapi_nginx_boundary_contract_present
 test::run_case 'WEB-10' 'nginx remains sole public entrypoint contract present' case_web_09_web_10_cliproxyapi_nginx_boundary_contract_present
+test::run_case 'WEB-11' 'transactional vhost commit contract present' case_web_11_transactional_vhost_commit_contract_present
 test::run_case 'NODE-01' 'Node LTS install contract present' case_node_01_node_lts_install_contract_present
 test::run_case 'NODE-02' 'PM2 non-root contract present' case_node_02_pm2_not_root_contract_present
 test::run_case 'NODE-03' 'Node service list contract present' case_node_03_04_05_06_07_node_menu_contract_present
@@ -1082,12 +1311,12 @@ test::run_case 'NODE-07' 'Node remove contract present' case_node_03_04_05_06_07
 test::run_case 'NODE-08' 'PM2 merge_logs contract present' case_node_08_09_10_pm2_template_contract_present
 test::run_case 'NODE-09' 'PM2 logrotate contract present' case_node_08_09_10_pm2_template_contract_present
 test::run_case 'NODE-10' 'PM2 memory contract present' case_node_08_09_10_pm2_template_contract_present
-test::run_case 'PHP-01' 'PHP versions contract present' case_php_01_php_versions_contract_present
-test::run_case 'PHP-02' 'PHP pool/socket contract present' case_php_02_03_php_pool_and_domain_contract_present
-test::run_case 'PHP-03' 'PHP domain contract present' case_php_02_03_php_pool_and_domain_contract_present
-test::run_case 'PHP-04' 'PHP override regression coverage present' case_php_04_05_06_php_override_contract_present
-test::run_case 'PHP-05' 'PHP URL fopen regression coverage present' case_php_04_05_06_php_override_contract_present
-test::run_case 'PHP-06' 'PHP per-pool override contract present' case_php_04_05_06_php_override_contract_present
+test::run_case 'PHP-01' 'PHP versions/removal guard contract present' case_php_01_php_versions_contract_present
+test::run_case 'PHP-02' 'PHP pool/socket contract present' case_php_02_php_pool_socket_contract_present
+test::run_case 'PHP-03' 'PHP domain state contract present' case_php_03_php_domain_state_contract_present
+test::run_case 'PHP-04' 'PHP FPM-only hardening contract present' case_php_04_fpm_only_hardening_contract_present
+test::run_case 'PHP-05' 'PHP per-pool override contract present' case_php_05_per_pool_override_contract_present
+test::run_case 'PHP-06' 'PHP rollback/diagnostics contract present' case_php_06_transaction_and_diagnostics_contract_present
 test::run_case 'DB-01' 'DB install contract present' case_db_01_02_03_04_05_db_contracts_present
 test::run_case 'DB-02' 'DB secret permission contract present' case_db_01_02_03_04_05_db_contracts_present
 test::run_case 'DB-03' 'DB secure setup contract present' case_db_01_02_03_04_05_db_contracts_present

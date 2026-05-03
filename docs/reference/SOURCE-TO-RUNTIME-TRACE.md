@@ -165,23 +165,36 @@ Model chung:
   - `modules/ai-agent.sh`
 - **Runtime state**:
   - `/var/log/ops/ops.log`
-  - logrotate rules
+  - `/var/log/ops/pm2-<app>-out.log`, `/var/log/ops/pm2-<app>-err.log`
+  - `/etc/logrotate.d/ops`
+  - `/etc/logrotate.d/nginx-ops`
   - `/etc/ops/codex-cli.conf` (mode, endpoint, model, version)
-  - `/etc/ops/.codex-api-key` (0600: API key)
-  - `~/.codex/config.toml` (0600: endpoint + model config)
+  - `/etc/ops/.cli-proxy-api-key` (0600: canonical CLIProxyAPI key for Codex local mode)
+  - `/etc/ops/.codex-api-key` (0600: canonical key for Codex direct/custom modes)
+  - `~/.codex/config.toml` (0600: provider + endpoint + model config)
+  - admin `~/.bashrc` managed `CLI_PROXY_API_KEY` loader block cho Codex local mode
+  - admin `~/.bash_profile` managed `OPENAI_API_KEY` loader block khi bat auto env
   - `/etc/ops/claude-code.conf`
-  - admin `~/.bashrc` export block cho Claude Code
+  - `~/.claude-api-key` (0600: canonical Claude key)
+  - admin `~/.bashrc` managed `ANTHROPIC_*` loader block cho Claude Code
+  - `~/claude-telegram/.env` (0600)
+  - `~/claude-telegram/claude-telegram-bot.pid`
+  - `~/claude-telegram-bot.log`
 - **Verify**:
   - quick logs menu
   - service status screen
   - `codex --version`
-  - Claude Code version / environment reachability
+  - `claude --version`
+  - `grep -n "OPS: codex-cliproxyapi env" ~/.bashrc 2>/dev/null`
+  - `grep -n "OPS: codex-cli auto env" ~/.bash_profile 2>/dev/null`
+  - `grep -n "OPS: claude-code" ~/.bashrc 2>/dev/null`
   - `curl -s http://127.0.0.1:8317/v1/models` (neu Codex dung CLIProxyAPI mode)
 - **Rollback**:
-  - `disable_codex_auto_env` de xoa export OPENAI_API_KEY khoi ~/.bash_profile
-  - go bo Claude Code export block khoi admin `~/.bashrc` neu can
-  - `rm ~/.codex/config.toml /etc/ops/.codex-api-key`
+  - `disable_codex_auto_env` de xoa managed OPENAI_API_KEY block khoi ~/.bash_profile
+  - go bo managed Codex/Claude blocks khoi admin `~/.bashrc` neu can
+  - `rm ~/.codex/config.toml /etc/ops/.codex-api-key ~/.claude-api-key`
   - `npm uninstall -g @openai/codex`
+  - `npm uninstall -g @anthropic-ai/claude-code`
 
 
 ### Notifications / scheduled checks
@@ -236,9 +249,12 @@ Model chung:
 | `cli-proxy-api.service` | CLIProxyAPI provider lifecycle |
 | `/opt/cli-proxy-api/config.yaml` | provider config rendered by `modules/cli-proxy-api.sh` |
 | `/etc/ops/.cli-proxy-api-key` | local client key for CLIProxyAPI (0600) |
-| `/etc/ops/.db-root-password` | database.sh install (0600) |
-| `/etc/ops/.codex-api-key` | codex-cli.sh configure (0600) |
+| `/etc/ops/db-credentials/<db>__<user>.conf` | database.sh create_db_user (0600, admin-owned) |
+| `/etc/ops/.db-root-password` | database.sh legacy/fallback root password file (0600 when present) |
+| `/etc/ops/.codex-api-key` | codex-cli.sh configure direct/custom mode (0600) |
 | `~/.codex/config.toml` | codex-cli.sh configure (0600) |
+| `~/.claude-api-key` | ai-agent.sh configure Claude Code (0600) |
+| `~/claude-telegram/.env` | ai-agent.sh configure Telegram bot (0600) |
 | `/etc/php/*/fpm/*` | PHP management |
 | **MariaDB** config (default) | Database management |
 | UFW/fail2ban/sshd config | Security module |

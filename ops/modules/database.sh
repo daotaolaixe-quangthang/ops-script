@@ -38,6 +38,24 @@ _db_mysql_root_exec() {
     return 1
 }
 
+_db_mysql_root_query() {
+    local sql="$1"
+    if _db_mysql_socket_exec "SELECT 1;" >/dev/null 2>&1; then
+        mysql --protocol=socket -u root -sNe "$sql"
+        return $?
+    fi
+
+    if [[ -f "$DB_ROOT_PASSWORD_FILE" ]]; then
+        local root_password
+        root_password="$(cat "$DB_ROOT_PASSWORD_FILE")"
+        MYSQL_PWD="$root_password" mysql -u root -sNe "$sql"
+        return $?
+    fi
+
+    print_error "Cannot authenticate as MariaDB root via socket or password file."
+    return 1
+}
+
 _db_escape_sql_string() {
     local value="$1"
     printf '%s' "$value" | sed "s/'/''/g"
@@ -50,6 +68,96 @@ _db_valid_identifier() {
 
 _db_detect_mariadb_version() {
     dpkg-query -W -f='${Version}' mariadb-server 2>/dev/null || echo "unknown"
+}
+
+_db_secret_owner() {
+    printf '%s' "${ADMIN_USER:-root}"
+}
+
+_db_credentials_file_for() {
+    local db_name="$1"
+    local db_user="$2"
+    printf '%s/%s__%s.conf' "$DB_CREDENTIALS_DIR" "$db_name" "$db_user"
+}
+
+_db_legacy_credentials_file_for() {
+    local db_name="$1"
+    printf '%s/%s.conf' "$DB_CREDENTIALS_DIR" "$db_name"
+}
+
+_db_user_exists() {
+    local db_user="$1"
+    local escaped_db_user count
+    escaped_db_user="$(_db_escape_sql_string "$db_user")"
+    count="$(_db_mysql_root_query "SELECT COUNT(*) FROM mysql.user WHERE User='${escaped_db_user}' AND Host='localhost';" 2>/dev/null || echo 0)"
+    [[ "$count" =~ ^[1-9][0-9]*$ ]]
+}
+
+_db_active_connection_count() {
+    local active_conn
+    active_conn="$(_db_mysql_root_query "SHOW STATUS LIKE 'Threads_connected';" 2>/dev/null | awk 'NR==1 {print $2}' || echo '?')"
+    printf '%s' "${active_conn:-?}"
+}
+
+_db_validate_mariadb_config() {
+    local server_bin
+    server_bin="$(command -v mariadbd || command -v mysqld || true)"
+    if [[ -z "$server_bin" ]]; then
+        print_error "MariaDB server binary not found; cannot validate config."
+        log_error "database config validation skipped: mariadbd/mysqld binary not found"
+        return 1
+    fi
+
+    if ! "$server_bin" --verbose --help > /dev/null 2>&1; then
+        print_error "MariaDB config validation failed — NOT restarting."
+        print_error "      Check ${MARIADB_SERVER_CNF} and ${MARIADB_TUNING_CNF}."
+        log_error "database config validation failed — restart skipped"
+        return 1
+    fi
+
+    return 0
+}
+
+_db_apply_sql_security_baseline() {
+    if ! _db_mysql_root_exec "DELETE FROM mysql.user WHERE User='';
+DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
+DROP DATABASE IF EXISTS test;
+DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket;
+FLUSH PRIVILEGES;"; then
+        print_error "MariaDB SQL security baseline failed."
+        log_error "database SQL security baseline failed"
+        return 1
+    fi
+
+    print_ok "Security baseline applied: anonymous users removed, test DBs dropped, root restricted to localhost."
+    return 0
+}
+
+_db_existing_install_detected() {
+    if dpkg-query -W -f='${Status}' mariadb-server 2>/dev/null | grep -q 'install ok installed'; then
+        return 0
+    fi
+
+    if service_active mariadb 2>/dev/null; then
+        return 0
+    fi
+
+    if [[ -d /var/lib/mysql ]]; then
+        local entries=()
+        shopt -s nullglob dotglob
+        entries=(/var/lib/mysql/*)
+        shopt -u nullglob dotglob
+        if [[ "${#entries[@]}" -gt 0 ]]; then
+            return 0
+        fi
+    fi
+
+    if [[ -f "$MARIADB_SERVER_CNF" || -f "$MARIADB_TUNING_CNF" ]]; then
+        return 0
+    fi
+
+    return 1
 }
 
 _db_assert_not_rescue_mode() {
@@ -101,8 +209,8 @@ _db_set_bind_localhost() {
 _db_write_secret_file() {
     local path="$1"
     local content="$2"
-    # F-22: Credentials must be root-owned (mode 0600, owner root:root).
-    local owner="root"
+    local owner
+    owner="$(_db_secret_owner)"
 
     ensure_parent_dir "$path"
     # P4-1b fix: db-credentials dir must be 700 (not world-traversable).
@@ -129,6 +237,8 @@ _db_save_database_conf() {
     ops_conf_set "database.conf" "DB_ROOT_AUTH_MODE" "$DB_ROOT_AUTH_MODE"
     if [[ "$DB_ROOT_AUTH_MODE" == "password" ]]; then
         ops_conf_set "database.conf" "DB_ROOT_PASSWORD_FILE" "$DB_ROOT_PASSWORD_FILE"
+    else
+        ops_conf_unset "database.conf" "DB_ROOT_PASSWORD_FILE" || true
     fi
     ops_conf_set "database.conf" "DB_INSTALL_DATE" "$(date '+%F %T')"
     chmod 600 "$DB_CONFIG_FILE" 2>/dev/null || true
@@ -311,6 +421,8 @@ EOF_LOG
 # MariaDB will then create fresh log files at the correct size on next start.
 # Safe to call even when MariaDB is already stopped.
 _db_innodb_log_resize_if_needed() {
+    DB_REDO_RESIZE_PENDING=0
+
     local logfile="/var/lib/mysql/ib_logfile0"
     [[ -f "$logfile" ]] || return 0   # fresh install — nothing to resize
 
@@ -349,11 +461,7 @@ _db_innodb_log_resize_if_needed() {
 
     # Show active connection count so operator can make an informed decision
     local _active_conn="?"
-    if mysql --protocol=socket -u root -e "SELECT 1;" > /dev/null 2>&1; then
-        _active_conn=$(mysql --protocol=socket -u root -sNe \
-            "SHOW STATUS LIKE 'Threads_connected';" 2>/dev/null \
-            | awk '{print $2}' || echo "?")
-    fi
+    _active_conn="$(_db_active_connection_count)"
     print_warn "  So ket noi dang active: ${_active_conn}"
     print_warn ""
     print_warn "Neu MariaDB stop khong sach (do I/O cao, locked tables): rui ro data corruption."
@@ -361,10 +469,11 @@ _db_innodb_log_resize_if_needed() {
     echo ""
 
     if ! prompt_confirm "XAC NHAN stop MariaDB va xoa InnoDB redo log files de resize?"; then
+        DB_REDO_RESIZE_PENDING=1
         print_warn "InnoDB log resize bi huy boi operator."
         print_warn "Config log size va ib_logfile tren disk hien KHONG KHOP."
-        print_warn "MariaDB co the tu choi khoi dong sau restart neu size khong khop."
-        print_warn "Chay 'Database -> Apply tuning' lai sau khi chon thoi diem phu hop."
+        print_warn "OPS se KHONG restart MariaDB trong run nay de tranh start failure do size mismatch."
+        print_warn "Chay lai 'Database -> Apply tuning' hoac 'Install MariaDB' khi den maintenance window phu hop."
         log_warn "_db_innodb_log_resize_if_needed: resize cancelled by operator (disk=$(( current_bytes/1024/1024 ))M, config=${target_str})"
         return 0
     fi
@@ -398,86 +507,82 @@ install_mariadb() {
     _db_assert_not_rescue_mode || return 1
 
     # ── PRODUCTION GUARD ───────────────────────────────────────────────────────
-    # Detect if MariaDB is already installed with production data.
-    # Re-running install_mariadb on a live server will:
-    #   [1] Upgrade MariaDB package (apt) — possible uncontrolled major version jump
-    #   [2] Reset root authentication to unix_socket (breaks password-based scripts)
-    #   [3] DROP DATABASE test and all test_% named databases
-    #   [4] Unconditionally restart MariaDB (drops all active connections)
-    #   [5] Possibly delete InnoDB redo log files if log size config changed
+    # Detect existing MariaDB state before apt install/upgrade so the operator is
+    # warned even when current SQL root auth is broken or has drifted.
     local _db_is_reinstall=0
-    local _was_running=0
     local _prod_db_names=""
-    local _installed_version=""
+    local _installed_version="unknown"
 
-    if command -v mysql > /dev/null 2>&1 \
-        && mysql --protocol=socket -u root -e "SELECT 1;" > /dev/null 2>&1; then
-        _was_running=1
-        _installed_version=$(mysql --protocol=socket -u root -sNe \
-            "SELECT VERSION();" 2>/dev/null || echo "unknown")
-        _prod_db_names=$(mysql --protocol=socket -u root -sNe \
-            "SELECT GROUP_CONCAT(SCHEMA_NAME ORDER BY SCHEMA_NAME SEPARATOR ', ')
+    if _db_existing_install_detected; then
+        _db_is_reinstall=1
+    fi
+
+    if dpkg-query -W -f='${Status}' mariadb-server 2>/dev/null | grep -q 'install ok installed'; then
+        _installed_version="$(_db_detect_mariadb_version)"
+    fi
+
+    if command -v mysql > /dev/null 2>&1 && _db_mysql_root_query "SELECT 1;" > /dev/null 2>&1; then
+        _installed_version="$(_db_mysql_root_query "SELECT VERSION();" 2>/dev/null || printf '%s' "${_installed_version}")"
+        _prod_db_names="$(_db_mysql_root_query "SELECT GROUP_CONCAT(SCHEMA_NAME ORDER BY SCHEMA_NAME SEPARATOR ', ')
              FROM information_schema.SCHEMATA
              WHERE SCHEMA_NAME NOT IN
-               ('information_schema','performance_schema','mysql','sys');" \
-            2>/dev/null || echo "")
+               ('information_schema','performance_schema','mysql','sys');" 2>/dev/null || echo "")"
+    fi
 
+    if [[ "$_db_is_reinstall" -eq 1 ]]; then
+        echo ""
+        echo "  ╔══════════════════════════════════════════════════════════════╗"
+        echo "  ║       ⚠  CANH BAO: EXISTING MARIADB INSTALL DETECTED ⚠      ║"
+        echo "  ╚══════════════════════════════════════════════════════════════╝"
+        echo ""
+        print_warn "MariaDB hien co da ton tai tren host nay (version: ${_installed_version})."
         if [[ -n "$_prod_db_names" ]]; then
-            _db_is_reinstall=1
-
-            echo ""
-            echo "  ╔══════════════════════════════════════════════════════════════╗"
-            echo "  ║       ⚠  CANH BAO: PRODUCTION DATABASE DETECTED  ⚠          ║"
-            echo "  ╚══════════════════════════════════════════════════════════════╝"
-            echo ""
-            print_warn "MariaDB ${_installed_version} da duoc cai dat voi du lieu production."
             print_warn "Production databases hien tai: ${_prod_db_names}"
-            echo ""
-            print_warn "Chay lai install_mariadb tren server nay SE:"
-            print_warn "  [1] apt upgrade MariaDB len version moi nhat trong repo"
-            print_warn "        -> Co the nang major version (vd 10.6->10.11) khong co ke hoach"
-            print_warn "        -> apt co the tu restart MariaDB trong qua trinh upgrade"
-            print_warn "  [2] Reset root authentication sang unix_socket"
-            print_warn "        -> Neu dang dung password auth: moi script dung -p<pass> se FAIL"
-            print_warn "  [3] DROP DATABASE tat ca DB co ten 'test' hoac bat dau bang 'test_'"
-            print_warn "        -> Neu production DB ten 'test*': MAT DATA HOAN TOAN, KHONG PHUC HOI"
-            print_warn "  [4] Restart MariaDB khong co grace period"
-            print_warn "        -> Toan bo active connections bi kill ngay lap tuc"
-            print_warn "  [5] Co the xoa InnoDB redo log (ib_logfile0/1) neu log size thay doi"
-            print_warn "        -> Rui ro data corruption neu MariaDB stop khong sach"
-            echo ""
-            print_warn "THAY VAO DO, hay dung cac lenh an toan hon:"
-            print_warn "  -> Database -> Secure/re-harden  (co confirm truoc restart)"
-            print_warn "  -> Database -> Apply tuning       (validate config truoc restart)"
-            echo ""
-
-            # Require typed confirmation — not just Y/n
-            local _confirm_text=""
-            tty_write "  Nhap chinh xac chu 'REINSTALL' de xac nhan: "
-            tty_read _confirm_text
-            if [[ "$_confirm_text" != "REINSTALL" ]]; then
-                print_warn "Cancelled. MariaDB reinstall aborted (nhap: '${_confirm_text}')."
-                log_info "install_mariadb: cancelled at production guard (input='${_confirm_text}')"
-                return 0
-            fi
-            echo ""
-            print_warn "Da xac nhan. Tien hanh reinstall — kiem tra log can than."
-            log_warn "install_mariadb: REINSTALL confirmed over production DBs: ${_prod_db_names}"
+        else
+            print_warn "Khong the doc danh sach production DB bang root auth hien tai. Van xem day la reinstall risk."
         fi
+        echo ""
+        print_warn "Chay lai install_mariadb tren server nay SE:"
+        print_warn "  [1] apt upgrade MariaDB len version moi nhat trong repo"
+        print_warn "        -> Co the nang major version (vd 10.6->10.11) khong co ke hoach"
+        print_warn "        -> apt co the tu restart MariaDB trong qua trinh upgrade"
+        print_warn "  [2] Reset root authentication sang unix_socket"
+        print_warn "        -> Neu dang dung password auth: moi script dung -p<pass> se FAIL"
+        print_warn "  [3] DROP DATABASE tat ca DB co ten 'test' hoac bat dau bang 'test_'"
+        print_warn "        -> Neu production DB ten 'test*': MAT DATA HOAN TOAN, KHONG PHUC HOI"
+        print_warn "  [4] Restart MariaDB khong co grace period"
+        print_warn "        -> Toan bo active connections bi kill ngay lap tuc"
+        print_warn "  [5] Co the xoa InnoDB redo log (ib_logfile0/1) neu log size thay doi"
+        print_warn "        -> Rui ro data corruption neu MariaDB stop khong sach"
+        echo ""
+        print_warn "THAY VAO DO, hay dung cac lenh an toan hon:"
+        print_warn "  -> Database -> Secure/re-harden  (co confirm truoc restart)"
+        print_warn "  -> Database -> Apply tuning       (validate config truoc restart)"
+        echo ""
+
+        local _confirm_text=""
+        tty_write "  Nhap chinh xac chu 'REINSTALL' de xac nhan: "
+        tty_read _confirm_text
+        if [[ "$_confirm_text" != "REINSTALL" ]]; then
+            print_warn "Cancelled. MariaDB reinstall aborted (nhap: '${_confirm_text}')."
+            log_info "install_mariadb: cancelled at production guard (input='${_confirm_text}')"
+            return 0
+        fi
+        echo ""
+        print_warn "Da xac nhan. Tien hanh reinstall — kiem tra log can than."
+        log_warn "install_mariadb: REINSTALL confirmed (prod_dbs=${_prod_db_names:-unavailable})"
     fi
     # ── END PRODUCTION GUARD ────────────────────────────────────────────────────
 
     # ── PACKAGE UPGRADE WARNING ─────────────────────────────────────────────────
-    # If MariaDB already installed, show current vs apt candidate version before upgrade.
-    if [[ "$_was_running" -eq 1 ]]; then
+    if [[ "$_db_is_reinstall" -eq 1 ]]; then
         local _apt_candidate
-        _apt_candidate=$(apt-cache policy mariadb-server 2>/dev/null \
-            | awk '/Candidate:/{print $2}' || echo "unknown")
+        _apt_candidate=$(apt-cache policy mariadb-server 2>/dev/null | awk '/Candidate:/{print $2}' || echo "unknown")
         echo ""
         print_warn "Kiem tra phien ban package:"
         print_warn "  Dang cai      : MariaDB ${_installed_version}"
         print_warn "  apt candidate : ${_apt_candidate}"
-        if [[ "$_apt_candidate" != "unknown" && "$_apt_candidate" != *"${_installed_version%%.*}"* ]]; then
+        if [[ "$_installed_version" != "unknown" && "$_apt_candidate" != "unknown" && "$_apt_candidate" != *"${_installed_version%%.*}"* ]]; then
             print_warn "  *** Phien ban candidate KHAC phien ban hien tai — se co UPGRADE! ***"
         fi
         echo ""
@@ -494,24 +599,13 @@ install_mariadb() {
     service_enable mariadb
     service_start mariadb
 
-    _db_set_bind_localhost
+    _db_set_bind_localhost || return 1
 
     if ! command -v openssl > /dev/null 2>&1; then
         apt_install openssl
     fi
 
-    # Security baseline — equivalent to mysql_secure_installation (full).
-    # Remove anonymous users (no username = any host can connect without credentials)
-    _db_mysql_socket_exec "DELETE FROM mysql.user WHERE User='';"
-    # Remove remote root — root must only connect via local unix socket
-    _db_mysql_socket_exec "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');"
-    # Drop test database AND test_% wildcard databases (mysql_secure_installation removes both)
-    _db_mysql_socket_exec "DROP DATABASE IF EXISTS test;"
-    _db_mysql_socket_exec "DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';"
-    # Enforce unix_socket auth for root — no password needed/possible from remote
-    _db_mysql_socket_exec "ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket;"
-    _db_mysql_socket_exec "FLUSH PRIVILEGES;"
-    print_ok "Security baseline applied: anonymous users removed, test DBs dropped, root restricted to localhost."
+    _db_apply_sql_security_baseline || return 1
 
     _db_remove_secret_file "$DB_ROOT_PASSWORD_FILE"
     _db_save_database_conf "$(_db_detect_mariadb_version)"
@@ -526,9 +620,17 @@ install_mariadb() {
     _db_setup_ssl
     _db_setup_logging
 
+    _db_validate_mariadb_config || return 1
+
     # Resize ib_logfile* if innodb_log_file_size was changed by tune_mariadb above.
     # _db_innodb_log_resize_if_needed has its own confirm prompt when server is live.
-    _db_innodb_log_resize_if_needed
+    _db_innodb_log_resize_if_needed || return 1
+    if [[ "${DB_REDO_RESIZE_PENDING:-0}" == "1" ]]; then
+        print_warn "MariaDB restart skipped because redo-log resize was not confirmed."
+        print_ok "MariaDB hardening/tuning files were written; restart remains pending until resize is approved."
+        log_info "install_mariadb: restart skipped pending redo-log resize confirmation"
+        return 0
+    fi
 
     # ── FINAL RESTART CONFIRMATION ───────────────────────────────────────────
     # Fresh install: no active connections — restart unconditionally.
@@ -672,19 +774,23 @@ EOF_TUNE
 
     # Restart only if called standalone (not from install_mariadb which restarts at the end)
     if [[ "${DB_TUNING_NO_RESTART:-0}" != "1" ]]; then
+        local _tune_active_conn
+        _db_validate_mariadb_config || return 1
+
         # Resize ib_logfile* if innodb_log_file_size changed vs what's on disk.
         # _db_innodb_log_resize_if_needed has its own confirm prompt.
-        _db_innodb_log_resize_if_needed
+        _db_innodb_log_resize_if_needed || return 1
+        if [[ "${DB_REDO_RESIZE_PENDING:-0}" == "1" ]]; then
+            print_warn "MariaDB restart skipped because redo-log resize was not confirmed."
+            print_warn "Config moi (${MARIADB_TUNING_CNF}) da duoc ghi, nhung restart van pending den maintenance window phu hop."
+            log_info "tune_mariadb: restart skipped pending redo-log resize confirmation"
+            return 0
+        fi
 
         # ── STANDALONE RESTART CONFIRMATION ─────────────────────────────────
         # tune_mariadb called standalone (not via install_mariadb) means MariaDB
         # is potentially serving production traffic. Confirm before restarting.
-        local _tune_active_conn="?"
-        if mysql --protocol=socket -u root -e "SELECT 1;" > /dev/null 2>&1; then
-            _tune_active_conn=$(mysql --protocol=socket -u root -sNe \
-                "SHOW STATUS LIKE 'Threads_connected';" 2>/dev/null \
-                | awk '{print $2}' || echo "?")
-        fi
+        _tune_active_conn="$(_db_active_connection_count)"
         echo ""
         print_warn "MariaDB restart can thiet de ap dung config tuning moi."
         print_warn "  So ket noi dang active : ${_tune_active_conn}"
@@ -723,24 +829,72 @@ create_db_user() {
         return 1
     fi
 
-    local db_password escaped_db_password
-    db_password="$(openssl rand -base64 24)"
-    escaped_db_password="$(_db_escape_sql_string "$db_password")"
+    local credentials_file legacy_credentials_file existing_user=0
+    credentials_file="$(_db_credentials_file_for "$db_name" "$db_user")"
+    legacy_credentials_file="$(_db_legacy_credentials_file_for "$db_name")"
 
-    _db_mysql_root_exec "CREATE DATABASE IF NOT EXISTS \`${db_name}\`;"
-    _db_mysql_root_exec "CREATE USER IF NOT EXISTS '${db_user}'@'localhost' IDENTIFIED BY '${escaped_db_password}';"
-    _db_mysql_root_exec "GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, DROP ON \`${db_name}\`.* TO '${db_user}'@'localhost';"
-    _db_mysql_root_exec "FLUSH PRIVILEGES;"
+    _db_mysql_root_exec "CREATE DATABASE IF NOT EXISTS \`${db_name}\`;" || return 1
 
-    local credentials_file
-    credentials_file="${DB_CREDENTIALS_DIR}/${db_name}.conf"
-    _db_write_secret_file "$credentials_file" "DB_NAME=\"${db_name}\"
+    if _db_user_exists "$db_user"; then
+        existing_user=1
+    else
+        local db_password escaped_db_password
+        db_password="$(openssl rand -base64 24)"
+        escaped_db_password="$(_db_escape_sql_string "$db_password")"
+
+        _db_mysql_root_exec "CREATE USER '${db_user}'@'localhost' IDENTIFIED BY '${escaped_db_password}';" || return 1
+        _db_mysql_root_exec "GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, DROP ON \`${db_name}\`.* TO '${db_user}'@'localhost'; FLUSH PRIVILEGES;" || return 1
+
+        if ! MYSQL_PWD="$db_password" mysql --protocol=socket -u "$db_user" -D "$db_name" -e "SELECT 1;" > /dev/null 2>&1; then
+            print_error "Database user '${db_user}' was created but login verification failed."
+            log_error "create_db_user: login verification failed for '${db_user}'@localhost on db '${db_name}'"
+            return 1
+        fi
+
+        _db_write_secret_file "$credentials_file" "DB_NAME=\"${db_name}\"
 DB_USER=\"${db_user}\"
 DB_PASSWORD=\"${db_password}\""
 
-    print_ok "Database '${db_name}' and user '${db_user}' created."
-    print_ok "Credentials saved to ${credentials_file} (0600)."
-    log_info "create_db_user: user '${db_user}'@localhost created on db '${db_name}'; creds=${credentials_file}"
+        if [[ "$legacy_credentials_file" != "$credentials_file" && -f "$legacy_credentials_file" ]]; then
+            local legacy_db_user
+            legacy_db_user=$(grep -E '^DB_USER=' "$legacy_credentials_file" | head -1 | cut -d'=' -f2- | tr -d '"' )
+            if [[ "$legacy_db_user" == "$db_user" ]]; then
+                rm -f "$legacy_credentials_file"
+            fi
+        fi
+
+        print_ok "Database '${db_name}' and user '${db_user}' created."
+        print_ok "Credentials saved to ${credentials_file} (0600, owner $(_db_secret_owner))."
+        log_info "create_db_user: user '${db_user}'@localhost created on db '${db_name}'; creds=${credentials_file}"
+        return 0
+    fi
+
+    _db_mysql_root_exec "GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, DROP ON \`${db_name}\`.* TO '${db_user}'@'localhost'; FLUSH PRIVILEGES;" || return 1
+
+    if [[ -f "$credentials_file" ]]; then
+        print_ok "Database '${db_name}' already exists; privileges for '${db_user}'@localhost refreshed."
+        print_ok "Existing credentials preserved at ${credentials_file}."
+    elif [[ "$legacy_credentials_file" != "$credentials_file" && -f "$legacy_credentials_file" ]]; then
+        local legacy_db_user legacy_content
+        legacy_db_user=$(grep -E '^DB_USER=' "$legacy_credentials_file" | head -1 | cut -d'=' -f2- | tr -d '"' )
+        if [[ "$legacy_db_user" == "$db_user" ]]; then
+            legacy_content="$(cat "$legacy_credentials_file")"
+            _db_write_secret_file "$credentials_file" "$legacy_content"
+            rm -f "$legacy_credentials_file"
+            print_ok "Database '${db_name}' already exists; privileges for '${db_user}'@localhost refreshed."
+            print_ok "Legacy credentials moved to ${credentials_file}."
+        else
+            print_ok "Database '${db_name}' already exists; privileges for '${db_user}'@localhost refreshed."
+            print_warn "User '${db_user}'@localhost already existed. Password was left unchanged."
+            print_warn "No new credentials file was written because OPS cannot safely recover the current password."
+        fi
+    else
+        print_ok "Database '${db_name}' already exists; privileges for '${db_user}'@localhost refreshed."
+        print_warn "User '${db_user}'@localhost already existed. Password was left unchanged."
+        print_warn "No new credentials file was written because OPS cannot safely recover the current password."
+    fi
+
+    log_info "create_db_user: existing user '${db_user}'@localhost granted access to db '${db_name}'"
 }
 
 # ── Public menu entry ─────────────────────────────────────────
@@ -788,7 +942,6 @@ db_install() {
 db_secure() {
     # F-15: Do NOT call install_mariadb here — that runs a full reinstall + unconditional
     # service_restart, which silently drops all active DB connections on a live server.
-    # Instead: apply only the hardening config and prompt before restarting.
     print_section "Re-harden MariaDB (no reinstall)"
     require_root || return 1
     _db_assert_not_rescue_mode || return 1
@@ -798,48 +951,68 @@ db_secure() {
         return 1
     fi
 
+    _db_apply_sql_security_baseline || return 1
+    _db_set_bind_localhost || return 1
     _db_apply_security_hardening
     _db_setup_ssl
     _db_setup_logging
+    _db_validate_mariadb_config || return 1
 
+    local _secure_active_conn
+    _secure_active_conn="$(_db_active_connection_count)"
     echo ""
     print_warn "MariaDB must restart to apply the new hardening settings."
+    print_warn "  So ket noi dang active : ${_secure_active_conn}"
     print_warn "This will briefly drop all active database connections."
     if prompt_confirm "Restart MariaDB now?"; then
         service_restart mariadb
         print_ok "MariaDB restarted with hardened configuration."
-        log_info "db_secure: hardening applied; MariaDB restarted"
+        log_info "db_secure: hardening applied; MariaDB restarted (active_conn=${_secure_active_conn})"
     else
         print_warn "Restart skipped. Settings will take effect on next MariaDB restart."
-        log_info "db_secure: hardening applied; restart skipped (operator choice)"
+        log_info "db_secure: hardening applied; restart skipped (active_conn=${_secure_active_conn})"
     fi
 }
 
 db_apply_tuning() {
+    local _tune_active_conn
+
     # P-01 fix: DB_TUNING_NO_RESTART=1 prevents tune_mariadb from restarting
     # MariaDB internally — avoids a double restart when db_apply_tuning also
     # restarts at the end after all blocks are written.
     DB_TUNING_NO_RESTART=1 tune_mariadb
+    _db_set_bind_localhost || return 1
     _db_apply_security_hardening
     _db_setup_ssl
     _db_setup_logging
-
-    # P-01 fix: validate the assembled config BEFORE restarting MariaDB.
-    # Catching a malformed config here prevents a failed restart from taking
-    # MariaDB offline. mysqld --verbose --help parses the config and exits.
-    if ! mysqld --defaults-extra-file="$MARIADB_TUNING_CNF" \
-            --verbose --help > /dev/null 2>&1; then
-        print_error "P-01: MariaDB config validation failed — NOT restarting."
-        print_error "      Check ${MARIADB_TUNING_CNF} and run 'db_apply_tuning' again."
-        log_error "db_apply_tuning: mysqld config validation failed — restart skipped"
-        return 1
-    fi
+    _db_validate_mariadb_config || return 1
 
     # Resize ib_logfile* if innodb_log_file_size changed vs what's on disk.
-    _db_innodb_log_resize_if_needed
+    _db_innodb_log_resize_if_needed || return 1
+    if [[ "${DB_REDO_RESIZE_PENDING:-0}" == "1" ]]; then
+        print_warn "MariaDB restart skipped because redo-log resize was not confirmed."
+        print_warn "Config moi (${MARIADB_TUNING_CNF}) da duoc ghi, bind-address baseline da duoc re-assert, nhung restart van pending."
+        log_info "db_apply_tuning: restart skipped pending redo-log resize confirmation (tier=${OPS_TIER:-M})"
+        return 0
+    fi
+
+    _tune_active_conn="$(_db_active_connection_count)"
+    echo ""
+    print_warn "MariaDB restart can thiet de ap dung config tuning moi."
+    print_warn "  So ket noi dang active : ${_tune_active_conn}"
+    print_warn "  Thoi gian downtime uoc tinh: 3-10 giay"
+    print_warn "  Apps se gap loi 'MySQL server has gone away' trong khoang thoi gian nay."
+    echo ""
+    if ! prompt_confirm "Restart MariaDB ngay bay gio de ap dung tuning?"; then
+        print_warn "Restart skipped. Config moi (${MARIADB_TUNING_CNF}) da duoc ghi."
+        print_warn "Chay 'systemctl restart mariadb' vao thoi diem phu hop de ap dung."
+        log_info "db_apply_tuning: restart skipped by operator (active_conn=${_tune_active_conn}, tier=${OPS_TIER:-M})"
+        return 0
+    fi
+
     service_restart mariadb
     print_ok "MariaDB fully re-hardened and restarted."
-    log_info "db_apply_tuning: tuning applied and MariaDB restarted (tier=${OPS_TIER:-M})"
+    log_info "db_apply_tuning: tuning applied and MariaDB restarted (active_conn=${_tune_active_conn}, tier=${OPS_TIER:-M})"
 }
 
 # db_audit — show current compliance status for all OPS-managed settings.
@@ -965,7 +1138,7 @@ db_drop() {
     fi
 
     # F-23: Scan credentials dir for any OPS-managed app that uses this database.
-    local cred_file registered_apps=()
+    local cred_file registered_apps=() credential_files_to_remove=()
     if [[ -d "$DB_CREDENTIALS_DIR" ]]; then
         for cred_file in "${DB_CREDENTIALS_DIR}"/*.conf; do
             [[ -f "$cred_file" ]] || continue
@@ -973,6 +1146,7 @@ db_drop() {
             file_db_name=$(grep -E '^DB_NAME=' "$cred_file" | head -1 | cut -d'=' -f2- | tr -d '"'"'" )
             if [[ "$file_db_name" == "$db_name" ]]; then
                 registered_apps+=("$(basename "$cred_file")")
+                credential_files_to_remove+=("$cred_file")
             fi
         done
     fi
@@ -999,8 +1173,18 @@ db_drop() {
     fi
 
     _db_mysql_root_exec "DROP DATABASE IF EXISTS \`${db_name}\`;"
+
+    local removed_credential_count=0
+    if [[ "${#credential_files_to_remove[@]}" -gt 0 ]]; then
+        for cred_file in "${credential_files_to_remove[@]}"; do
+            rm -f "$cred_file"
+            (( removed_credential_count++ )) || true
+        done
+        print_ok "Matching OPS credential file(s) removed: ${removed_credential_count}"
+    fi
+
     print_ok "Database dropped: ${db_name}"
-    log_info "db_drop: dropped database '${db_name}'"
+    log_info "db_drop: dropped database '${db_name}' (removed_credential_files=${removed_credential_count})"
 }
 
 db_list() {

@@ -327,26 +327,29 @@ Menu 8 la umbrella cho cac cong cu AI tren server.
 | Menu | Chuc nang |
 |---|---|
 | 1) Install Codex CLI | npm global install |
-| 2) Configure | API key + endpoint + model |
-| 3) Enable/disable auto env | Tu load env khi SSH |
-| 4) Test | Gui test query |
+| 2) Configure | Chon mode: CLIProxyAPI / OpenAI API key / ChatGPT OAuth / custom endpoint |
+| 3) Enable/disable auto env | Tu load `OPENAI_API_KEY` tu managed block trong `~/.bash_profile` |
+| 4) Test | Version check + config path + local endpoint reachability khi dung CLIProxyAPI |
 
-- Config: `/etc/ops/codex-cli.conf`
-- API key: `/etc/ops/.codex-api-key` (0600)
+- Config state: `/etc/ops/codex-cli.conf`
+- Canonical local key: `/etc/ops/.cli-proxy-api-key`
+- Canonical direct/custom key: `/etc/ops/.codex-api-key` (0600)
+- Runtime config: `~/.codex/config.toml` (0600, khong la canonical secret store)
 
 ### 8 -> 2) Claude Code CLI Integration
 
 | Menu | Chuc nang |
 |---|---|
 | 1) Install Claude Code CLI | `npm install -g @anthropic-ai/claude-code` |
-| 2) Configure | ANTHROPIC_BASE_URL, API key, model -> ghi vao `~/.bashrc` |
-| 3) Test | Version check + endpoint reachability |
-| 4) Install Vietnamese fix | Patch locale tu external repo |
+| 2) Configure | `ANTHROPIC_BASE_URL`, model -> managed `~/.bashrc` block doc `~/.claude-api-key` |
+| 3) Test | Version check + endpoint reachability + secret-file presence status |
+| 4) Install Vietnamese fix | External repo; canh bao va bat xac nhan truoc khi chay code third-party |
 | 5) Claude Code Telegram Bot | Submenu: install / configure / start / stop / status |
 
 - Config state: `/etc/ops/claude-code.conf` (0640)
-- API key: luu trong `~/.bashrc` cua admin user (khong luu vao `/etc/ops`)
+- Canonical API key: `~/.claude-api-key` (0600)
 - Telegram bot dir: `~/claude-telegram/`, env: `~/claude-telegram/.env` (0600)
+- Telegram bot fallback PID/log: `~/claude-telegram/claude-telegram-bot.pid`, `~/claude-telegram-bot.log`
 
 ---
 

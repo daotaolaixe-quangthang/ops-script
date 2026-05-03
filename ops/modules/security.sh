@@ -1224,6 +1224,24 @@ security_restore_finalize_backups() {
     security_rollback_sshd_config "$@"
 }
 
+security_finalize_ssh_transition_preflight() {
+    local final_pw_auth admin_user
+    final_pw_auth="$(ops_conf_get "ops.conf" "OPS_SSH_PASSWORD_AUTH" 2>/dev/null || true)"
+    admin_user="$(security_get_admin_user)"
+
+    if [[ "$final_pw_auth" != "no" ]]; then
+        print_error "Cannot finalize SSH transition while PasswordAuthentication is still enabled for the final steady state."
+        print_error "Use Security -> Manage SSH Keys and choose 'Disable PasswordAuthentication after transition completes' first."
+        return 1
+    fi
+
+    if ! _security_has_authorized_keys "$admin_user"; then
+        print_error "Cannot finalize SSH transition: no valid SSH key is authorized for '${admin_user}'."
+        print_error "Add a key first in Security -> Manage SSH Keys, then retry finalization."
+        return 1
+    fi
+}
+
 security_finalize_ssh_transition_apply() {
     security_require_root || return 1
 
@@ -1235,14 +1253,14 @@ security_finalize_ssh_transition_apply() {
     fi
 
     local new_port old_port admin_user server_ip ssh_service
-    local prev_locked_port prev_transition_port prev_root_login prev_password_auth prev_runtime_user prev_tcp_forwarding current_tcp_forwarding
+    local prev_locked_port prev_transition_port prev_root_login prev_runtime_user prev_tcp_forwarding current_tcp_forwarding
+    local final_pw_auth="no"
     new_port=$(security_get_locked_ssh_port)
     old_port=$(security_get_transition_port)
     ssh_service=$(security_detect_ssh_service)
     prev_locked_port="$new_port"
     prev_transition_port="$old_port"
     prev_root_login="$(ops_conf_get "ops.conf" "OPS_SSH_ROOT_LOGIN" 2>/dev/null || true)"
-    prev_password_auth="$(ops_conf_get "ops.conf" "OPS_SSH_PASSWORD_AUTH" 2>/dev/null || true)"
     prev_runtime_user="$(ops_conf_get "ops.conf" "OPS_RUNTIME_USER" 2>/dev/null || true)"
     prev_tcp_forwarding="$(ops_conf_get "ops.conf" "OPS_SSH_TCP_FORWARDING" 2>/dev/null || true)"
     current_tcp_forwarding="${prev_tcp_forwarding:-$(security_get_tcp_forwarding)}"
@@ -1252,15 +1270,7 @@ security_finalize_ssh_transition_apply() {
         return 0
     fi
 
-    # Default must be 'yes' (safe), not 'no'. If OPS_SSH_PASSWORD_AUTH is absent
-    # from ops.conf (partial wizard run), defaulting to 'no' would lock out operators
-    # who have no SSH key. 'yes' lets them log in and reconfigure safely.
-    local final_pw_auth
-    final_pw_auth="$prev_password_auth"
-    if [[ -z "$final_pw_auth" ]]; then
-        final_pw_auth="yes"
-        print_warn "OPS_SSH_PASSWORD_AUTH not found in ops.conf — defaulting to 'yes' (safe). Set explicitly via Security → Manage SSH Keys."
-    fi
+    security_finalize_ssh_transition_preflight || return 1
 
     local sshd_backup include_state_snapshot ufw_state_snapshot fail2ban_state_snapshot=""
     sshd_backup="$(backup_file "$SECURITY_SSHD_CONFIG" 2>/dev/null | tail -n1 || true)"
@@ -1327,6 +1337,8 @@ security_finalize_ssh_transition() {
         print_warn "No SSH transition port is currently recorded."
         return 0
     fi
+
+    security_finalize_ssh_transition_preflight || return 1
 
     print_warn "Only continue after you confirmed SSH login works on port ${new_port}."
     if ! prompt_confirm "Finalize SSH transition and remove old port ${old_port}?"; then
@@ -1516,7 +1528,7 @@ security_manage_ssh_keys() {
                     ops_conf_set "ops.conf" "OPS_SSH_PASSWORD_AUTH" "yes"
                     print_ok "PasswordAuthentication enabled. SSH reloaded."
                     if [[ -n "$_pw_transition_port" && "$_pw_transition_port" != "$pw_port" ]]; then
-                        print_warn "Active SSH transition detected. PasswordAuthentication will remain enabled now and after finalize."
+                        print_warn "Active SSH transition detected. Finalize will remain blocked until PasswordAuthentication is disabled again."
                     fi
                 fi
                 ;;

@@ -134,7 +134,9 @@ Submenu:
 7. Remove Cloudflare IP restrict
 0. Back
 
-> Note: "Block direct http://IP access" is handled automatically by the default deny server block (`00-default-deny`) which Nginx applies to all unmatched hosts. No separate menu action is needed.
+> Note: Hai action snippet tren chi tao/cap nhat file trong `/etc/nginx/snippets/`. Chung chi co hieu luc khi site config explicit `include` snippet tuong ung.
+>
+> Note: "Block direct http://IP access" is handled automatically by the default deny server block (`00-default-deny`) which Nginx applies to all unmatched hosts. OPS also maintains the fallback self-signed cert/key at `/etc/nginx/ssl/ops-default.crt` and `/etc/nginx/ssl/ops-default.key` for its 443 default server. No separate menu action is needed.
 
 **Add new domain flow (chốt):**
 
@@ -309,9 +311,20 @@ Submenu:
 Key requirements:
 
 - Support multiple versions: 7.4, 8.1, 8.2, 8.3 (via `ppa:ondrej/php`).
-- PHP-FPM pool naming: `/etc/php/<ver>/fpm/pool.d/<site-name>.conf`, socket `/run/php/php<ver>-fpm-<site-name>.sock`.
+- PHP domains use an **explicit pool name** contract. The add-domain flow asks for `PHP version + pool name`, defaulting the pool name to the domain.
+- The same pool identity must drive all PHP state:
+  - `/etc/php/<ver>/fpm/pool.d/<pool>.conf`
+  - `/run/php/php<ver>-fpm-<pool>.sock`
+  - `/etc/ops/php-sites/<pool>.conf`
+  - `DOMAIN_PHP_POOL` in `/etc/ops/domains/<domain>.conf`
+- Editing a PHP domain version must keep the stored pool name stable; only the PHP version/socket changes.
+- Re-running pool configuration refreshes OPS-managed keys but preserves existing custom per-pool directives such as `env[]`, `php_admin_value`, and `php_admin_flag` entries, including when the pool is migrated to another PHP version.
+- PHP add/remove domain flows are transactional: if the PHP or Nginx commit step fails, OPS restores the previous PHP pool, vhost, and domain state instead of leaving orphaned state behind.
 - PHP-FPM pools must be tuned based on RAM/CPU using `docs/reference/PERF-TUNING.md`.
-- Domain creation for PHP sites must allow choosing a specific PHP version.
+- Security-sensitive hardening (`disable_functions`, `allow_url_fopen = Off`, `allow_url_include = Off`, `display_errors = Off`, `expose_php = Off`, `log_errors = On`) applies to **FPM only**. CLI keeps common tuning plus `opcache.enable_cli` and is switched separately via **Set default PHP CLI version**.
+- `pm.status_path` / `ping.path` are intentionally omitted from the default pool baseline. If you re-enable them, the matching Nginx location must stay restricted to `127.0.0.1` only.
+- Removing a PHP version is blocked while it is still referenced by any managed domain, any `/etc/ops/php-sites/*.conf`, or the current default CLI.
+- PHP verify output should show the default CLI version, the target `/usr/bin/php<ver>` version, `php-fpm<ver> -t`, the `php<ver>-fpm` service status, and domain contract checks across `DOMAIN_PHP_POOL`, pool file, socket, and `fastcgi_pass`.
 
 ---
 
@@ -334,11 +347,12 @@ Submenu:
 
 Constraints:
 
-- Default engine: **MariaDB** (chốt). MySQL chỉ cài nếu operator chọn rõ.
+- Default engine: **MariaDB** (chốt).
 - `bind-address = 127.0.0.1` luôn được đặt (MariaDB chỉ phục vụ nội bộ VPS).
-- Secure setup equivalent to or stricter than `mysql_secure_installation`.
+- Secure setup equivalent to or stricter than `mysql_secure_installation`, voi root baseline dung `unix_socket`.
 - Tuning values derived from `docs/reference/PERF-TUNING.md`.
-- DB root password lưu tại `/etc/ops/.db-root-password` (0600) — không in ra terminal.
+- OPS-managed app credentials lưu tại `/etc/ops/db-credentials/<db>__<user>.conf` (`0600`, owner admin user).
+- `/etc/ops/.db-root-password` chi la file legacy/fallback khi host van dung password auth cho root — không in ra terminal.
 
 ---
 
@@ -356,23 +370,23 @@ Top-level submenu:
 #### 9a. Codex CLI submenu (`menu_codex_cli`)
 
 1. **Install Codex CLI** — `npm install -g @openai/codex`
-2. **Configure Codex for this server** — endpoint, API key, model
-3. **Enable / disable Codex CLI auto environment** — source env on shell login
-4. **Test Codex CLI** — send test query
+2. **Configure Codex for this server** — chon 1 trong 4 mode: CLIProxyAPI, OpenAI API key, ChatGPT OAuth, custom endpoint
+3. **Enable / disable Codex CLI auto environment** — managed `OPENAI_API_KEY` loader block in admin `~/.bash_profile`
+4. **Test Codex CLI** — version check + config path + CLIProxyAPI reachability check khi dung local mode
 0. **Back**
 
-Config: `/etc/ops/codex-cli.conf` | API key: `/etc/ops/.codex-api-key` (0600)
+Config state: `/etc/ops/codex-cli.conf` | Local key: `/etc/ops/.cli-proxy-api-key` | Direct/custom key: `/etc/ops/.codex-api-key` (0600)
 
 #### 9b. Claude Code CLI submenu (`menu_claude_cli`)
 
 1. **Install Claude Code CLI** — `npm install -g @anthropic-ai/claude-code`
-2. **Configure environment Claude for this server** — `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` written to admin `~/.bashrc`
-3. **Test Claude Code CLI** — version check + endpoint reachability
-4. **Install Vietnamese fix for Claude Code CLI** — apply locale patch from external repo
+2. **Configure environment Claude for this server** — `ANTHROPIC_BASE_URL` + `ANTHROPIC_MODEL` written to a managed admin `~/.bashrc` block that reads `~/.claude-api-key`
+3. **Test Claude Code CLI** — version check + endpoint reachability + secret-file presence status
+4. **Install Vietnamese fix for Claude Code CLI** — external repo; warns and requires confirmation before executing third-party code
 5. **Claude Code Telegram Bot** -> submenu (install / configure / start / stop / status)
 0. **Back**
 
-Config state: `/etc/ops/claude-code.conf` (0640) | API key stored in admin `~/.bashrc` (not in `/etc/ops`)
+Config state: `/etc/ops/claude-code.conf` (0640) | API key: `~/.claude-api-key` (0600) | Telegram bot dir: `~/claude-telegram/`
 
 ---
 

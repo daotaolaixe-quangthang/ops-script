@@ -67,10 +67,14 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
 
 - **Pattern**:
   - PHP CLI version khac PHP-FPM version cua site
+  - pool/socket cua domain bi suy ra lai tu domain slug thay vi dung explicit pool name da luu trong OPS state
 - **Rui ro**:
   - debug sai huong
+  - wrong `fastcgi_pass`, orphaned pool, stale `/etc/ops/php-sites/*.conf` khi edit/remove domain
 - **Safe action**:
-  - verify ca CLI, pool, fastcgi mapping
+  - verify dong thoi: default `php -v`, target `/usr/bin/php<ver> -v`, `php-fpm<ver> -t`, va `systemctl status php<ver>-fpm`
+  - verify `DOMAIN_PHP_POOL`, pool file, socket, va Nginx `fastcgi_pass` cung tro ve cung 1 explicit pool name
+  - khi edit/remove domain, uu tien pool name da luu trong state; chi fallback parse socket/slug cho legacy state cu
 
 ## 7) Config rewrite lam vo syntax
 
@@ -152,12 +156,12 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
 ## 14) Secret files permissions drift
 
 - **Pattern**:
-  - `/etc/ops/.cli-proxy-api-key`, `/etc/ops/.db-root-password`, `/etc/ops/.codex-api-key`
-    bi su dung trong script va vu tinh doi permission hoac owned by root
+  - `/etc/ops/.cli-proxy-api-key`, `/etc/ops/.db-root-password`, `/etc/ops/.codex-api-key`, hoac
+    `/etc/ops/db-credentials/*.conf` bi su dung trong script va vo tinh doi permission hoac owned by root
 - **Rui ro**:
   - admin user khong doc duoc secret, hoac secret bi lo neu group-readable
 - **Safe action**:
-  - Chay sau moi install/update: `ls -la /etc/ops/.*` verify 0600 owned by admin user
+  - Chay sau moi install/update: `ls -la /etc/ops/.* /etc/ops/db-credentials 2>/dev/null` verify 0600 admin-owned files
   - Bat ky script nao ghi file secret phai co: `chmod 600 <file> && chown $ADMIN_USER:$ADMIN_USER <file>`
 
 ## 15) Verify action exit non-zero lam menu loop thoat
@@ -210,11 +214,12 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
 
 ## 16) PHP disable_functions breaking existing apps
 
-- **Pattern**: OPS sets `disable_functions` in `php.ini`; existing app calls `exec()`, `shell_exec()`, or `system()`.
+- **Pattern**: OPS sets `disable_functions` in the FPM hardening baseline; existing app calls `exec()`, `shell_exec()`, or `system()`.
 - **Risk**: App breaks silently (PHP logs error, browser sees 500 since `display_errors=Off`).
 - **Safe action**:
   - After PHP tuning, check app-specific PHP error logs (`/var/log/php*.log`, `/var/log/nginx/*.error.log`).
   - If an app legitimately needs one of the blocked functions, add a **per-pool** `php_admin_value disable_functions ""` override inside that pool's `.conf` file only.
+  - Re-running OPS pool configuration must keep that per-pool override in place; if it disappears after a rerun, treat that as a regression.
   - Do NOT globally re-enable `disable_functions` to fix one app.
 
 ## 17) PM2 startup configured as root
@@ -228,11 +233,12 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
 
 ## 18) allow_url_fopen = Off breaking app integrations
 
-- **Pattern**: OPS sets `allow_url_fopen = Off`; PHP app uses `file_get_contents('https://...')` for external API calls (e.g. payment gateway, SMS provider).
+- **Pattern**: OPS sets `allow_url_fopen = Off` in the FPM hardening baseline; PHP app uses `file_get_contents('https://...')` for external API calls (e.g. payment gateway, SMS provider).
 - **Risk**: External API calls silently return `false` or empty string; app behaves unexpectedly.
 - **Safe action**:
   - Replace `file_get_contents('https://...')` with a cURL implementation.
   - If a short-term workaround is needed, add `php_admin_value allow_url_fopen On` in that FPM pool's `.conf` file (not globally in `php.ini`).
+  - Re-running OPS pool configuration must preserve that pool-local override; if rerun deletes it, treat that as a regression.
   - Do NOT re-enable `allow_url_fopen` globally — it opens SSRF risk.
 
 ## 19) pm2 list shows empty when run as root
@@ -241,11 +247,11 @@ Muc tieu: liet ke cac pattern de AI Agent san loi tiem an va review thay doi an 
 - **Risk**: Appears as if no apps are running (false negative); operator may restart or reinstall running apps unnecessarily.
 - **Safe action**: Always invoke PM2 via `_node_run_as_runtime_user pm2 list` inside OPS scripts. When debugging manually: `su opsuser -c "HOME=/home/opsuser PM2_HOME=/home/opsuser/.pm2 pm2 ls"`.
 
-## 20) PM2 logs grow unbounded without pm2-logrotate
+## 20) PM2 logs drift: missing rotation or unwritable per-app log files
 
-- **Pattern**: `pm2-logrotate` not installed; `/var/log/ops/*.log` grows indefinitely without a size cap.
-- **Risk**: Disk fills up; log write failures can cause PM2 to crash processes or refuse to write error output.
-- **Safe action**: Install `pm2-logrotate` immediately after PM2: `pm2 install pm2-logrotate`. OPS `node_install_pm2` does this automatically.
+- **Pattern**: `pm2-logrotate` not installed; hoac PM2 app logs duoi `/var/log/ops/pm2-<app>-{out,err}.log` khong duoc pre-create/chown cho runtime user truoc `pm2 start`.
+- **Risk**: Disk fills up; hoac PM2 khong mo/ghi duoc log file ngay lan start dau tien, lam mat log va kho debug runtime failures.
+- **Safe action**: Install `pm2-logrotate` ngay sau PM2; pre-create va `chown` per-app PM2 log files cho runtime user truoc `pm2 start`; monitoring baseline phai reconcile lai log files cho app da ton tai.
 
 ## 21) PM2 log filenames get -0 suffix when merge_logs missing
 

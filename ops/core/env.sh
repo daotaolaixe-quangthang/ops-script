@@ -168,6 +168,36 @@ ops_conf_set() {
     mv "$tmp" "$conf_file"
 }
 
+# Usage: ops_conf_unset <filename> <KEY>
+ops_conf_unset() {
+    local conf_name="$1"
+    local conf_file="$OPS_CONFIG_DIR/$conf_name"
+    local key="$2"
+    local tmp line found=0
+
+    _ops_valid_conf_key "$key" || return 1
+    [[ -f "$conf_file" ]] || return 0
+
+    tmp=$(mktemp "${conf_file}.tmp.XXXXXX")
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" == "${key}="* ]]; then
+            found=1
+            continue
+        fi
+        printf '%s\n' "$line" >> "$tmp"
+    done < "$conf_file"
+
+    if [[ "$found" -eq 0 ]]; then
+        rm -f "$tmp"
+        return 0
+    fi
+
+    chmod --reference="$conf_file" "$tmp" 2>/dev/null || true
+    chown --reference="$conf_file" "$tmp" 2>/dev/null || true
+    mv "$tmp" "$conf_file"
+}
+
 # ── OPS config reader ─────────────────────────────────────────
 # Usage: ops_conf_get <filename> <KEY>
 # Prints the value; returns empty string if key not found.

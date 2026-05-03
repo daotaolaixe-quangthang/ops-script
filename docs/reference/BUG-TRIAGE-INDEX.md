@@ -125,15 +125,16 @@ Nguyen tac:
   - `PERF-TUNING.md`
   - `SOURCE-TO-RUNTIME-TRACE.md`
 - **Runtime state can xem**:
-  - **MariaDB** service (default) hoac MySQL
+  - **MariaDB** service (default)
   - `/etc/mysql/mariadb.conf.d/50-server.cnf` (bind-address=127.0.0.1)
   - server config + created DB/users
-  - `/etc/ops/.db-root-password` (0600) neu can root password
+  - `/etc/ops/db-credentials/<db>__<user>.conf` cho OPS-managed app secrets
+  - `/etc/ops/.db-root-password` (0600) chi neu host legacy dang dung root password auth
 - **Verify**:
   - login DB
   - service status
   - app ket noi thanh cong
-  - `mysql -u root -p < /etc/ops/.db-root-password` hoac socket auth
+  - `sudo mysql` theo socket baseline, hoac file secret fallback neu host legacy van dung password auth
 - **Rollback**:
   - revert config, restart DB, xoa user/db tao nham neu can
 

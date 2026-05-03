@@ -141,7 +141,7 @@ Khuyen nghi:
 | NODE-01 | Install Node LTS + PM2 | Host chua co Node | Chay wizard/module | Node LTS va PM2 cai thanh cong |
 | NODE-02 | PM2 startup khong chay duoi root | PM2 da cai | Kiem tra unit | Co `pm2-<runtime_user>.service`, khong co `pm2-root.service` |
 | NODE-03 | `pm2 list` trong OPS dung runtime user | Co app da chay | List app tu menu | Hien dung app, khong false empty |
-| NODE-04 | Add Node app | Co source app | Add app qua menu | Tao state file, ecosystem, PM2 process online |
+| NODE-04 | Add Node app | Co source app | Add app qua menu | Tao state file, ecosystem, PM2 process online; pre-create `/var/log/ops/pm2-<pm2_name>-out.log` va `...-err.log` owned by runtime user |
 | NODE-05 | Restart app | Co app trong PM2 | Restart qua menu | App restart thanh cong, khong mat state |
 | NODE-06 | Show logs | Co app co log | Xem logs qua menu | Hien log dung app, khong crash |
 | NODE-07 | Remove app | Co app da register | Remove qua menu | Xoa process + state, backup conf neu co |
@@ -156,7 +156,7 @@ Khuyen nghi:
 | CPA-01 | Install CLIProxyAPI | Host co curl/tar, systemd san sang | Chay install CLIProxyAPI | Binary vao `/opt/cli-proxy-api`, service online |
 | CPA-02 | CLIProxyAPI bind localhost only | CLIProxyAPI da cai | Kiem tra port listen | Chi bind `127.0.0.1:8317` |
 | CPA-03 | Secret files dung permission | CLIProxyAPI da cai | Kiem tra `/etc/ops/.cli-proxy-api-key` | File `0600`, owner admin user |
-| CPA-04 | Link CLIProxyAPI vao domain | Domain san DNS | Chay link domain | Nginx proxy `127.0.0.1:8317`, `proxy_buffering off` |
+| CPA-04 | Link CLIProxyAPI vao domain | Domain san DNS | Chay link domain | Nginx proxy `127.0.0.1:8317`, `proxy_buffering off`, HTTP vhost co ca `listen 80;` va `listen [::]:80;` |
 | CPA-05 | Verify CLIProxyAPI khi local ok, public qua nginx | CLIProxyAPI va nginx active | Chay verify + curl local/public | `/v1/models` tra JSON local, public di qua Nginx |
 | CPA-06 | Toggle API key requirement | CLIProxyAPI da cai | Enable/Disable API key requirement | `config.yaml` va `/etc/ops/cli-proxy-api.conf` cap nhat dung, service restart |
 | CPA-07 | Update CLIProxyAPI giu config va state | CLIProxyAPI da co du lieu | Chay update | Binary duoc cap nhat, config/state duoc preserve |
@@ -172,23 +172,23 @@ Khuyen nghi:
 
 | ID | Test case | Preconditions | Steps | Expected result |
 |---|---|---|---|---|
-| PHP-01 | Cai duoc cac version muc tieu | Host sach | Cai PHP 7.4/8.1/8.2/8.3 | Package va service FPM len dung |
-| PHP-02 | CLI va FPM mapping dung | Co site PHP | Kiem tra version CLI, pool, fastcgi | Khong mismatch ngoai y muon |
-| PHP-03 | Tao PHP site | PHP-FPM active | Add domain backend PHP | Site response dung qua socket/pool |
-| PHP-04 | App co `disable_functions` nhay bug | App mau dung `exec()` | Truy cap app sau hardening | Loi duoc phat hien trong logs; khong sua global vo toi va |
-| PHP-05 | App co `allow_url_fopen` dependency | App mau dung `file_get_contents('https://')` | Truy cap app | Phat hien regression va xu ly per-pool neu can |
-| PHP-06 | Pool override khong anh huong global | Da them override cho 1 site | Kiem tra site khac | Chi pool muc tieu thay doi |
+| PHP-01 | Cai/bo go version PHP an toan | Host sach hoac host da co site PHP | Cai PHP 7.4/8.1/8.2/8.3; thu remove version dang duoc su dung | Package va service FPM len dung; remove bi chan neu version van con duoc tham chieu boi `/etc/ops/domains/*.conf`, `/etc/ops/php-sites/*.conf`, hoac dang la CLI default |
+| PHP-02 | CLI/FPM mapping va diagnostic dung | Co site PHP dung pool name khac domain slug | Kiem tra `php -v`, `/usr/bin/php<ver> -v`, `php-fpm<ver> -t`, service status, pool file, socket, `fastcgi_pass` | Output phan biet ro default CLI vs target binary vs FPM; `DOMAIN_PHP_POOL`, pool file, socket, va Nginx `fastcgi_pass` cung tro ve cung 1 explicit pool name |
+| PHP-03 | Add/edit/remove PHP domain voi explicit pool name | PHP-FPM active | Add domain backend PHP, chon `PHP version + pool name`; doi version; remove domain | Add flow hoi dung version + pool; edit giu pool name on dinh khi doi version; remove domain xoa dung pool file va `/etc/ops/php-sites/<pool>.conf` ke ca khi pool name khac slug cua domain; neu add/remove commit fail thi OPS phuc hoi lai PHP + Nginx + domain state truoc do |
+| PHP-04 | Hardening FPM-only va status/ping lockdown | App mau dung `exec()` | Apply tuning, truy cap app, xem PHP/Nginx logs, inspect generated pool baseline | Loi duoc phat hien trong logs; hardening nam o FPM runtime, khong ep CLI runtime mang theo toan bo baseline security cua FPM; `pm.status_path` / `ping.path` mac dinh khong duoc mo public |
+| PHP-05 | Pool-local override persist qua refresh/migration | App mau can `file_get_contents('https://')` hoac custom flag | Apply tuning; them `php_admin_value allow_url_fopen On` va `php_admin_flag` cho pool; rerun pool config; doi pool sang PHP version khac | Workaround duoc scope theo tung pool va van ton tai sau refresh/version migration; custom `env[]`, `php_admin_value`, `php_admin_flag` khong bi OPS xoa |
+| PHP-06 | Rollback va FPM apply giam blast radius | Da them custom override; co bai test chu dong lam validate/reload fail | Rerun pool config va induce loi config co kiem soat; quan sat cach apply FPM | OPS restore pool/php.ini truoc do neu validate hoac reload/restart fail; uu tien `reload` khi `php-fpm` dang active; verify output show CLI/FPM + domain pool/socket/vhost contract; cac pool khac khong bi anh huong |
 
 ### 4.8 Database
 
 | ID | Test case | Preconditions | Steps | Expected result |
 |---|---|---|---|---|
-| DB-01 | Install MariaDB default | Host sach | Cai DB qua wizard/module | Service active, state file duoc ghi |
-| DB-02 | Root secret file dung permission | DB da cai | Kiem tra `/etc/ops/.db-root-password` | `0600`, owner admin user |
-| DB-03 | Secure setup khong vo app ket noi | Co app dung DB | Chay secure/tuning | App van ket noi duoc sau moi thay doi quan trong |
-| DB-04 | Bind address dung posture | DB da cai | Kiem tra config | Bind localhost theo baseline neu khong co yeu cau khac |
-| DB-05 | Tao DB/user | DB active | Tao DB + user | Dang nhap bang user moi duoc |
-| DB-06 | Backup helper dump DB | DB co du lieu | Chay backup helper | Dump file hop le, khong lo password ra log |
+| DB-01 | Install MariaDB default | Host sach | Cai DB qua wizard/module | Service active, state file duoc ghi, root baseline dung `unix_socket` |
+| DB-02 | OPS-managed DB secrets dung permission | DB da cai hoac da tao app user | Kiem tra `/etc/ops/db-credentials/*.conf` va `/etc/ops/.db-root-password` neu file legacy nay ton tai | Moi file secret la `0600`, owner admin user |
+| DB-03 | Secure/tuning flow can explicit outage acknowledgement | Co app dung DB | Chay `Secure/re-harden MariaDB` hoac `Apply tuning` | Co canh bao downtime + prompt xac nhan truoc restart; config duoc validate truoc moi restart path; neu redo-log resize chua duoc xac nhan thi OPS phai bo restart path hien tai |
+| DB-04 | Bind address dung posture | DB da cai | Kiem tra config; co the co drift co chu y roi chay `Secure/re-harden MariaDB` hoac `Apply tuning` | Bind localhost theo baseline neu khong co yeu cau khac; secure/tuning wrappers phai re-assert baseline nay |
+| DB-05 | Tao DB/user idempotent | DB active | Tao DB + user, sau do rerun cung db/user va thu case user da ton tai | Dang nhap bang user moi duoc; OPS chi persist credential khi password do thuc su duoc ap dung; credential file theo layout `<db>__<user>.conf`; rerun khong duoc ghi de password gia |
+| DB-06 | Backup helper dump DB | DB co du lieu | Chay backup helper single/all DB va review restore guidance | Dump file hop le, dump-all tao per-database `.sql.gz`, khong lo password ra log/terminal; restore guidance dung command hop le va re-apply lai perms/owner cho secret files + `db-credentials/` |
 
 ### 4.9 Monitoring, verify, logs, scheduler
 
@@ -199,16 +199,16 @@ Khuyen nghi:
 | MON-03 | Monitoring menu khong thoat khi 1 check fail | Gia lap service down | Vao System & Monitoring | Menu van song |
 | MON-04 | Scheduler/check scripts idempotent | Cron/timer da ton tai | Rerun install checks | Khong duplicate job |
 | MON-05 | Notification disable path an toan | Telegram chưa config | Chay test notification / disable | Khong crash, thong bao ro missing config |
-| MON-06 | Monitoring baseline reconcile dung log path + rotation | `logrotate` da co; co/khong co Nginx, PHP-FPM, PM2 | Chay `Setup Wizard -> Install Logging & Monitoring` | `/var/log/ops/ops.log` duoc bootstrap, `/etc/logrotate.d/ops` duoc reconcile; neu Nginx/PHP-FPM/PM2 da cai thi log rotation cho cac thanh phan do phai san sang, neu chua san sang thi step tra non-zero va khong duoc mark done |
+| MON-06 | Monitoring baseline reconcile dung log path + rotation | `logrotate` da co; co/khong co Nginx, PHP-FPM, PM2 | Chay `Setup Wizard -> Install Logging & Monitoring` | `/var/log/ops/ops.log` duoc bootstrap, `/etc/logrotate.d/ops` duoc reconcile; neu Nginx da cai thi `/etc/logrotate.d/nginx-ops` phai san sang; neu PM2 da cai thi per-app log files duoi `/var/log/ops/pm2-<app>-*.log` phai duoc reconcile cho runtime user; neu chua san sang thi step tra non-zero va khong duoc mark done |
 
 ### 4.10 Secrets, permissions, files
 
 | ID | Test case | Preconditions | Steps | Expected result |
 |---|---|---|---|---|
-| FILE-01 | Secret files luon 0600 | Da cai cac module co secret | Kiem tra `/etc/ops/.*` | Moi file secret la `0600`, owner admin user |
-| FILE-02 | Script khong in secret ra terminal | Chay install/configure secrets | Quan sat output/log | Khong xuat raw password/token |
+| FILE-01 | Secret files luon 0600 | Da cai cac module co secret | Kiem tra `/etc/ops/.*`, `/etc/ops/db-credentials/*.conf`, `~/.claude-api-key`, `~/claude-telegram/.env` neu ton tai | Moi file secret la `0600`, owner admin user |
+| FILE-02 | Script khong in secret ra terminal | Chay install/configure secrets | Quan sat output/log | Khong xuat raw password/token/API key, khong ghi raw key vao managed shell block |
 | FILE-03 | Config files shell-sourceable hop le | Co file `/etc/ops/*.conf` | Source/parse file | Khong vo syntax, key=value nhat quan |
-| FILE-04 | Backup truoc khi rewrite config quan trong | Sua SSH/Nginx/PHP/systemd config | Chay action | Co backup rollback duoc |
+| FILE-04 | Backup truoc khi rewrite config quan trong | Sua SSH/Nginx/PHP/systemd config hoac AI shell blocks | Chay action | Co backup rollback duoc; managed `.bashrc`/`.bash_profile` block van `bash -n` pass |
 | FILE-05 | Web root ownership dung | OPS tao PHP/static root | Kiem tra perm | `$ADMIN_USER:www-data`, mode mong doi |
 
 ## 5. Nhom hidden bug regression bat buoc
@@ -225,8 +225,8 @@ Day la nhom bug phai retest moi khi co thay doi lien quan, vi da xuat hien hoac 
 | REG-06 | CLIProxyAPI bi expose cong khai | sua module provider, nginx, ufw, verify |
 | REG-07 | PM2 startup chay root | sua node install, PM2 integration |
 | REG-08 | `pm2 list` false empty do sai runtime user | sua node menu, runtime wrappers |
-| REG-09 | Secret permission drift | sua module ghi file secret |
-| REG-10 | Config rewrite duplicate/sai vi tri lam vo syntax | sua logic `sed`, append, template rendering |
+| REG-09 | Secret permission drift (0600 + admin-owned cho OPS secrets, gom ca `/etc/ops/db-credentials/*.conf`) | sua module ghi file secret |
+| REG-10 | Config rewrite/restart drift: config duoc viet lai nhung khong validate truoc restart, khong rollback khi apply fail, hoac restart du chua xac nhan downtime | sua logic `sed`, append, template rendering, PHP pool/php.ini rewrite, DB/Nginx/SSH rewrite flows |
 | REG-11 | Nginx CLIProxyAPI vhost vo `proxy_buffering off` hoac proxy sai port | sua nginx hardening/template |
 | REG-12 | Log grow vo han / filename suffix drift | sua PM2 ecosystem, logrotate |
 | REG-15.1 | Menu boundary contract bi drift ve caller `|| true` hoac submenu thieu local wrapper | sua `bin/ops`, `menu_*`, wrapper/menu dispatch |
@@ -235,6 +235,8 @@ Day la nhom bug phai retest moi khi co thay doi lien quan, vi da xuat hien hoac 
 | REG-30 | Security state drift: persist `ops.conf` truoc khi live SSH/sysctl apply thanh cong, hoac mutate `authorized_keys` khong backup/dedup | sua `security.sh`, `setup-wizard.sh`, regression/docs lien quan |
 | REG-31 | Setup wizard drift: stale `WIZARD_DONE_*`, missing monitoring baseline, mat handoff PHP versions, hoac ghi `FULL_WIZARD` truoc khi verify pass | sua `setup-wizard.sh`, `monitoring.sh`, regression/docs lien quan |
 | REG-32 | CF DNS-01 credentials file format bi overwrite: `cloudflare.conf` bi ghi de bang INI format sau DNS-01 issuance, pha shell-sourceability | sua `nginx.sh` `_issue_ssl_dns01_cloudflare`, `ssl_set_cf_token`, hoac bat ky code nao ghi `CF_CREDS_FILE` |
+| REG-33 | AI shell secret drift: raw API key bi ghi thang vao managed `.bashrc`/`.bash_profile`, hoac profile path bi hardcode `/home/$ADMIN_USER` | sua `ai-agent.sh`, `codex-cli.sh`, docs/tests lien quan |
+| REG-34 | AI runtime docs drift: Claude/Codex secret path, Telegram PID/log path, hoac local endpoint mode docs lech runtime | sua `ai-agent.sh`, `codex-cli.sh`, docs/tests lien quan |
 
 ## 6. Quy trinh test khi them/chinh sua 1 chuc nang moi
 
@@ -353,8 +355,8 @@ Repo hien co shell regression harness contract-level tai:
 Pham vi cover hien tai:
 
 - `TUI-01..TUI-10`
-- `REG-01..REG-31`
-- contract/static coverage cho `SEC-01..SEC-09`, `INS-01..INS-09`, `WEB-01..WEB-10`, `NODE-01..NODE-10`, `PHP-01..PHP-06`, `DB-01..DB-06`, `CPA-01..CPA-08`, `MON-01..MON-05`, `FILE-01..FILE-04`
+- `REG-01..REG-32`
+- contract/static coverage cho `SEC-01..SEC-09`, `INS-01..INS-09`, `WEB-01..WEB-11`, `NODE-01..NODE-10`, `PHP-01..PHP-06`, `DB-01..DB-06`, `CPA-01..CPA-13`, `MON-01..MON-05`, `FILE-01..FILE-04`
 
 Muc dich:
 

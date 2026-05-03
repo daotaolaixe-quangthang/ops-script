@@ -88,6 +88,67 @@ _node_reconcile_app_ownership() {
     fi
 }
 
+_node_prepare_pm2_log_files() {
+    local pm2_name="$1"
+    local runtime_user log_dir out_file err_file
+
+    _node_require_runtime_user || return 1
+    _node_assert_pm2_name_safe "$pm2_name" || return 1
+
+    runtime_user="$(_node_runtime_user)"
+    log_dir="${OPS_LOG_DIR:-/var/log/ops}"
+    out_file="${log_dir}/pm2-${pm2_name}-out.log"
+    err_file="${log_dir}/pm2-${pm2_name}-err.log"
+
+    ensure_dir "$log_dir"
+    touch "$out_file" "$err_file"
+    chmod 640 "$out_file" "$err_file"
+    chown "${runtime_user}:${runtime_user}" "$out_file" "$err_file"
+}
+
+node_reconcile_pm2_log_files() {
+    local names=() app_name pm2_name
+
+    _node_require_runtime_user || return 1
+    mapfile -t names < <(_node_list_conf_names)
+    if [[ ${#names[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    for app_name in "${names[@]}"; do
+        local APP_NAME="" APP_PM2_NAME=""
+        _node_load_app_conf "$app_name" || return 1
+        pm2_name="${APP_PM2_NAME:-${APP_NAME:-$app_name}}"
+        _node_prepare_pm2_log_files "$pm2_name" || return 1
+    done
+}
+
+_node_assert_ecosystem_safe_value() {
+    local label="$1"
+    local value="$2"
+
+    case "$value" in
+        *$'\n'*|*$'\r'*|*'"'*|*'\\'*)
+            print_error "${label} must not contain backslashes, double quotes, or newlines."
+            return 1
+            ;;
+    esac
+
+    return 0
+}
+
+_node_assert_pm2_name_safe() {
+    local pm2_name="$1"
+
+    _node_assert_ecosystem_safe_value "PM2 process name" "$pm2_name" || return 1
+    if [[ "$pm2_name" == *'/'* ]]; then
+        print_error "PM2 process name must not contain slashes."
+        return 1
+    fi
+
+    return 0
+}
+
 # _node_list_conf_names: lists registered app names (from /etc/ops/apps/*.conf)
 _node_list_conf_names() {
     local apps_dir
@@ -389,6 +450,10 @@ node_add_app() {
 
     prompt_input "App directory (absolute path, e.g. /srv/apps/myapp)"
     local app_dir="$REPLY"
+    _node_assert_ecosystem_safe_value "App directory" "$app_dir" || return 1
+    if [[ "$app_dir" != "/" ]]; then
+        app_dir="${app_dir%/}"
+    fi
     if [[ ! -d "$app_dir" ]]; then
         print_warn "Directory does not exist: $app_dir"
         if ! prompt_confirm "Create it now?"; then
@@ -400,6 +465,7 @@ node_add_app() {
 
     prompt_input "Entry point (relative to app dir, e.g. dist/index.js)" "index.js"
     local app_entry="$REPLY"
+    _node_assert_ecosystem_safe_value "Entry point" "$app_entry" || return 1
 
     local app_port=""
     while true; do
@@ -433,10 +499,12 @@ node_add_app() {
 
     prompt_input "PM2 process name" "$app_name"
     local pm2_name="$REPLY"
+    _node_assert_pm2_name_safe "$pm2_name" || return 1
 
     local app_env="production"
     prompt_input "NODE_ENV" "$app_env"
     app_env="$REPLY"
+    _node_assert_ecosystem_safe_value "NODE_ENV" "$app_env" || return 1
 
     # Write /etc/ops/apps/<app>.conf
     _node_write_app_conf "$app_name" \
@@ -485,38 +553,38 @@ node_add_app() {
 
     if [[ "$_write_eco" -eq 1 ]]; then
         if [[ -f "$tpl" ]]; then
-            local app_path="${app_dir%/}/${app_entry}"
             render_template "$tpl" \
                 "APP_NAME=${pm2_name}" \
-                "APP_PATH=${app_path}" \
+                "APP_ENTRY=${app_entry}" \
+                "APP_DIR=${app_dir}" \
                 "APP_PORT=${app_port}" \
                 "INSTANCES=1" \
                 "EXEC_MODE=fork" \
                 "NODE_ENV=${app_env}" \
                 "MAX_MEMORY_RESTART=${max_mem}" \
                 "NODE_ARGS_MAX_OLD_SPACE=${_max_mem_mb}" \
-                > "$eco_dest"
+                | write_file "$eco_dest"
             print_ok "Rendered: $eco_dest"
         else
             # Inline fallback ecosystem.config.js
             # P4-B: kill_timeout 5000 (>=5s per SECURITY-RULES §8), merge_logs,
             # node_args --max-old-space-size derived from max_memory_restart ceiling.
             # (_max_mem_mb already calculated in the shared tier block above.)
-            cat > "$eco_dest" <<EOF
+            write_file "$eco_dest" <<EOF
 module.exports = {
   apps: [{
-    name:         '${pm2_name}',
-    script:       '${app_entry}',
-    cwd:          '${app_dir}',
+    name:         "${pm2_name}",
+    script:       "${app_entry}",
+    cwd:          "${app_dir}",
     env: {
-      NODE_ENV: '${app_env}',
-      PORT:     '${app_port}',
+      NODE_ENV: "${app_env}",
+      PORT:     ${app_port},
     },
     merge_logs:           true,
     listen_timeout:       10000,
     kill_timeout:         5000,
-    node_args:            '--max-old-space-size=${_max_mem_mb}',
-    max_memory_restart:   '${max_mem}',
+    node_args:            "--max-old-space-size=${_max_mem_mb}",
+    max_memory_restart:   "${max_mem}",
   }]
 };
 EOF
@@ -525,6 +593,7 @@ EOF
     fi # _write_eco
 
     _node_reconcile_app_ownership "$app_dir"
+    _node_prepare_pm2_log_files "$pm2_name"
 
     # Start with PM2
     log_info "Starting app with PM2 as runtime user: $(_node_runtime_user) -> pm2 start $eco_dest"

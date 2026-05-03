@@ -16,12 +16,14 @@ On an OPS-managed VPS, it is used as:
 - a companion tool for CLIProxyAPI workflows
 - an operator productivity tool for AI-assisted runbook execution
 
-**Two operation modes:**
+**Supported operation modes:**
 
 | Mode | Auth method | When to use |
 |---|---|---|
-| ChatGPT plan (Plus/Pro/Team) | OAuth login (browser) | If operator has ChatGPT subscription |
-| API key mode | `OPENAI_API_KEY` or custom endpoint | If using CLIProxyAPI or another OpenAI-compatible provider |
+| CLIProxyAPI local mode | `CLI_PROXY_API_KEY` loaded from `/etc/ops/.cli-proxy-api-key` | Recommended on OPS hosts using the local provider service |
+| OpenAI API mode | `OPENAI_API_KEY` loaded from `/etc/ops/.codex-api-key` | If using OpenAI directly |
+| Custom endpoint mode | `OPENAI_API_KEY` loaded from `/etc/ops/.codex-api-key` | If using another OpenAI-compatible provider |
+| ChatGPT OAuth | Browser login | If operator has ChatGPT subscription |
 
 ---
 
@@ -50,11 +52,14 @@ OPS manages these configuration paths:
 
 - `~/.codex/config.toml`
 - `/etc/ops/codex-cli.conf`
-- `/etc/ops/.codex-api-key`
+- `/etc/ops/.cli-proxy-api-key` (CLIProxyAPI mode)
+- `/etc/ops/.codex-api-key` (OpenAI API and custom endpoint modes)
+- admin `~/.bashrc` (managed loader block for `CLI_PROXY_API_KEY` in CLIProxyAPI mode)
+- admin `~/.bash_profile` (managed loader block for `OPENAI_API_KEY` when auto env is enabled)
 
 #### 3.1 Using with CLIProxyAPI (recommended on OPS VPS)
 
-When CLIProxyAPI is installed, Codex CLI should point to it as the API endpoint.
+When CLIProxyAPI is installed, Codex CLI points to it as the API endpoint.
 
 OPS writes `~/.codex/config.toml` with this format:
 
@@ -68,7 +73,7 @@ name = "CLIProxyAPI"
 base_url = "http://127.0.0.1:8317/v1"
 wire_api = "responses"
 env_key = "CLI_PROXY_API_KEY"
-env_key_instructions = "Set CLI_PROXY_API_KEY to your CLIProxyAPI api key"
+env_key_instructions = "Set CLI_PROXY_API_KEY to your CLIProxyAPI api key (from /etc/ops/.cli-proxy-api-key)"
 
 [profiles.max]
 model = "gpt-5.4"
@@ -80,15 +85,18 @@ model_provider = "cliproxyapi"
 ```
 
 Key notes:
-- `wire_api = "responses"` - tells Codex CLI to use Responses API format (not Chat Completions)
-- API key is NOT stored in config.toml. OPS exports `CLI_PROXY_API_KEY` in admin `~/.bashrc`
-- `model_provider` references the `[model_providers.cliproxyapi]` block by key name
-
-OPS also appends to `~/.bashrc`:
+- `wire_api = "responses"` tells Codex CLI to use Responses API format.
+- API key is NOT stored in `config.toml` or `codex-cli.conf`.
+- OPS keeps `/etc/ops/.cli-proxy-api-key` as the canonical secret and writes a managed loader block in admin `~/.bashrc`:
 
 ```bash
 # OPS: codex-cliproxyapi env
-export CLI_PROXY_API_KEY=<value from /etc/ops/.cli-proxy-api-key>
+if [[ -f /etc/ops/.cli-proxy-api-key ]]; then
+    export CLI_PROXY_API_KEY="$(tr -d '\r\n' < /etc/ops/.cli-proxy-api-key)"
+else
+    unset CLI_PROXY_API_KEY
+fi
+# OPS: codex-cliproxyapi env end
 ```
 
 OPS state:
@@ -100,19 +108,43 @@ CODEX_VERSION="<version>"
 CODEX_MODE="cliproxyapi"
 CODEX_ENDPOINT="http://127.0.0.1:8317/v1"
 CODEX_MODEL="gpt-5.4"
+CODEX_API_KEY_FILE=""
 CODEX_INSTALL_DATE="2026-04-28"
 ```
 
 #### 3.2 Using with OpenAI API key directly
 
-```bash
-# Stored in /etc/ops/.codex-api-key (0600)
-OPENAI_API_KEY=sk-proj-...
+OPS stores the key in `/etc/ops/.codex-api-key` (`0600`) and writes `~/.codex/config.toml` without any inline secret:
+
+```toml
+[model]
+provider = "openai"
+name     = "gpt-4o"
+
+[provider.openai]
+base_url = "https://api.openai.com/v1"
 ```
 
-OPS can expose this via the admin shell environment when the operator enables auto env.
+To run Codex in this mode, the operator must either:
+- enable Codex auto env (`OPENAI_API_KEY` loader block in admin `~/.bash_profile`), or
+- export `OPENAI_API_KEY` manually before running `codex`
 
-#### 3.3 Using with ChatGPT OAuth
+#### 3.3 Using with a custom endpoint
+
+OPS stores the key in `/etc/ops/.codex-api-key` (`0600`) and writes `~/.codex/config.toml` with the chosen model and base URL, again without any inline secret:
+
+```toml
+[model]
+provider = "openai"
+name     = "gpt-4o"
+
+[provider.openai]
+base_url = "https://provider.example/v1"
+```
+
+This mode also relies on `OPENAI_API_KEY` coming from Codex auto env or a manual export.
+
+#### 3.4 Using with ChatGPT OAuth
 
 No API key is needed.
 OPS can only:
@@ -127,88 +159,45 @@ OPS can only:
 
 ```text
 1. Install Codex CLI        -> npm install -g @openai/codex
-2. Configure Codex          -> write ~/.codex/config.toml + /etc/ops/codex-cli.conf
-3. Enable/disable auto env  -> add/remove OPENAI_API_KEY export from ~/.bash_profile
-4. Test Codex CLI           -> codex --version + endpoint reachability test
+2. Configure Codex          -> choose one of 4 modes:
+                               - CLIProxyAPI endpoint (recommended)
+                               - OpenAI API key
+                               - ChatGPT OAuth
+                               - Custom endpoint
+3. Enable/disable auto env  -> add/remove managed OPENAI_API_KEY loader block in admin ~/.bash_profile
+4. Test Codex CLI           -> codex --version + config path + optional CLIProxyAPI reachability check
 0. Back
 ```
 
-#### Action implementations
+#### Runtime behaviour summary
 
-**Install:**
+- **Install** records `CODEX_INSTALLED`, version, and install date in `/etc/ops/codex-cli.conf`.
+- **Configure / CLIProxyAPI mode**:
+  - writes `~/.codex/config.toml` in `env_key = "CLI_PROXY_API_KEY"` format
+  - keeps `/etc/ops/.cli-proxy-api-key` as the canonical secret
+  - writes a managed loader block into admin `~/.bashrc`
+- **Configure / OpenAI API mode**:
+  - stores the key in `/etc/ops/.codex-api-key`
+  - writes `~/.codex/config.toml` without any inline secret
+  - relies on Codex auto env or a manual `OPENAI_API_KEY` export at runtime
+- **Configure / Custom endpoint mode**:
+  - stores the key in `/etc/ops/.codex-api-key`
+  - writes `~/.codex/config.toml` with provider/model/base URL only
+  - relies on Codex auto env or a manual `OPENAI_API_KEY` export at runtime
+- **Enable auto env** writes a managed loader block into admin `~/.bash_profile`:
+
 ```bash
-install_codex_cli() {
-    log_info "Installing Codex CLI..."
-    npm install -g @openai/codex
-    local version
-    version=$(codex --version 2>/dev/null)
-    ops_conf_set codex-cli.conf CODEX_INSTALLED "yes"
-    ops_conf_set codex-cli.conf CODEX_VERSION "$version"
-    ops_conf_set codex-cli.conf CODEX_INSTALL_DATE "$(date +%Y-%m-%d)"
-}
-```
-
-**Configure (CLIProxyAPI mode):**
-```bash
-configure_codex_with_cliproxyapi() {
-    local api_key
-    api_key=$(cat /etc/ops/.cli-proxy-api-key)
-
-    echo "$api_key" > /etc/ops/.codex-api-key
-    chmod 600 /etc/ops/.codex-api-key
-    chown "$ADMIN_USER:$ADMIN_USER" /etc/ops/.codex-api-key
-
-    mkdir -p "/home/$ADMIN_USER/.codex"
-    cat > "/home/$ADMIN_USER/.codex/config.toml" <<EOF
-[model]
-provider = "openai"
-name     = "gpt-5.4"
-EOF
-    chown -R "$ADMIN_USER:$ADMIN_USER" "/home/$ADMIN_USER/.codex"
-    chmod 600 "/home/$ADMIN_USER/.codex/config.toml"
-
-    ops_conf_set codex-cli.conf CODEX_MODE "cliproxyapi"
-    ops_conf_set codex-cli.conf CODEX_ENDPOINT "http://127.0.0.1:8317/v1"
-    ops_conf_set codex-cli.conf CODEX_MODEL "gpt-5.4"
-}
-```
-
-**Enable auto env:**
-```bash
-enable_codex_auto_env() {
-    local marker="# OPS: codex-cli auto env"
-    local profile="/home/$ADMIN_USER/.bash_profile"
-
-    cat >> "$profile" <<EOF
-
-${marker}
+# OPS: codex-cli auto env
 if [[ -f /etc/ops/.codex-api-key ]]; then
-    export OPENAI_API_KEY="$(cat /etc/ops/.codex-api-key)"
+    export OPENAI_API_KEY="$(tr -d '\r\n' < /etc/ops/.codex-api-key)"
+else
+    unset OPENAI_API_KEY
 fi
-EOF
-
-    ops_conf_set codex-cli.conf CODEX_AUTO_ENV "yes"
-}
+# OPS: codex-cli auto env end
 ```
 
-**Disable auto env:**
-```bash
-disable_codex_auto_env() {
-    sed -i '/# OPS: codex-cli auto env/,/^fi$/d' "/home/$ADMIN_USER/.bash_profile"
-    ops_conf_set codex-cli.conf CODEX_AUTO_ENV "no"
-}
-```
-
-**Test:**
-```bash
-test_codex_cli() {
-    echo "Version: $(codex --version 2>/dev/null || echo 'NOT FOUND')"
-    echo "Config:  $(ls ~/.codex/config.toml 2>/dev/null || echo 'NOT CONFIGURED')"
-    if [[ "$CODEX_MODE" == "cliproxyapi" ]]; then
-        echo "CLIProxyAPI endpoint reachable: $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8317/v1/models)"
-    fi
-}
-```
+- **Disable auto env** removes only that managed block.
+- **Test** prints version, config path, and for CLIProxyAPI mode the HTTP status from `http://127.0.0.1:8317/v1/models`.
 
 ---
 
@@ -218,7 +207,10 @@ test_codex_cli() {
 |---|---|---|
 | Codex binary | `/usr/local/bin/codex` | 755 |
 | Codex config | `~/.codex/config.toml` | 600, owned by admin user |
-| Codex API key file | `/etc/ops/.codex-api-key` | 600, owned by admin user |
+| CLIProxyAPI key (local mode) | `/etc/ops/.cli-proxy-api-key` | 600, owned by admin user |
+| Codex API key (direct/custom modes) | `/etc/ops/.codex-api-key` | 600, owned by admin user |
+| CLIProxyAPI loader block | admin `~/.bashrc` | inherited from file |
+| Auto env block | admin `~/.bash_profile` | inherited from file |
 | OPS state | `/etc/ops/codex-cli.conf` | 640 |
 
 ---
@@ -228,23 +220,23 @@ test_codex_cli() {
 ```bash
 command -v codex && codex --version
 ls -la ~/.codex/config.toml
-grep -r "api_key\|OPENAI_API_KEY" /var/log/ops/ 2>/dev/null | grep -v "KEY_FILE"
+grep -n "OPS: codex-cliproxyapi env" ~/.bashrc 2>/dev/null
+grep -n "OPS: codex-cli auto env" ~/.bash_profile 2>/dev/null
+ls -la /etc/ops/.cli-proxy-api-key /etc/ops/.codex-api-key 2>/dev/null
 curl -s http://127.0.0.1:8317/v1/models
 ```
 
-If API key mode is enabled, test with the configured key:
-
-```bash
-curl -s -H "Authorization: Bearer $(cat /etc/ops/.codex-api-key)" \
-  http://127.0.0.1:8317/v1/models
-```
+Direct/custom modes should not inline the secret into `~/.codex/config.toml`; instead verify that `OPENAI_API_KEY` is loaded from auto env or exported manually before running `codex`.
 
 ---
 
 ### 7. Rollback
 
 ```bash
-disable_codex_auto_env
+# Remove managed loader blocks if present
+sed -i '/# OPS: codex-cliproxyapi env/,/# OPS: codex-cliproxyapi env end/d' ~/.bashrc 2>/dev/null || true
+sed -i '/# OPS: codex-cli auto env/,/# OPS: codex-cli auto env end/d' ~/.bash_profile 2>/dev/null || true
+
 rm -f ~/.codex/config.toml /etc/ops/.codex-api-key
 npm uninstall -g @openai/codex
 ops_conf_set codex-cli.conf CODEX_INSTALLED "no"

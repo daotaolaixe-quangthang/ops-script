@@ -173,15 +173,18 @@ chown -R ${ADMIN_USER}:${ADMIN_USER} /home/${ADMIN_USER}/.ssh
 - **Pre-check**:
   - xac nhan app nao dung DB nay
   - backup config quan trong
+  - note so ket noi dang active va chon maintenance window neu host dang phuc vu production
 - **Change**:
   - secure setup hoac tuning tung nhom
+  - OPS phai validate lai MariaDB config truoc moi restart path
+  - OPS phai hien canh bao downtime va yeu cau operator xac nhan truoc khi restart live DB
 - **Verify**:
   - DB service active
-  - login DB thanh cong
+  - login DB thanh cong (`sudo mysql` theo socket baseline, hoac file secret fallback neu host legacy dang dung password auth)
   - app van ket noi duoc
 - **Rollback**:
   - khoi phuc config cu
-  - restart DB
+  - chi restart DB sau khi config rollback da validate lai
 
 ## 7. Login hook / dashboard wiring
 
@@ -430,10 +433,11 @@ Notes:
   - OPS menu: `System & Monitoring -> Backup helpers -> Dump single database`
   - Hoac: `Dump all databases`
   - Output: `/var/backups/ops/db/<dbname>-YYYYMMDD-HHMMSS.sql.gz` (0600)
+  - Luu y: `Dump all databases` tao **mot file cho moi non-system database**, khong tao 1 file `all-*.sql.gz`
 - **Verify (DB dump)**:
   - `ls -lh /var/backups/ops/db/` -> file ton tai, size > 0
   - `gzip -t /var/backups/ops/db/<dbname>-<ts>.sql.gz` -> no error
-  - Test restore (staging only): `gunzip < <file> | mysql <dbname>`
+  - Test restore (staging only): `gunzip -c /var/backups/ops/db/<dbname>-<ts>.sql.gz | sudo mysql --database="<dbname>"`
 - **Change (config archive)**:
   - OPS menu: `Backup helpers -> Archive configs`
   - Output: `/var/backups/ops/config/ops-config-YYYYMMDD-HHMMSS.tar.gz` (0600)
@@ -441,13 +445,16 @@ Notes:
   - `tar -tzf /var/backups/ops/config/ops-config-<ts>.tar.gz` -> list files without error
   - `ls -lh /var/backups/ops/config/` -> file ton tai, size > 0
 - **Restore (manual)**:
-  - DB: `gunzip < /var/backups/ops/db/<file>.sql.gz | mysql <dbname>`
+  - DB: `gunzip -c /var/backups/ops/db/<dbname>-<ts>.sql.gz | sudo mysql --database="<dbname>"`
   - Nginx: `tar -xzf <archive> -C /etc/nginx/sites-available/ && nginx -t && systemctl reload nginx`
-  - OPS config: `tar -xzf <archive> -C /etc/ops/ && chmod 600 /etc/ops/.*`
+  - OPS config: `tar -xzf <archive> -C /etc/ops/`
+  - Secret perms sau restore: `chmod 600 /etc/ops/.* /etc/ops/db-credentials/*.conf 2>/dev/null || true`
+  - Secret owners sau restore: `chown <ADMIN_USER>:<ADMIN_USER> /etc/ops/.* /etc/ops/db-credentials/*.conf 2>/dev/null || true`
+  - Secret dir perms sau restore: `chmod 700 /etc/ops/db-credentials && chown <ADMIN_USER>:<ADMIN_USER> /etc/ops/db-credentials`
 - **Rollback**:
   - Backup files bao gio cung nam o `/var/backups/ops/` — khong bi xoa tu dong
   - Neu restore sai: restore tu backup cu hon
-  - Secret files: verify `chmod 600` sau moi restore: `.telegram-bot-token`, `.db-root-password`, `.codex-api-key`
+  - Secret files: verify `0600` + admin-owned sau moi restore: `.telegram-bot-token`, `.db-root-password` (neu host legacy dang dung), `.codex-api-key`, `db-credentials/*.conf`
 
 ---
 

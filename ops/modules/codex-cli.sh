@@ -9,11 +9,23 @@
 
 CODEX_STATE_FILE="${OPS_CONFIG_DIR}/codex-cli.conf"
 CODEX_API_KEY_FILE="${OPS_CONFIG_DIR}/.codex-api-key"
+CODEX_CLIPROXYAPI_ENV_MARKER="# OPS: codex-cliproxyapi env"
+CODEX_CLIPROXYAPI_ENV_END_MARKER="# OPS: codex-cliproxyapi env end"
+CODEX_AUTO_ENV_MARKER="# OPS: codex-cli auto env"
+CODEX_AUTO_ENV_END_MARKER="# OPS: codex-cli auto env end"
 
 _codex_admin_home() {
     local admin_home
     admin_home=$(getent passwd "$ADMIN_USER" | cut -d: -f6 || true)
     echo "${admin_home:-/home/$ADMIN_USER}"
+}
+
+_codex_admin_bashrc() {
+    echo "$(_codex_admin_home)/.bashrc"
+}
+
+_codex_admin_bash_profile() {
+    echo "$(_codex_admin_home)/.bash_profile"
 }
 
 _codex_config_dir() {
@@ -24,6 +36,95 @@ _codex_config_dir() {
 
 _codex_config_file() {
     echo "$(_codex_config_dir)/config.toml"
+}
+
+_codex_toml_escape() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\n'/ }"
+    value="${value//$'\r'/ }"
+    echo "$value"
+}
+
+_codex_strip_shell_block() {
+    local file="$1"
+    local start_marker="$2"
+    local end_marker="$3"
+    local tmp has_end=0
+
+    [[ -f "$file" ]] || return 0
+
+    if grep -qFx "$end_marker" "$file" 2>/dev/null; then
+        has_end=1
+    fi
+
+    tmp=$(mktemp "${file}.tmp.XXXXXX")
+    if ! awk -v start="$start_marker" -v end="$end_marker" -v has_end="$has_end" '
+        $0 == start {
+            skip=1
+            next
+        }
+        skip && has_end == 1 && $0 == end {
+            skip=0
+            next
+        }
+        skip && has_end == 0 && $0 == "" {
+            skip=0
+            next
+        }
+        !skip { print }
+        END {
+            if (skip && has_end == 1) {
+                exit 1
+            }
+        }
+    ' "$file" > "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+
+    chmod --reference="$file" "$tmp" 2>/dev/null || true
+    chown --reference="$file" "$tmp" 2>/dev/null || true
+    mv "$tmp" "$file"
+}
+
+_codex_update_shell_block() {
+    local file="$1"
+    local start_marker="$2"
+    local end_marker="$3"
+    local block_content="$4"
+    local backup_path="${file}.bak.$(date +%Y%m%d_%H%M%S)"
+
+    touch "$file"
+    chown "$ADMIN_USER:$ADMIN_USER" "$file"
+
+    if ! bash -n "$file" 2>/dev/null; then
+        log_error "Refusing to update ${file}: invalid bash syntax"
+        return 1
+    fi
+
+    cp -a -- "$file" "$backup_path"
+
+    if grep -qFx "$start_marker" "$file" 2>/dev/null; then
+        if ! _codex_strip_shell_block "$file" "$start_marker" "$end_marker"; then
+            cp -a -- "$backup_path" "$file"
+            log_error "Refusing to rewrite malformed OPS block in ${file}. Restored ${backup_path}."
+            return 1
+        fi
+    fi
+
+    if [[ -n "$block_content" ]]; then
+        printf '\n%s\n' "$block_content" >> "$file"
+    fi
+
+    if ! bash -n "$file" 2>/dev/null; then
+        cp -a -- "$backup_path" "$file"
+        log_error "Managed block update caused syntax failure in ${file}. Restored ${backup_path}."
+        return 1
+    fi
+
+    chown "$ADMIN_USER:$ADMIN_USER" "$file"
 }
 
 _codex_set_state() {
@@ -80,11 +181,9 @@ install_codex_cli() {
 }
 
 configure_codex_with_cliproxyapi() {
-    local api_key model_name cpa_key_file admin_bashrc admin_home
+    local api_key model_name cpa_key_file admin_bashrc
     cpa_key_file="${OPS_CONFIG_DIR}/.cli-proxy-api-key"
-    admin_home=$(getent passwd "$ADMIN_USER" | cut -d: -f6 || true)
-    admin_home="${admin_home:-/home/$ADMIN_USER}"
-    admin_bashrc="${admin_home}/.bashrc"
+    admin_bashrc="$(_codex_admin_bashrc)"
 
     if ! systemctl is-active --quiet cli-proxy-api 2>/dev/null; then
         print_warn "CLIProxyAPI service is not running. Install/start it from menu 5 before using Codex CLI."
@@ -94,12 +193,10 @@ configure_codex_with_cliproxyapi() {
         [[ "${cont_ans,,}" == "y" ]] || return 0
     fi
 
-    # Auto-generate CLIProxyAPI client key if not yet created
     if declare -F _cliproxyapi_ensure_client_key >/dev/null; then
         _cliproxyapi_ensure_client_key > /dev/null
     fi
 
-    # Auto-read CLIProxyAPI key if available
     if [[ -f "$cpa_key_file" ]]; then
         api_key=$(tr -d '\r\n' < "$cpa_key_file")
         log_info "Using CLIProxyAPI key from $cpa_key_file"
@@ -107,6 +204,17 @@ configure_codex_with_cliproxyapi() {
         printf "  Paste API key from CLIProxyAPI: " > /dev/tty
         read -r -s api_key < /dev/tty
         echo ""
+        if [[ -n "$api_key" ]]; then
+            if declare -F _cliproxyapi_write_client_key_file >/dev/null; then
+                _cliproxyapi_write_client_key_file "$api_key"
+            else
+                write_file "$cpa_key_file" <<EOF
+${api_key}
+EOF
+                chmod 600 "$cpa_key_file"
+                chown "$ADMIN_USER:$ADMIN_USER" "$cpa_key_file"
+            fi
+        fi
     fi
 
     if [[ -z "$api_key" ]]; then
@@ -122,11 +230,12 @@ configure_codex_with_cliproxyapi() {
         _cliproxyapi_activate_api_key || return 1
     fi
 
-    # Write correct config.toml format (env_key style, no inline secret)
     local codex_env_key="CLI_PROXY_API_KEY"
-    local env_key_instructions="Set ${codex_env_key} to your CLIProxyAPI api key (from ${cpa_key_file})"
+    local escaped_model escaped_env_key_instructions quoted_key_file block_content
+    escaped_model="$(_codex_toml_escape "$model_name")"
+    escaped_env_key_instructions="$(_codex_toml_escape "Set ${codex_env_key} to your CLIProxyAPI api key (from ${cpa_key_file})")"
 
-    _codex_write_config_toml "model = \"${model_name}\"
+    _codex_write_config_toml "model = \"${escaped_model}\"
 model_provider = \"cliproxyapi\"
 model_reasoning_effort = \"medium\"
 
@@ -135,7 +244,7 @@ name = \"CLIProxyAPI\"
 base_url = \"http://127.0.0.1:8317/v1\"
 wire_api = \"responses\"
 env_key = \"${codex_env_key}\"
-env_key_instructions = \"${env_key_instructions}\"
+env_key_instructions = \"${escaped_env_key_instructions}\"
 
 [profiles.max]
 model = \"gpt-5.4\"
@@ -145,26 +254,20 @@ model_provider = \"cliproxyapi\"
 model = \"gpt-5.3-codex\"
 model_provider = \"cliproxyapi\""
 
-    # Export CLI_PROXY_API_KEY into admin ~/.bashrc
-    local codex_marker="# OPS: codex-cliproxyapi env"
-    touch "$admin_bashrc"
-    chown "$ADMIN_USER:$ADMIN_USER" "$admin_bashrc"
-    if grep -q "$codex_marker" "$admin_bashrc" 2>/dev/null; then
-        backup_file "$admin_bashrc" >/dev/null || true
-        sed -i "/^${codex_marker}$/,/^$/d" "$admin_bashrc"
-    else
-        backup_file "$admin_bashrc" >/dev/null || true
-    fi
-    cat >> "$admin_bashrc" <<EOF
-
-${codex_marker}
-export ${codex_env_key}=${api_key}
-EOF
-    chown "$ADMIN_USER:$ADMIN_USER" "$admin_bashrc"
+    printf -v quoted_key_file '%q' "$cpa_key_file"
+    block_content="${CODEX_CLIPROXYAPI_ENV_MARKER}
+if [[ -f ${quoted_key_file} ]]; then
+    export ${codex_env_key}=\"\$(tr -d '\\r\\n' < ${quoted_key_file})\"
+else
+    unset ${codex_env_key}
+fi
+${CODEX_CLIPROXYAPI_ENV_END_MARKER}"
+    _codex_update_shell_block "$admin_bashrc" "$CODEX_CLIPROXYAPI_ENV_MARKER" "$CODEX_CLIPROXYAPI_ENV_END_MARKER" "$block_content" || return 1
 
     _codex_set_state "CODEX_MODE" "cliproxyapi"
     _codex_set_state "CODEX_ENDPOINT" "http://127.0.0.1:8317/v1"
     _codex_set_state "CODEX_MODEL" "$model_name"
+    _codex_set_state "CODEX_API_KEY_FILE" ""
 
     log_info "Codex CLI configured to use CLIProxyAPI (model: ${model_name})"
     print_warn "Reload shell to apply: source ~/.bashrc"
@@ -183,8 +286,16 @@ configure_codex_with_openai_api() {
 
     prompt_input "Enter model name (e.g. gpt-4o, gpt-4, o1-mini)" "gpt-4o"
     local model_name="${REPLY:-gpt-4o}"
+    local escaped_model
+    escaped_model="$(_codex_toml_escape "$model_name")"
 
     _codex_write_api_key_file "$api_key"
+    _codex_write_config_toml "[model]
+provider = \"openai\"
+name     = \"${escaped_model}\"
+
+[provider.openai]
+base_url = \"https://api.openai.com/v1\""
 
     _codex_set_state "CODEX_MODE" "openai-api"
     _codex_set_state "CODEX_ENDPOINT" "https://api.openai.com/v1"
@@ -192,6 +303,7 @@ configure_codex_with_openai_api() {
     _codex_set_state "CODEX_API_KEY_FILE" "$CODEX_API_KEY_FILE"
 
     log_info "Codex CLI configured to use OpenAI API key (model: ${model_name})"
+    print_warn "If auto environment is disabled, enable it or export OPENAI_API_KEY manually before running codex."
 }
 
 configure_codex_chatgpt_oauth() {
@@ -211,13 +323,11 @@ configure_codex_custom() {
     print_section "Codex — Custom Endpoint"
     echo ""
 
-    # Prompt Base URL
     local base_url
     printf "  Enter Base URL [https://api.openai.com/v1]: " > /dev/tty
     read -r base_url < /dev/tty
     base_url="${base_url:-https://api.openai.com/v1}"
 
-    # Prompt API Key
     local api_key
     printf "  Enter API Key: " > /dev/tty
     read -r -s api_key < /dev/tty
@@ -227,21 +337,22 @@ configure_codex_custom() {
         return 1
     fi
 
-    # Prompt Model
     local model
     printf "  Enter Model name [gpt-4o]: " > /dev/tty
     read -r model < /dev/tty
     model="${model:-gpt-4o}"
 
-    _codex_write_api_key_file "$api_key"
+    local escaped_base_url escaped_model
+    escaped_base_url="$(_codex_toml_escape "$base_url")"
+    escaped_model="$(_codex_toml_escape "$model")"
 
+    _codex_write_api_key_file "$api_key"
     _codex_write_config_toml "[model]
 provider = \"openai\"
-name     = \"${model}\"
+name     = \"${escaped_model}\"
 
 [provider.openai]
-base_url = \"${base_url}\"
-api_key  = \"${api_key}\""
+base_url = \"${escaped_base_url}\""
 
     _codex_set_state "CODEX_MODE"         "custom"
     _codex_set_state "CODEX_ENDPOINT"     "$base_url"
@@ -249,6 +360,7 @@ api_key  = \"${api_key}\""
     _codex_set_state "CODEX_API_KEY_FILE" "$CODEX_API_KEY_FILE"
 
     log_info "Codex CLI configured with custom endpoint (model: ${model}, url: ${base_url})"
+    print_warn "If auto environment is disabled, enable it or export OPENAI_API_KEY manually before running codex."
 }
 
 configure_codex_cli() {
@@ -281,42 +393,28 @@ configure_codex_cli() {
 }
 
 enable_codex_auto_env() {
-    local marker="# OPS: codex-cli auto env"
-    local profile="/home/$ADMIN_USER/.bash_profile"
+    local profile quoted_key_file block_content
+    profile="$(_codex_admin_bash_profile)"
 
-    touch "$profile"
-    chown "$ADMIN_USER:$ADMIN_USER" "$profile"
-
-    if grep -q "$marker" "$profile" 2>/dev/null; then
-        log_warn "Codex auto env already enabled"
-        return
-    fi
-
-    backup_file "$profile" >/dev/null || true
-
-    cat >> "$profile" <<EOF
-
-${marker}
-if [[ -f /etc/ops/.codex-api-key ]]; then
-    export OPENAI_API_KEY="\$(cat /etc/ops/.codex-api-key)"
+    printf -v quoted_key_file '%q' "$CODEX_API_KEY_FILE"
+    block_content="${CODEX_AUTO_ENV_MARKER}
+if [[ -f ${quoted_key_file} ]]; then
+    export OPENAI_API_KEY=\"\$(tr -d '\\r\\n' < ${quoted_key_file})\"
+else
+    unset OPENAI_API_KEY
 fi
-EOF
+${CODEX_AUTO_ENV_END_MARKER}"
+    _codex_update_shell_block "$profile" "$CODEX_AUTO_ENV_MARKER" "$CODEX_AUTO_ENV_END_MARKER" "$block_content" || return 1
 
     _codex_set_state "CODEX_AUTO_ENV" "yes"
     log_info "Codex auto env enabled"
 }
 
 disable_codex_auto_env() {
-    local profile="/home/$ADMIN_USER/.bash_profile"
+    local profile
+    profile="$(_codex_admin_bash_profile)"
 
-    if [[ ! -f "$profile" ]]; then
-        _codex_set_state "CODEX_AUTO_ENV" "no"
-        log_info "Codex auto env disabled"
-        return
-    fi
-
-    backup_file "$profile" >/dev/null || true
-    sed -i '/# OPS: codex-cli auto env/,/^fi$/d' "$profile"
+    _codex_update_shell_block "$profile" "$CODEX_AUTO_ENV_MARKER" "$CODEX_AUTO_ENV_END_MARKER" "" || return 1
     _codex_set_state "CODEX_AUTO_ENV" "no"
     log_info "Codex auto env disabled"
 }

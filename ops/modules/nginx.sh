@@ -477,27 +477,70 @@ _domain_slug() {
     echo "$domain" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//'
 }
 
+_php_pool_from_socket() {
+    local socket="$1"
+    if [[ "$socket" =~ ^/run/php/php[0-9]+\.[0-9]+-fpm-([A-Za-z0-9._-]+)\.sock$ ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+    fi
+}
+
+_restore_php_pool_snapshot() {
+    local snapshot_root="$1"
+    local pool_file="$2"
+    local site_state_file="$3"
+    local ver="$4"
+    local previous_pool_file="${5:-}"
+    local previous_ver="${6:-}"
+
+    [[ -n "$snapshot_root" && -d "$snapshot_root" ]] || return 0
+
+    restore_path_snapshot "$pool_file" "$snapshot_root" "pool-current"
+    restore_path_snapshot "$site_state_file" "$snapshot_root" "site-state"
+    if [[ -n "$previous_pool_file" ]]; then
+        restore_path_snapshot "$previous_pool_file" "$snapshot_root" "pool-previous"
+    fi
+
+    if [[ -n "$ver" ]]; then
+        php_fpm_validate_and_apply "$ver" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "$previous_ver" && "$previous_ver" != "$ver" ]]; then
+        php_fpm_validate_and_apply "$previous_ver" >/dev/null 2>&1 || true
+    fi
+}
+
 _write_domain_state() {
     local domain="$1"
     local type="$2"
     local backend_target="${3:-}"
     local php_version="${4:-}"
     local php_socket="${5:-}"
-    local ssl_mode="${6:-none}"
+    local php_pool="${6:-}"
+    local ssl_mode="${7:-none}"
+    local web_root="${8:-/var/www/${domain}}"
+    local state_file="${OPS_DOMAINS_DIR}/${domain}.conf"
+    local created_at="$(date '+%Y-%m-%d %H:%M:%S')"
+
+    if [[ -f "$state_file" ]]; then
+        local DOMAIN DOMAIN_BACKEND_TYPE DOMAIN_BACKEND_TARGET DOMAIN_PHP_VERSION DOMAIN_PHP_SOCKET DOMAIN_PHP_POOL DOMAIN_WEB_ROOT DOMAIN_SSL_MODE DOMAIN_CREATED
+        eval "$(_load_domain_state "$state_file")"
+        [[ -n "${DOMAIN_CREATED:-}" ]] && created_at="$DOMAIN_CREATED"
+        [[ -z "$web_root" ]] && web_root="${DOMAIN_WEB_ROOT:-/var/www/${domain}}"
+    fi
 
     ensure_dir "$OPS_DOMAINS_DIR"
-    write_file "${OPS_DOMAINS_DIR}/${domain}.conf" <<EOF
+    write_file "$state_file" <<EOF
 DOMAIN="${domain}"
 DOMAIN_BACKEND_TYPE="${type}"
 DOMAIN_BACKEND_TARGET="${backend_target}"
 DOMAIN_PHP_VERSION="${php_version}"
 DOMAIN_PHP_SOCKET="${php_socket}"
-DOMAIN_WEB_ROOT="/var/www/${domain}"
+DOMAIN_PHP_POOL="${php_pool}"
+DOMAIN_WEB_ROOT="${web_root}"
 DOMAIN_SSL_MODE="${ssl_mode}"
-DOMAIN_CREATED="$(date '+%Y-%m-%d %H:%M:%S')"
+DOMAIN_CREATED="${created_at}"
 EOF
-    chmod 0644 "${OPS_DOMAINS_DIR}/${domain}.conf"
-    chown root:root "${OPS_DOMAINS_DIR}/${domain}.conf" 2>/dev/null || true
+    chmod 0644 "$state_file"
+    chown root:root "$state_file" 2>/dev/null || true
 }
 
 _create_site_from_template() {
@@ -672,7 +715,7 @@ NGINX_SSL_EOF
 
 # _render_php_vhost <domain> <web_root> <php_version> <php_socket> <available-path> [ssl_mode]
 # F-01 fix: same pattern as _render_node_vhost — SSL block appended directly.
-# Note: php_socket is substituted via sed after template rendering (safe, single-line value).
+# F-26 fix: php_socket is rendered directly into the template to avoid fragile post-render sed rewrites.
 _render_php_vhost() {
     local domain="$1"
     local web_root="$2"
@@ -690,19 +733,11 @@ _render_php_vhost() {
     [[ "$_has_ssl" -eq 1 ]] && ssl_redirect="    return 301 https://\$host\$request_uri;"
 
     # Step 1: Render HTTP server block (single-line vars only)
-    local rendered
-    rendered="$(render_template "${NGINX_TEMPLATE_DIR}/php_vhost.conf.tpl" \
+    _create_site_from_template "${NGINX_TEMPLATE_DIR}/php_vhost.conf.tpl" "$available" \
         "DOMAIN=${domain}" \
         "WEBROOT=${web_root}" \
-        "PHP_VERSION=${php_version}" \
-        "SSL_HTTP_REDIRECT=${ssl_redirect}")"
-    # Substitute PHP socket path (safe single-line sed)
-    # L-01 fix: escape the dot in php_version so "8X2" cannot match "8.2" pattern.
-    local _php_ver_escaped
-    _php_ver_escaped="${php_version//./\\.}"
-    rendered="$(printf '%s\n' "$rendered" | sed -E \
-        "s|fastcgi_pass[[:space:]]+unix:/run/php/php${_php_ver_escaped}-fpm\.sock;|fastcgi_pass   unix:${php_socket};|")"
-    printf '%s\n' "$rendered" | write_file "$available"
+        "PHP_SOCKET=${php_socket}" \
+        "SSL_HTTP_REDIRECT=${ssl_redirect}"
 
     # Step 2: Append SSL server block directly
     if [[ "$_has_ssl" -eq 1 ]]; then
@@ -887,7 +922,7 @@ NGINX_SSL_EOF
 # _load_domain_state <state_file>
 # P-05 fix: replaces unsafe `grep | cut | tr -d '"'` pipeline.
 # Parses only lines matching KEY="safe-value" (no embedded quotes).
-# Outputs shell assignments for the six known domain keys and nothing else.
+# Outputs shell assignments for the known domain-state keys and nothing else.
 # Caller uses: eval "$(_load_domain_state "$file")" in a local scope.
 _load_domain_state() {
     local state_file="$1"
@@ -895,7 +930,7 @@ _load_domain_state() {
     while IFS= read -r line; do
         # Accept only: KEY="value" where value contains no double-quotes.
         # The regex anchors prevent injecting additional shell statements.
-        if [[ "$line" =~ ^(DOMAIN|DOMAIN_BACKEND_TYPE|DOMAIN_BACKEND_TARGET|DOMAIN_PHP_VERSION|DOMAIN_PHP_SOCKET|DOMAIN_WEB_ROOT|DOMAIN_SSL_MODE)=\"([^\"]*)\"$ ]]; then
+        if [[ "$line" =~ ^(DOMAIN|DOMAIN_BACKEND_TYPE|DOMAIN_BACKEND_TARGET|DOMAIN_PHP_VERSION|DOMAIN_PHP_SOCKET|DOMAIN_PHP_POOL|DOMAIN_WEB_ROOT|DOMAIN_SSL_MODE|DOMAIN_CREATED)=\"([^\"]*)\"$ ]]; then
             key="${BASH_REMATCH[1]}"
             val="${BASH_REMATCH[2]}"
             # printf produces plain KEY=value lines — no shell metacharacters can leak.
@@ -904,10 +939,10 @@ _load_domain_state() {
     done < "$state_file"
 }
 
-# _validate_domain_state <domain> <type> <php_version> <php_socket> <web_root>
+# _validate_domain_state <domain> <type> <php_version> <php_socket> <php_pool> <web_root>
 # P-05 fix: rejects values that could corrupt Nginx config or the sed pipeline.
 _validate_domain_state() {
-    local domain="$1" type="$2" php_version="$3" php_socket="$4" web_root="$5"
+    local domain="$1" type="$2" php_version="$3" php_socket="$4" php_pool="$5" web_root="$6"
 
     # No path traversal or slashes in domain
     if [[ "$domain" == *'/'* || "$domain" == *'..'* ]] || ! _domain_is_valid "$domain"; then
@@ -926,12 +961,22 @@ _validate_domain_state() {
 
     # PHP-specific fields
     if [[ "$type" == "php" ]]; then
+        local expected_socket
         if [[ ! "$php_version" =~ ^[0-9]+\.[0-9]+$ ]]; then
             log_error "P-05: corrupted state — invalid php_version '${php_version}' for ${domain}"
             return 1
         fi
-        if [[ ! "$php_socket" =~ ^/run/php/[a-zA-Z0-9_./-]+\.sock$ ]]; then
+        if [[ -z "$php_pool" || ! "$php_pool" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            log_error "P-05: corrupted state — invalid php_pool '${php_pool}' for ${domain}"
+            return 1
+        fi
+        if [[ ! "$php_socket" =~ ^/run/php/php[0-9]+\.[0-9]+-fpm-[A-Za-z0-9._-]+\.sock$ ]]; then
             log_error "P-05: corrupted state — invalid php_socket '${php_socket}' for ${domain}"
+            return 1
+        fi
+        expected_socket="/run/php/php${php_version}-fpm-${php_pool}.sock"
+        if [[ "$php_socket" != "$expected_socket" ]]; then
+            log_error "P-05: corrupted state — php_socket '${php_socket}' does not match version/pool contract '${expected_socket}' for ${domain}"
             return 1
         fi
     fi
@@ -948,7 +993,7 @@ _validate_domain_state() {
 _rebuild_domain_vhost() {
     local domain="$1"
     local state_file="${OPS_DOMAINS_DIR}/${domain}.conf"
-    local type backend_target php_version php_socket web_root ssl_mode staged port
+    local type backend_target php_version php_socket php_pool web_root ssl_mode staged port
 
     if [[ ! -f "$state_file" ]]; then
         log_warn "No state file for domain ${domain}; skipped vhost rebuild"
@@ -956,14 +1001,16 @@ _rebuild_domain_vhost() {
     fi
 
     # P-05 fix: parse state file through regex-whitelist; validate before use.
-    local DOMAIN DOMAIN_BACKEND_TYPE DOMAIN_BACKEND_TARGET DOMAIN_PHP_VERSION DOMAIN_PHP_SOCKET DOMAIN_WEB_ROOT DOMAIN_SSL_MODE
+    local DOMAIN DOMAIN_BACKEND_TYPE DOMAIN_BACKEND_TARGET DOMAIN_PHP_VERSION DOMAIN_PHP_SOCKET DOMAIN_PHP_POOL DOMAIN_WEB_ROOT DOMAIN_SSL_MODE
     eval "$(_load_domain_state "$state_file")"
     type="${DOMAIN_BACKEND_TYPE:-}"
     backend_target="${DOMAIN_BACKEND_TARGET:-}"
     php_version="${DOMAIN_PHP_VERSION:-}"
     php_socket="${DOMAIN_PHP_SOCKET:-}"
+    php_pool="${DOMAIN_PHP_POOL:-}"
     web_root="${DOMAIN_WEB_ROOT:-}"
     ssl_mode="${DOMAIN_SSL_MODE:-}"
+    [[ -n "$php_pool" ]] || php_pool="$(_php_pool_from_socket "$php_socket")"
 
     # Backward compat: infer ssl_mode when field absent from older state files
     if [[ -z "$ssl_mode" ]]; then
@@ -976,7 +1023,7 @@ _rebuild_domain_vhost() {
         fi
     fi
 
-    if ! _validate_domain_state "$domain" "$type" "$php_version" "$php_socket" "$web_root"; then
+    if ! _validate_domain_state "$domain" "$type" "$php_version" "$php_socket" "$php_pool" "$web_root"; then
         log_error "_rebuild_domain_vhost: aborting rebuild for ${domain} due to invalid state."
         return 1
     fi
@@ -1363,8 +1410,7 @@ install_nginx() {
     # Apply all config changes BEFORE starting the service.
     _nginx_apply_global_tuning
     _nginx_write_logrotate            # P2-2: ensure per-domain log rotation
-    create_default_deny
-    _nginx_disable_packaged_default_site
+    create_default_deny || return 1
 
     # Validate config before touching the service.
     if ! nginx_validate; then
@@ -1385,11 +1431,9 @@ create_default_deny() {
     _nginx_ensure_default_tls_cert
 
     local tpl="${NGINX_TEMPLATE_DIR}/default-deny.conf.tpl"
-    local available="${NGINX_SITES_AVAILABLE}/${NGINX_DEFAULT_DENY_NAME}"
-    local enabled="${NGINX_SITES_ENABLED}/${NGINX_DEFAULT_DENY_NAME}"
 
     # H-03 fix: render to a staged temp so a broken template can never land in
-    # sites-enabled.  The deny vhost is global — a bad symlink breaks all sites.
+    # the live default-server path. Commit through the shared transactional helper.
     local staged
     staged=$(mktemp "${NGINX_SITES_AVAILABLE}/.${NGINX_DEFAULT_DENY_NAME}.staged.XXXXXX")
 
@@ -1397,18 +1441,13 @@ create_default_deny() {
         "SELF_SIGNED_CERT=${NGINX_DEFAULT_CERT}" \
         "SELF_SIGNED_KEY=${NGINX_DEFAULT_KEY}"
 
-    # Validate before moving into place
-    if ! nginx_validate >/dev/null 2>&1; then
-        log_error "create_default_deny: nginx -t failed with staged deny vhost — leaving existing config untouched"
+    _nginx_disable_packaged_default_site
+    if ! _nginx_commit_vhost "$NGINX_DEFAULT_DENY_NAME" "$staged"; then
+        log_error "create_default_deny: transactional commit failed for ${NGINX_DEFAULT_DENY_NAME}"
         rm -f "$staged"
         return 1
     fi
 
-    mv -f "$staged" "$available"
-    chmod 0644 "$available"; chown root:root "$available" 2>/dev/null || true
-
-    _nginx_disable_packaged_default_site
-    safe_symlink "$available" "$enabled"
     log_info "Default deny vhost is present and enabled."
 }
 
@@ -1504,6 +1543,12 @@ add_domain() {
     local backend_target=""
     local php_version=""
     local php_socket=""
+    local php_pool=""
+    local php_snapshot_root=""
+    local php_target_pool_file=""
+    local php_state_file=""
+    local php_previous_pool_file=""
+    local php_previous_version=""
     local tpl
 
     if [[ "$type" == "static" || "$type" == "php" ]]; then
@@ -1537,7 +1582,6 @@ add_domain() {
             fi
             ;;
         php)
-            local site_slug
             prompt_input "Enter PHP version (e.g. 8.2)"
             php_version="$REPLY"
             if [[ ! "$php_version" =~ ^[0-9]+\.[0-9]+$ ]]; then
@@ -1545,8 +1589,34 @@ add_domain() {
                 rm -f "$staged"
                 return 1
             fi
-            site_slug="$(_domain_slug "$domain")"
-            php_socket="/run/php/php${php_version}-fpm-${site_slug}.sock"
+            prompt_input "Enter PHP-FPM pool name" "$domain"
+            php_pool="${REPLY:-$domain}"
+            if ! php_validate_site_name "$php_pool"; then
+                rm -f "$staged"
+                return 1
+            fi
+
+            php_state_file="$(php_get_site_state_file "$php_pool")"
+            php_target_pool_file="$(php_get_pool_file "$php_pool" "$php_version")"
+            php_snapshot_root="$(mktemp -d "/tmp/ops-nginx-php-add.${php_pool}.XXXXXX")"
+            snapshot_path_state "$php_target_pool_file" "$php_snapshot_root" "pool-current"
+            snapshot_path_state "$php_state_file" "$php_snapshot_root" "site-state"
+            if [[ -f "$php_state_file" ]]; then
+                local SITE_NAME SITE_DIR SITE_PHP_VERSION SITE_FPM_POOL SITE_FPM_SOCKET SITE_DOMAIN SITE_CREATED
+                eval "$(php_load_site_state "$php_state_file")"
+                php_previous_version="${SITE_PHP_VERSION:-}"
+                if [[ -n "$php_previous_version" && "$php_previous_version" != "$php_version" ]]; then
+                    php_previous_pool_file="$(php_get_pool_file "$php_pool" "$php_previous_version")"
+                    snapshot_path_state "$php_previous_pool_file" "$php_snapshot_root" "pool-previous"
+                fi
+            fi
+
+            if ! configure_php_pool "$php_pool" "$php_version" "$domain" "$web_root" 1; then
+                rm -rf "$php_snapshot_root"
+                rm -f "$staged"
+                return 1
+            fi
+            php_socket="$(php_get_socket_path "$php_pool" "$php_version")"
             backend_target="$php_socket"
             _render_php_vhost "$domain" "$web_root" "$php_version" "$php_socket" "$staged"
             ;;
@@ -1560,17 +1630,30 @@ add_domain() {
     # vhost, so that nginx -t inside _nginx_commit_vhost sees a complete config.
     # create_default_deny is idempotent. This eliminates the redundant reload that
     # previously occurred when create_default_deny was called after _nginx_commit_vhost.
-    create_default_deny
-
-    # Transactional commit: nginx -t → atomic mv → symlink → reload → rollback on failure.
-    if ! _nginx_commit_vhost "$domain" "$staged"; then
-        print_error "add_domain: vhost commit failed for ${domain} — config NOT activated."
+    if ! create_default_deny; then
+        if [[ -n "$php_snapshot_root" ]]; then
+            _restore_php_pool_snapshot "$php_snapshot_root" "$php_target_pool_file" "$php_state_file" "$php_version" "$php_previous_pool_file" "$php_previous_version"
+            rm -rf "$php_snapshot_root"
+        fi
         rm -f "$staged"
         return 1
     fi
 
+    # Transactional commit: nginx -t → atomic mv → symlink → reload → rollback on failure.
+    if ! _nginx_commit_vhost "$domain" "$staged"; then
+        if [[ -n "$php_snapshot_root" ]]; then
+            _restore_php_pool_snapshot "$php_snapshot_root" "$php_target_pool_file" "$php_state_file" "$php_version" "$php_previous_pool_file" "$php_previous_version"
+            rm -rf "$php_snapshot_root"
+        fi
+        print_error "add_domain: vhost commit failed for ${domain} — config NOT activated. Restored previous PHP pool state."
+        rm -f "$staged"
+        return 1
+    fi
+
+    [[ -n "$php_snapshot_root" ]] && rm -rf "$php_snapshot_root"
+
     # Write domain state AFTER successful commit (OPS contract: state reflects live reality).
-    _write_domain_state "$domain" "$type" "$backend_target" "$php_version" "$php_socket"
+    _write_domain_state "$domain" "$type" "$backend_target" "$php_version" "$php_socket" "$php_pool" "none" "$web_root"
 
     print_ok "Domain added: ${domain} (${type})"
     print_warn "SSL not issued here. Use SSL Management to issue certificate."
@@ -1615,15 +1698,18 @@ nginx_edit_domain() {
     fi
 
     # Read current state via the safe parser (P-05 fix) — same path as _rebuild_domain_vhost.
-    local DOMAIN DOMAIN_BACKEND_TYPE DOMAIN_BACKEND_TARGET DOMAIN_PHP_VERSION DOMAIN_PHP_SOCKET DOMAIN_WEB_ROOT DOMAIN_SSL_MODE
+    local DOMAIN DOMAIN_BACKEND_TYPE DOMAIN_BACKEND_TARGET DOMAIN_PHP_VERSION DOMAIN_PHP_SOCKET DOMAIN_PHP_POOL DOMAIN_WEB_ROOT DOMAIN_SSL_MODE
     eval "$(_load_domain_state "$state_file")"
     local type="${DOMAIN_BACKEND_TYPE:-}"
     local backend_target="${DOMAIN_BACKEND_TARGET:-}"
     local php_version="${DOMAIN_PHP_VERSION:-}"
     local php_socket="${DOMAIN_PHP_SOCKET:-}"
+    local php_pool="${DOMAIN_PHP_POOL:-}"
     local web_root="${DOMAIN_WEB_ROOT:-}"
     local ssl_mode="${DOMAIN_SSL_MODE:-none}"
-    if ! _validate_domain_state "$domain" "$type" "$php_version" "$php_socket" "$web_root"; then
+    [[ -n "$php_pool" ]] || php_pool="$(_php_pool_from_socket "$php_socket")"
+    [[ -n "$php_pool" ]] || php_pool="$(_domain_slug "$domain")"
+    if ! _validate_domain_state "$domain" "$type" "$php_version" "$php_socket" "$php_pool" "$web_root"; then
         print_error "State file for '${domain}' is corrupted — cannot edit. Check ${state_file}."
         return 1
     fi
@@ -1647,18 +1733,19 @@ nginx_edit_domain() {
             fi
             backend_target="127.0.0.1:${new_port}"
             # H-01 fix: pass ssl_mode so state rewrite does not silently reset CF origin mode.
-            _write_domain_state "$domain" "$type" "$backend_target" "" "" "$ssl_mode"
+            _write_domain_state "$domain" "$type" "$backend_target" "" "" "" "$ssl_mode" "$web_root"
             if ! _rebuild_domain_vhost "$domain"; then
                 print_error "Vhost rebuild failed — rolling back state file."
-                _write_domain_state "$domain" "$type" "127.0.0.1:${current_port}" "" "" "$ssl_mode"
+                _write_domain_state "$domain" "$type" "127.0.0.1:${current_port}" "" "" "" "$ssl_mode" "$web_root"
                 return 1
             fi
             print_ok "Domain ${domain}: port updated ${current_port} → ${new_port}"
             log_info "nginx_edit_domain: '${domain}' updated (node port ${current_port} → ${new_port})"
             ;;
         php)
-            local new_php_version new_php_socket site_slug
+            local new_php_version
             echo "  Current PHP version: ${php_version}"
+            echo "  Current pool name : ${php_pool}"
             prompt_input "Enter new PHP version (e.g. 8.3, leave blank to keep ${php_version})"
             new_php_version="${REPLY:-$php_version}"
             if [[ ! "$new_php_version" =~ ^[0-9]+\.[0-9]+$ ]]; then
@@ -1669,18 +1756,11 @@ nginx_edit_domain() {
                 print_warn "PHP version unchanged — no action taken."
                 return 0
             fi
-            site_slug="$(_domain_slug "$domain")"
-            new_php_socket="/run/php/php${new_php_version}-fpm-${site_slug}.sock"
-            # H-01 fix: pass ssl_mode so state rewrite does not silently reset CF origin mode.
-            _write_domain_state "$domain" "$type" "$new_php_socket" "$new_php_version" "$new_php_socket" "$ssl_mode"
-            if ! _rebuild_domain_vhost "$domain"; then
-                print_error "Vhost rebuild failed — rolling back state file."
-                _write_domain_state "$domain" "$type" "$php_socket" "$php_version" "$php_socket" "$ssl_mode"
+            if ! configure_php_pool "$php_pool" "$new_php_version" "$domain" "$web_root"; then
                 return 1
             fi
             print_ok "Domain ${domain}: PHP version updated ${php_version} → ${new_php_version}"
-            print_warn "Ensure php${new_php_version}-fpm is installed and a pool config exists for ${domain}."
-            log_info "nginx_edit_domain: '${domain}' updated (php ${php_version} → ${new_php_version})"
+            log_info "nginx_edit_domain: '${domain}' updated (php ${php_version} → ${new_php_version}, pool=${php_pool})"
             ;;
         static)
             print_warn "Static site '${domain}' has no configurable backend parameters."
@@ -1694,6 +1774,7 @@ nginx_edit_domain() {
             ;;
     esac
 
+    [[ "$type" == "php" ]] && return 0
     _nginx_test_and_reload
 }
 
@@ -1705,15 +1786,17 @@ nginx_prompt_remove_domain() {
 }
 
 # remove_domain <domain>
-# F-04 fix: transactional removal order —
-#   1. Read state (before any delete)
-#   2. Clean backend first: remove FPM pool → restart/reload FPM → verify FPM config
-#   3. Remove Nginx config files (symlink first so nginx -t won't see a broken ref)
-#   4. Remove OPS state file (commit point)
-#   5. create_default_deny + nginx -t + reload
-# This order prevents orphaned FPM pool sockets and ensures nginx -t succeeds post-removal.
+# F-04 fix: rollback-safe removal order — snapshot current state, remove PHP pool
+# first, validate/apply FPM, then remove Nginx/state and only commit if Nginx can
+# still validate/reload. Any failure restores the previous PHP + Nginx + OPS state.
 remove_domain() {
     local domain="${1:-}"
+    local state_file="${OPS_DOMAINS_DIR}/${domain}.conf"
+    local available="${NGINX_SITES_AVAILABLE}/${domain}"
+    local enabled="${NGINX_SITES_ENABLED}/${domain}"
+    local snapshot_root backend_type="" php_version="" php_pool="" php_socket=""
+    local php_pool_file="" php_state_file=""
+
     require_root || return 1
     if [[ -z "$domain" ]]; then
         print_error "Usage: remove_domain <domain>"
@@ -1725,42 +1808,49 @@ remove_domain() {
         return 0
     fi
 
-    # Step 1: Read backend metadata BEFORE any delete.
-    # H-04 fix: use the P-05 safe parser (_load_domain_state) instead of
-    # unsafe grep|cut|tr which does not validate values.
-    local state_file="${OPS_DOMAINS_DIR}/${domain}.conf"
-    local backend_type php_version site_slug
+    snapshot_root=$(mktemp -d "/tmp/ops-nginx-remove.${domain}.XXXXXX")
+    snapshot_path_state "$state_file" "$snapshot_root" "state-file"
+    snapshot_path_state "$available" "$snapshot_root" "nginx-available"
+    snapshot_path_state "$enabled" "$snapshot_root" "nginx-enabled"
+
     if [[ -f "$state_file" ]]; then
-        local _REM_DOMAIN _REM_TYPE _REM_PHP_VER
-        local DOMAIN_BACKEND_TYPE="" DOMAIN_PHP_VERSION=""
+        local DOMAIN DOMAIN_BACKEND_TYPE DOMAIN_PHP_VERSION DOMAIN_PHP_POOL DOMAIN_PHP_SOCKET
         eval "$(_load_domain_state "$state_file")"
         backend_type="${DOMAIN_BACKEND_TYPE:-}"
         php_version="${DOMAIN_PHP_VERSION:-}"
+        php_pool="${DOMAIN_PHP_POOL:-}"
+        php_socket="${DOMAIN_PHP_SOCKET:-}"
+    fi
+    [[ -n "$php_pool" ]] || php_pool="$(_php_pool_from_socket "$php_socket")"
+    if [[ -z "$php_pool" && "$backend_type" == "php" ]]; then
+        php_pool="$(_domain_slug "$domain")"
+    fi
+    if [[ -f "$state_file" ]] && ! _validate_domain_state "$domain" "${backend_type:-}" "$php_version" "$php_socket" "$php_pool" ""; then
+        rm -rf "$snapshot_root"
+        print_error "State file for '${domain}' is corrupted — aborting removal. Check ${state_file}."
+        return 1
     fi
 
-    # Step 2: Backend-specific cleanup FIRST (before touching Nginx files).
-    # Removing the FPM pool before the Nginx config means FPM is in a clean state
-    # by the time we remove Nginx files and run nginx -t.
     case "${backend_type:-}" in
         php)
-            if [[ -n "$php_version" ]]; then
-                site_slug="$(_domain_slug "$domain")"
-                local pool_file="/etc/php/${php_version}/fpm/pool.d/${site_slug}.conf"
-                if [[ -f "$pool_file" ]]; then
-                    backup_file "$pool_file" >/dev/null || true
-                    rm -f "$pool_file"
-                    # Restart FPM; log a warning on failure but do not abort —
-                    # the pool conf is already removed, so the socket will not be
-                    # re-created on next FPM start even if this restart fails.
-                    if ! service_restart "php${php_version}-fpm" 2>/dev/null; then
-                        log_warn "remove_domain: php${php_version}-fpm restart failed after pool removal — check FPM config manually"
-                        print_warn "php${php_version}-fpm restart failed. Pool file removed, but FPM may need manual restart."
-                    else
-                        log_info "remove_domain: removed PHP-FPM pool ${pool_file} and restarted php${php_version}-fpm"
-                    fi
+            if [[ -n "$php_version" && -n "$php_pool" ]]; then
+                php_pool_file="$(php_get_pool_file "$php_pool" "$php_version")"
+                php_state_file="$(php_get_site_state_file "$php_pool")"
+                snapshot_path_state "$php_pool_file" "$snapshot_root" "pool-current"
+                snapshot_path_state "$php_state_file" "$snapshot_root" "site-state"
+
+                [[ -f "$php_pool_file" ]] && backup_file "$php_pool_file" >/dev/null || true
+                rm -f "$php_pool_file"
+                rm -f "$php_state_file"
+
+                if ! php_fpm_validate_and_apply "$php_version"; then
+                    _restore_php_pool_snapshot "$snapshot_root" "$php_pool_file" "$php_state_file" "$php_version"
+                    rm -rf "$snapshot_root"
+                    print_error "remove_domain: failed to apply php${php_version}-fpm after removing pool ${php_pool}. Restored the previous PHP pool state."
+                    return 1
                 fi
-                rm -f "${PHP_SITES_DIR}/${site_slug}.conf" 2>/dev/null || true
-                print_ok "PHP-FPM pool removed for ${domain} (PHP ${php_version})."
+
+                print_ok "PHP-FPM pool removed for ${domain} (PHP ${php_version}, pool ${php_pool})."
             fi
             ;;
         node)
@@ -1769,22 +1859,24 @@ remove_domain() {
             ;;
     esac
 
-    # Step 3: P-01 fix — commit OPS state file FIRST, BEFORE removing nginx files.
-    # Rationale: state file is the OPS source of truth. If we crash after this rm
-    # but before the nginx rm below, list_domains will correctly show the domain as
-    # removed (state gone) while nginx retains its old config until the next reload.
-    # The inverse (state file survives but nginx files gone) leaves a "zombie" entry
-    # in list_domains pointing to non-existent nginx config — harder to diagnose.
+    rm -f "$enabled"
+    rm -f "$available"
     rm -f "$state_file"
 
-    # Step 4: Remove Nginx config files.
-    # Remove symlink first so nginx -t at step 5 won't reference the available file.
-    rm -f "${NGINX_SITES_ENABLED}/${domain}"
-    rm -f "${NGINX_SITES_AVAILABLE}/${domain}"
+    if ! create_default_deny || ! _nginx_test_and_reload; then
+        restore_path_snapshot "$state_file" "$snapshot_root" "state-file"
+        restore_path_snapshot "$available" "$snapshot_root" "nginx-available"
+        restore_path_snapshot "$enabled" "$snapshot_root" "nginx-enabled"
+        if [[ "$backend_type" == "php" && -n "$php_version" && -n "$php_pool" ]]; then
+            _restore_php_pool_snapshot "$snapshot_root" "$php_pool_file" "$php_state_file" "$php_version"
+        fi
+        _nginx_test_and_reload >/dev/null 2>&1 || true
+        rm -rf "$snapshot_root"
+        print_error "remove_domain: failed to commit removal for ${domain}. Restored the previous domain and PHP state."
+        return 1
+    fi
 
-    # Step 5: Ensure default-deny vhost and reload Nginx.
-    create_default_deny
-    _nginx_test_and_reload
+    rm -rf "$snapshot_root"
     print_ok "Domain ${domain} removed."
     echo "  Web root /var/www/${domain} NOT deleted — remove manually if needed."
     log_info "remove_domain: '${domain}' removed (backend_type=${backend_type:-unknown})"
@@ -1920,7 +2012,7 @@ issue_ssl() {
         return 1
     fi
 
-    create_default_deny
+    create_default_deny || return 1
     # F-21: only install certbot if not already present (avoids snap refresh on every issue).
     _ensure_certbot
 
@@ -2632,26 +2724,24 @@ nginx_enable_cloudflare_real_ip() {
     print_section "Enable Cloudflare Real IP Logging"
     require_root || return 1
 
-    local tpl="${NGINX_TEMPLATE_DIR}/cloudflare-real-ip.conf.tpl"
     local snippet="${NGINX_SNIPPETS_DIR}/cloudflare-real-ip.conf"
 
-    if [[ ! -f "$tpl" ]]; then
-        print_error "Template not found: $tpl"
-        return 1
-    fi
+    print_warn "Fetching current Cloudflare IP ranges from cloudflare.com..."
+    local ranges
+    ranges=$(_nginx_fetch_cloudflare_ips) || return 1
 
     ensure_dir "$NGINX_SNIPPETS_DIR"
     backup_file "$snippet" >/dev/null || true
-    cp "$tpl" "$snippet"
-    chmod 644 "$snippet"
+    _nginx_write_cf_real_ip_snippet "$snippet" "$ranges" || return 1
 
     print_ok "Snippet installed: $snippet"
     echo ""
     print_warn "Next step: add the following to each server {} block behind Cloudflare:"
     echo "    include /etc/nginx/snippets/cloudflare-real-ip.conf;"
     print_warn "Then run: nginx -t && systemctl reload nginx"
+    print_warn "To refresh IP ranges in future: use 'Refresh Cloudflare IP list' (option 6) from this menu."
     print_warn "Rollback: remove the include line and run 'Remove Cloudflare real IP snippet'."
-    log_info "nginx_enable_cloudflare_real_ip: snippet installed at $snippet"
+    log_info "F-22: nginx_enable_cloudflare_real_ip: written $snippet with live-fetched ranges"
 }
 
 nginx_remove_cloudflare_real_ip() {
@@ -2694,6 +2784,38 @@ _nginx_fetch_cloudflare_ips() {
     printf '%s\n%s\n' "$v4" "$v6"
 }
 
+# _nginx_write_cf_real_ip_snippet <snippet> <ranges>
+# Write the real_ip snippet from the given newline-separated CIDR list.
+_nginx_write_cf_real_ip_snippet() {
+    local snippet="$1"
+    local ranges="$2"
+    local tpl="${NGINX_TEMPLATE_DIR}/cloudflare-real-ip.conf.tpl"
+    local ts real_ip_ranges="" cidr
+
+    if [[ ! -f "$tpl" ]]; then
+        print_error "Template not found: $tpl"
+        return 1
+    fi
+
+    ts=$(date -u '+%Y-%m-%dT%H:%MZ')
+    while IFS= read -r cidr; do
+        [[ -z "$cidr" ]] && continue
+        real_ip_ranges+="set_real_ip_from ${cidr};"$'\n'
+    done <<< "$ranges"
+
+    if [[ -z "$real_ip_ranges" ]]; then
+        print_error "F-22: No Cloudflare IP ranges were generated for the real IP snippet."
+        return 1
+    fi
+
+    render_template "$tpl" \
+        "LAST_REFRESH=${ts}" \
+        "REAL_IP_RANGES=${real_ip_ranges%$'\n'}" \
+        | write_file "$snippet"
+    chmod 644 "$snippet"
+    chown root:root "$snippet" 2>/dev/null || true
+}
+
 # _nginx_write_cf_restrict_conf <restrict_conf> <ranges>
 # Write the geo {} block from the given newline-separated CIDR list.
 _nginx_write_cf_restrict_conf() {
@@ -2724,16 +2846,18 @@ _nginx_write_cf_restrict_conf() {
 
 # nginx_refresh_cloudflare_ips
 # F-22 fix: download current CF IP ranges from cloudflare.com and regenerate
-# /etc/nginx/conf.d/cloudflare-ip-restrict.conf in-place.
+# both the restrict conf and the real_ip snippet when they exist.
 # Safe to call at any time; takes a backup before overwriting.
 nginx_refresh_cloudflare_ips() {
     print_section "Refresh Cloudflare IP List"
     require_root || return 1
 
     local restrict_conf="/etc/nginx/conf.d/cloudflare-ip-restrict.conf"
-    if [[ ! -f "$restrict_conf" ]]; then
-        print_warn "CF IP restrict config not found: $restrict_conf"
-        print_warn "Enable CF IP restrict first (option 5), then refresh."
+    local snippet="${NGINX_SNIPPETS_DIR}/cloudflare-real-ip.conf"
+
+    if [[ ! -f "$restrict_conf" && ! -f "$snippet" ]]; then
+        print_warn "No managed Cloudflare artefacts found to refresh."
+        print_warn "Enable Cloudflare real IP logging and/or Cloudflare IP restrict first."
         return 1
     fi
 
@@ -2741,24 +2865,33 @@ nginx_refresh_cloudflare_ips() {
     local ranges
     ranges=$(_nginx_fetch_cloudflare_ips) || return 1
 
-    backup_file "$restrict_conf" >/dev/null || true
-    _nginx_write_cf_restrict_conf "$restrict_conf" "$ranges"
+    if [[ -f "$restrict_conf" ]]; then
+        backup_file "$restrict_conf" >/dev/null || true
+        _nginx_write_cf_restrict_conf "$restrict_conf" "$ranges" || return 1
+        print_ok "Cloudflare IP restrict refreshed: $restrict_conf"
+    fi
 
-    local count
-    count=$(grep -cE 'cidr|\s0;' "$restrict_conf" 2>/dev/null || grep -c '0;' "$restrict_conf" || true)
-    print_ok "Cloudflare IP list refreshed: $restrict_conf"
-    log_info "F-22: nginx_refresh_cloudflare_ips: ranges written at $(date -u '+%Y-%m-%dT%H:%MZ')"
+    if [[ -f "$snippet" ]]; then
+        backup_file "$snippet" >/dev/null || true
+        _nginx_write_cf_real_ip_snippet "$snippet" "$ranges" || return 1
+        print_ok "Cloudflare real IP snippet refreshed: $snippet"
+    fi
 
-    if nginx_validate >/dev/null 2>&1; then
-        # P-03 fix: if service_reload fails, don't print_ok — operator needs to know.
+    log_info "F-22: nginx_refresh_cloudflare_ips: refreshed managed Cloudflare artefacts at $(date -u '+%Y-%m-%dT%H:%MZ')"
+
+    if ! nginx_validate >/dev/null 2>&1; then
+        print_error "Nginx validation failed after refresh — check updated Cloudflare artefacts manually."
+        return 1
+    fi
+
+    if service_active nginx; then
         if service_reload nginx; then
             print_ok "Nginx reloaded with updated Cloudflare IP ranges."
         else
             print_warn "Nginx validation passed but reload returned non-zero — check 'systemctl status nginx'."
         fi
     else
-        print_error "Nginx validation failed after refresh — check $restrict_conf manually."
-        return 1
+        print_warn "Nginx config validated, but the service is not active. Start or reload nginx manually when ready."
     fi
 }
 
@@ -2841,23 +2974,19 @@ nginx_add_custom_powered_by() {
         print_error "Header value cannot be empty."
         return 1
     fi
-    # F-14 fix: reject newlines unconditionally (an HTTP header value must be a single line).
-    if [[ "$header_value" == *$'\n'* ]]; then
-        print_error "Header value must not contain newlines."
+    # F-14 fix: keep the header value within the quoted Nginx string literal.
+    # Reject double quotes, backslashes, and newlines rather than trying to
+    # hand-escape them through a shell+sed pipeline.
+    if [[ "$header_value" == *$'\n'* || "$header_value" == *$'\r'* || "$header_value" == *'"'* || "$header_value" == *'\\'* ]]; then
+        print_error "Header value must not contain double quotes, backslashes, or newlines."
         return 1
     fi
-    # F-14 fix: sanitize for sed replacement — escape \, &, and | (the sed delimiter)
-    # so that special characters in operator input cannot corrupt the sed command or
-    # the generated snippet file.
-    local safe_header_value
-    safe_header_value="${header_value//\\/\\\\}"   # \ → \\
-    safe_header_value="${safe_header_value//&/\\&}" # & → \&
-    safe_header_value="${safe_header_value//|/\\|}"  # | → \|  (delimiter escape)
 
     ensure_dir "$NGINX_SNIPPETS_DIR"
     backup_file "$snippet" >/dev/null || true
-    sed "s|{{VALUE}}|${safe_header_value}|g" "$tpl" > "$snippet"
+    render_template "$tpl" "VALUE=${header_value}" | write_file "$snippet"
     chmod 644 "$snippet"
+    chown root:root "$snippet" 2>/dev/null || true
 
     print_ok "Snippet installed: $snippet"
     echo ""

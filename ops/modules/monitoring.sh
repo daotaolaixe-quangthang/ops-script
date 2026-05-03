@@ -157,6 +157,23 @@ _monitoring_ensure_pm2_logrotate() {
     return 1
 }
 
+_monitoring_reconcile_pm2_app_logs() {
+    local node_mod="${OPS_ROOT:-/opt/ops}/modules/node.sh"
+
+    if ! declare -f node_reconcile_pm2_log_files >/dev/null 2>&1 && [[ -f "$node_mod" ]]; then
+        # shellcheck source=/dev/null
+        source "$node_mod"
+    fi
+
+    if declare -f node_reconcile_pm2_log_files >/dev/null 2>&1; then
+        node_reconcile_pm2_log_files
+        return $?
+    fi
+
+    print_warn "PM2 is installed but node_reconcile_pm2_log_files is unavailable."
+    return 1
+}
+
 monitoring_apply_baseline() {
     require_root || return 1
 
@@ -177,10 +194,10 @@ monitoring_apply_baseline() {
     fi
 
     if command -v nginx >/dev/null 2>&1 || systemctl list-unit-files 2>/dev/null | grep -q '^nginx\.service'; then
-        if [[ -f /etc/logrotate.d/nginx ]]; then
+        if [[ -f /etc/logrotate.d/nginx-ops ]]; then
             print_ok "Nginx logrotate config present."
         else
-            print_warn "Nginx is installed but /etc/logrotate.d/nginx is missing."
+            print_warn "Nginx is installed but /etc/logrotate.d/nginx-ops is missing."
             ok=0
         fi
     fi
@@ -196,6 +213,11 @@ monitoring_apply_baseline() {
 
     if command -v pm2 >/dev/null 2>&1; then
         if ! _monitoring_ensure_pm2_logrotate; then
+            ok=0
+        fi
+        if _monitoring_reconcile_pm2_app_logs; then
+            print_ok "PM2 app log files reconciled."
+        else
             ok=0
         fi
     fi

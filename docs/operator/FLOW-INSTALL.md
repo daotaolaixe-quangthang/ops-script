@@ -152,12 +152,12 @@ From the main menu, user selects **“Production Setup Wizard”** (or similar).
        - `allow_url_fopen = Off` (apps must use cURL for remote URLs)
        - `expose_php = Off`, `display_errors = Off`, `log_errors = On`.
 
-6. **Database (MariaDB (default))**
+6. **Database (MariaDB)**
    - Ask whether to install a database server now.
    - If yes:
-     - Install MySQL or MariaDB (as default).
-     - Run secure setup (root password, disable anonymous users, etc.).
-     - Apply tuning from `docs/reference/PERF-TUNING.md`.
+     - Install MariaDB.
+     - Run secure setup (unix_socket root baseline, remove anonymous users, drop test DBs, etc.).
+     - Apply tuning from `docs/reference/PERF-TUNING.md`. 
 
 7. **Logging & basic monitoring**
    - Ensure the OPS log path (`/var/log/ops/ops.log`) exists and is rotated via `/etc/logrotate.d/ops`.

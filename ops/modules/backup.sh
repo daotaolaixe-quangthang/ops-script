@@ -127,7 +127,7 @@ backup_dump_db() {
 }
 
 # backup_dump_all_dbs
-# Dumps all non-system databases to individual files.
+# Dumps all non-system databases to individual per-database files.
 backup_dump_all_dbs() {
     print_section "DB Dump: All Databases"
     require_root || return 1
@@ -227,11 +227,14 @@ backup_show_restore_guidance() {
     cat <<'GUIDANCE'
 
   ── DB Restore ──────────────────────────────────────────────
-  # Restore a single database dump:
-  gunzip < /var/backups/ops/db/<dbname>-<ts>.sql.gz | mysql -u root <dbname>
+  # Restore a single database dump (socket-auth baseline):
+  gunzip -c /var/backups/ops/db/<dbname>-<ts>.sql.gz | sudo mysql --database="<dbname>"
+
+  # Dump-all mode writes one file per database, so restore each file separately:
+  gunzip -c /var/backups/ops/db/<dbname>-<ts>.sql.gz | sudo mysql --database="<dbname>"
 
   # Verify the DB after restore:
-  mysql -u root -e "SHOW TABLES;" <dbname>
+  sudo mysql --database="<dbname>" -e "SHOW TABLES;"
 
   ── Nginx Config Restore ─────────────────────────────────────
   # Extract nginx sites from archive:
@@ -246,10 +249,16 @@ backup_show_restore_guidance() {
   tar -xzf /var/backups/ops/config/ops-config-<ts>.tar.gz \
       -C / etc/ops/
 
-  # Secret files — verify permissions after restore:
-  chmod 600 /etc/ops/.telegram-bot-token
-  chmod 600 /etc/ops/.db-root-password
-  chmod 600 /etc/ops/.codex-api-key
+  # Secret files — re-apply OPS ownership and permissions after restore:
+  [[ -f /etc/ops/.telegram-bot-token ]] && chmod 600 /etc/ops/.telegram-bot-token && chown <ADMIN_USER>:<ADMIN_USER> /etc/ops/.telegram-bot-token
+  [[ -f /etc/ops/.db-root-password ]] && chmod 600 /etc/ops/.db-root-password && chown <ADMIN_USER>:<ADMIN_USER> /etc/ops/.db-root-password
+  [[ -f /etc/ops/.codex-api-key ]] && chmod 600 /etc/ops/.codex-api-key && chown <ADMIN_USER>:<ADMIN_USER> /etc/ops/.codex-api-key
+  if [[ -d /etc/ops/db-credentials ]]; then
+      chmod 700 /etc/ops/db-credentials
+      chown <ADMIN_USER>:<ADMIN_USER> /etc/ops/db-credentials
+      find /etc/ops/db-credentials -maxdepth 1 -type f -name '*.conf' \
+          -exec chmod 600 {} \; -exec chown <ADMIN_USER>:<ADMIN_USER> {} \;
+  fi
 
   NOTE: Restore is never automatic. Always verify after restoring.
         Keep at least 2 recent backups before making large changes.

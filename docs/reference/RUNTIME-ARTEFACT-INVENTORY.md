@@ -14,6 +14,7 @@ Luu y: day la inventory cho feature hien tai cua stable line; neu runtime tao th
 | `/etc/ops/ops.conf` | global config |
 | `/etc/ops/capacity.conf` | VPS capacity profile (shell-sourceable key=value) |
 | `/var/log/ops/ops.log` | high-level operations log |
+| `/etc/logrotate.d/ops` | OPS core log rotation |
 | `/etc/ops/notifications.conf` | global notification channels and policy |
 
 ## 2. Login and operator access
@@ -30,13 +31,14 @@ Node services follow the PM2 contract. CLIProxyAPI is a separate systemd-managed
 
 **Node apps:**
 
-| Artefact | Muc dich |
-|---|---|
-| app dir | Node source/build/runtime files |
-| `.env` files | app secrets and runtime env (0600) |
-| PM2 process list | process supervision |
-| PM2 ecosystem config | declarative process config neu dung |
-| `/etc/ops/apps/<app>.conf` | app source of truth neu OPS tao |
+| Artefact | Path | Muc dich |
+|---|---|---|
+| app dir | app-specific | Node source/build/runtime files |
+| `.env` files | app-specific | app secrets and runtime env (0600) |
+| PM2 process list | PM2 daemon state | process supervision |
+| PM2 ecosystem config | `<app>/ecosystem.config.js` | declarative process config neu dung |
+| PM2 app logs | `/var/log/ops/pm2-<app>-out.log`, `/var/log/ops/pm2-<app>-err.log` | stdout/stderr logs, runtime-user owned |
+| `/etc/ops/apps/<app>.conf` | `/etc/ops/apps/<app>.conf` | app source of truth neu OPS tao |
 
 **CLIProxyAPI specific:**
 
@@ -45,6 +47,7 @@ Node services follow the PM2 contract. CLIProxyAPI is a separate systemd-managed
 | Binary | `/opt/cli-proxy-api/cli-proxy-api` | Provider service executable |
 | Config | `/opt/cli-proxy-api/config.yaml` | Runtime config |
 | Auth dir | `~/.cli-proxy-api/` | Provider auth state |
+| Logs dir | `/opt/cli-proxy-api/logs` | file logging dir khi request logging duoc bat |
 | systemd service | `cli-proxy-api.service` | Service supervision |
 | OPS state | `/etc/ops/cli-proxy-api.conf` | OPS-level metadata (0640) |
 | Local API key | `/etc/ops/.cli-proxy-api-key` | Local client key when API key mode is enabled |
@@ -57,16 +60,19 @@ Node services follow the PM2 contract. CLIProxyAPI is a separate systemd-managed
 | `/etc/nginx/nginx.conf` | global Nginx config |
 | `/etc/nginx/sites-available/*` | per-domain configs |
 | `/etc/nginx/sites-enabled/*` | enabled site links |
-| default deny server | reject unknown hosts |
+| `/etc/nginx/sites-available/00-default-deny` | default deny vhost for unknown hosts |
+| `/etc/logrotate.d/nginx-ops` | OPS-managed Nginx per-domain log rotation |
 | `/etc/ops/domains/<domain>.conf` | domain mapping source of truth neu OPS tao |
 
 ## 5. SSL
 
-| Artefact | Muc dich |
-|---|---|
-| certbot config and renewal state | ACME lifecycle |
-| live cert paths | active cert/key material |
-| Nginx SSL snippets | TLS wiring |
+| Artefact | Path | Muc dich |
+|---|---|---|
+| certbot config and renewal state | certbot-managed | ACME lifecycle |
+| live cert paths | cert-specific | active cert/key material |
+| Default deny self-signed cert | `/etc/nginx/ssl/ops-default.crt` | fallback cert cho default deny 443 vhost |
+| Default deny self-signed key | `/etc/nginx/ssl/ops-default.key` | fallback key cho default deny 443 vhost |
+| Nginx SSL snippets | Nginx-managed | TLS wiring |
 
 ## 5.1 Scheduled checks and notifications
 
@@ -97,7 +103,8 @@ Node services follow the PM2 contract. CLIProxyAPI is a separate systemd-managed
 |---|---|
 | **MariaDB** service config (default) | DB server tuning |
 | DB users and databases | app data access |
-| `/etc/ops/database.conf` | global DB config for OPS (engine, version) |
+| `/etc/ops/database.conf` | global DB config for OPS (engine, version, root auth mode) |
+| `/etc/ops/db-credentials/<db>__<user>.conf` | OPS-managed per-database app credentials (0600, admin-owned) |
 
 
 ## 8. Security
@@ -115,10 +122,13 @@ Cac file sau phai luon co permission `0600` va owned by admin user:
 | File | Noi dung |
 |---|---|
 | `/etc/ops/.cli-proxy-api-key` | CLIProxyAPI local client key |
-| `/etc/ops/.db-root-password` | MariaDB/MySQL root password |
-| `/etc/ops/.codex-api-key` | Codex CLI API key |
-| `/etc/ops/.telegram-bot-token` | Telegram bot token |
-| `~/.codex/config.toml` | Codex CLI config with inline API key |
+| `/etc/ops/db-credentials/<db>__<user>.conf` | OPS-managed DB user credentials |
+| `/etc/ops/.db-root-password` | Legacy/fallback MariaDB root password file |
+| `/etc/ops/.codex-api-key` | Codex CLI API key cho OpenAI API / custom endpoint modes |
+| `~/.claude-api-key` | Claude Code CLI API key |
+| `~/claude-telegram/.env` | Claude Telegram bot secret/config env file |
+| `/etc/ops/.telegram-bot-token` | Monitoring notification Telegram bot token |
+| `~/.codex/config.toml` | Codex CLI config (provider/endpoint/model; khong phai canonical secret store) |
 
 > Bat co file nao trong danh sach tren bi set khac 0600 la bug bao mat.
 
@@ -133,15 +143,33 @@ Cac file sau phai luon co permission `0600` va owned by admin user:
 
 **Rollback:** remove snippet file, remove `include` line from site config, `nginx -t && systemctl reload nginx`.
 
+> Snippet file alone khong thay doi traffic; no chi co hieu luc khi site config explicit `include` snippet tuong ung.
+
 
 ## 9. Codex CLI
 
 | Artefact | Path | Muc dich |
 |---|---|---|
 | Binary | `/usr/local/bin/codex` (npm global) | Codex CLI entry |
-| Config | `~/.codex/config.toml` | Endpoint, model, API key (0600) |
-| API key | `/etc/ops/.codex-api-key` | Key rieng biet (0600) |
+| Config | `~/.codex/config.toml` | Provider, endpoint, model config (0600) |
+| CLIProxyAPI key | `/etc/ops/.cli-proxy-api-key` | Canonical secret cho local CLIProxyAPI mode (0600) |
+| Direct/custom key | `/etc/ops/.codex-api-key` | Canonical secret cho OpenAI API / custom endpoint modes (0600) |
+| Loader block | admin `~/.bashrc` | Managed `CLI_PROXY_API_KEY` loader cho local mode |
+| Auto env block | admin `~/.bash_profile` | Managed `OPENAI_API_KEY` loader khi operator bat auto env |
 | OPS state | `/etc/ops/codex-cli.conf` | OPS metadata: mode, endpoint, version |
+
+## 9.1 Claude Code CLI / Telegram bot
+
+| Artefact | Path | Muc dich |
+|---|---|---|
+| Binary | `/usr/local/bin/claude` (npm global) | Claude Code CLI entry |
+| API key | `~/.claude-api-key` | Canonical Claude CLI secret (0600) |
+| Shell env block | admin `~/.bashrc` | Managed loader block cho `ANTHROPIC_*` |
+| OPS state | `/etc/ops/claude-code.conf` | OPS metadata: base URL, model, install state |
+| Telegram bot dir | `~/claude-telegram/` | Bot source + virtualenv |
+| Telegram bot env | `~/claude-telegram/.env` | Bot-local secret/config env file (0600) |
+| Telegram bot PID | `~/claude-telegram/claude-telegram-bot.pid` | nohup fallback PID file |
+| Telegram bot log | `~/claude-telegram-bot.log` | nohup fallback log |
 
 ## 10. Verification expectations
 
@@ -179,7 +207,7 @@ Neu implementation tao artefact moi ma file nay khong cap nhat, docs dang khong 
 | Artefact | Path | Verify | Permission |
 |---|---|---|---|
 | DB dump (single) | `/var/backups/ops/db/<dbname>-YYYYMMDD-HHMMSS.sql.gz` | `gzip -t <file>` | 0600 |
-| DB dump (all) | `/var/backups/ops/db/all-YYYYMMDD-HHMMSS.sql.gz` (per-db files) | `gzip -t <file>` | 0600 |
+| DB dump (all) | `/var/backups/ops/db/<dbname>-YYYYMMDD-HHMMSS.sql.gz` (one file per non-system database) | `gzip -t <file>` | 0600 |
 | Config archive | `/var/backups/ops/config/ops-config-YYYYMMDD-HHMMSS.tar.gz` | `tar -tzf <file>` | 0600 |
 | Backup base dir | `/var/backups/ops/` | `ls -la /var/backups/ops/` | 0700 |
 

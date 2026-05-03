@@ -9,6 +9,7 @@
 
 CLAUDE_STATE_FILE="${OPS_CONFIG_DIR}/claude-code.conf"
 CLAUDE_MARKER="# OPS: claude-code config"
+CLAUDE_MARKER_END="# OPS: claude-code config end"
 
 # ── Helpers ──────────────────────────────────────────────────
 
@@ -20,6 +21,137 @@ _claude_admin_home() {
 
 _claude_bashrc() {
     echo "$(_claude_admin_home)/.bashrc"
+}
+
+_claude_api_key_file() {
+    echo "$(_claude_admin_home)/.claude-api-key"
+}
+
+_claude_env_quote() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//\$/\\$}"
+    value="${value//$'\n'/\\n}"
+    value="${value//$'\r'/\\r}"
+    printf '"%s"' "$value"
+}
+
+_claude_env_append_line() {
+    local file="$1"
+    local key="$2"
+    local value="$3"
+    printf '%s=%s\n' "$key" "$(_claude_env_quote "$value")" >> "$file"
+}
+
+_claude_strip_shell_block() {
+    local file="$1"
+    local start_marker="$2"
+    local end_marker="$3"
+    local tmp has_end=0
+
+    [[ -f "$file" ]] || return 0
+
+    if grep -qFx "$end_marker" "$file" 2>/dev/null; then
+        has_end=1
+    fi
+
+    tmp=$(mktemp "${file}.tmp.XXXXXX")
+    if ! awk -v start="$start_marker" -v end="$end_marker" -v has_end="$has_end" '
+        $0 == start {
+            skip=1
+            next
+        }
+        skip && has_end == 1 && $0 == end {
+            skip=0
+            next
+        }
+        skip && has_end == 0 && $0 == "" {
+            skip=0
+            next
+        }
+        !skip { print }
+        END {
+            if (skip && has_end == 1) {
+                exit 1
+            }
+        }
+    ' "$file" > "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+
+    chmod --reference="$file" "$tmp" 2>/dev/null || true
+    chown --reference="$file" "$tmp" 2>/dev/null || true
+    mv "$tmp" "$file"
+}
+
+_claude_update_shell_block() {
+    local file="$1"
+    local start_marker="$2"
+    local end_marker="$3"
+    local block_content="$4"
+    local backup_path="${file}.bak.$(date +%Y%m%d_%H%M%S)"
+
+    touch "$file"
+    chown "$ADMIN_USER:$ADMIN_USER" "$file"
+
+    if ! bash -n "$file" 2>/dev/null; then
+        log_error "Refusing to update ${file}: invalid bash syntax"
+        return 1
+    fi
+
+    cp -a -- "$file" "$backup_path"
+
+    if grep -qFx "$start_marker" "$file" 2>/dev/null; then
+        if ! _claude_strip_shell_block "$file" "$start_marker" "$end_marker"; then
+            cp -a -- "$backup_path" "$file"
+            log_error "Refusing to rewrite malformed OPS block in ${file}. Restored ${backup_path}."
+            return 1
+        fi
+    fi
+
+    if [[ -n "$block_content" ]]; then
+        printf '\n%s\n' "$block_content" >> "$file"
+    fi
+
+    if ! bash -n "$file" 2>/dev/null; then
+        cp -a -- "$backup_path" "$file"
+        log_error "Managed block update caused syntax failure in ${file}. Restored ${backup_path}."
+        return 1
+    fi
+
+    chown "$ADMIN_USER:$ADMIN_USER" "$file"
+}
+
+_claude_write_api_key_file() {
+    local api_key="$1"
+    local api_key_file
+    api_key_file="$(_claude_api_key_file)"
+
+    write_file "$api_key_file" <<EOF
+${api_key}
+EOF
+    chmod 600 "$api_key_file"
+    chown "$ADMIN_USER:$ADMIN_USER" "$api_key_file"
+}
+
+_claude_read_api_key() {
+    local api_key_file
+    api_key_file="$(_claude_api_key_file)"
+
+    [[ -f "$api_key_file" ]] || return 1
+    tr -d '\r\n' < "$api_key_file"
+}
+
+_claude_probe_url() {
+    local clean_url="${1%/}"
+
+    if [[ "$clean_url" == */v1 ]]; then
+        echo "${clean_url}/models"
+    else
+        echo "${clean_url}/v1/models"
+    fi
 }
 
 _claude_set_state() {
@@ -52,6 +184,12 @@ install_claude_cli() {
 install_claude_vietnamese_fix() {
     print_section "Install Vietnamese Fix for Claude Code CLI"
     echo ""
+    print_warn "This action clones and executes third-party code from GitHub."
+    print_warn "Review the repository before using it on a production host."
+    if ! prompt_confirm "Continue installing the Vietnamese fix?"; then
+        log_info "Vietnamese fix installation cancelled."
+        return 0
+    fi
 
     local repo_url="https://github.com/daotaolaixe-quangthang/claude-code-vietnamese-fix"
     local tmp_dir
@@ -64,19 +202,35 @@ install_claude_vietnamese_fix() {
         return 1
     fi
 
+    local install_status=0
+
     # Run installer if available
     if [[ -f "$tmp_dir/install.sh" ]]; then
         log_info "Running install.sh ..."
-        bash "$tmp_dir/install.sh"
+        if bash "$tmp_dir/install.sh"; then
+            :
+        else
+            install_status=$?
+            log_error "install.sh failed."
+        fi
     elif [[ -f "$tmp_dir/setup.sh" ]]; then
         log_info "Running setup.sh ..."
-        bash "$tmp_dir/setup.sh"
+        if bash "$tmp_dir/setup.sh"; then
+            :
+        else
+            install_status=$?
+            log_error "setup.sh failed."
+        fi
     else
         log_warn "No install.sh / setup.sh found — listing repo contents:"
         ls -la "$tmp_dir"
     fi
 
     rm -rf "$tmp_dir"
+    if (( install_status != 0 )); then
+        return "$install_status"
+    fi
+
     log_info "Vietnamese fix installation complete."
     _claude_set_state "CLAUDE_VIETNAMESE_FIX" "yes"
     _claude_set_state "CLAUDE_VIETNAMESE_FIX_DATE" "$(date +%Y-%m-%d)"
@@ -99,7 +253,7 @@ configure_claude_cli() {
     read -r mode_choice < /dev/tty
     mode_choice="${mode_choice:-1}"
 
-    local base_url api_key model
+    local base_url api_key model api_key_file
 
     if [[ "$mode_choice" == "1" ]]; then
         base_url="http://127.0.0.1:8317"
@@ -123,9 +277,9 @@ configure_claude_cli() {
             log_info "Using CLIProxyAPI key from ${OPS_CONFIG_DIR}/.cli-proxy-api-key"
         else
             echo ""
-            printf "  CLIProxyAPI key not found. Enter API Key: " > /dev/tty
-            read -r -s api_key < /dev/tty
-            echo ""
+            prompt_secret "  CLIProxyAPI key not found. Enter API Key" || return 1
+            api_key="${SECRET:-}"
+            unset SECRET
         fi
 
         if [[ -z "$api_key" ]]; then
@@ -141,9 +295,9 @@ configure_claude_cli() {
         read -r base_url < /dev/tty
         base_url="${base_url:-https://api.anthropic.com}"
 
-        printf "  Enter API Key: " > /dev/tty
-        read -r -s api_key < /dev/tty
-        echo ""
+        prompt_secret "  Enter API Key" || return 1
+        api_key="${SECRET:-}"
+        unset SECRET
         if [[ -z "$api_key" ]]; then
             log_error "API Key cannot be empty"
             return 1
@@ -158,32 +312,29 @@ configure_claude_cli() {
         _cliproxyapi_activate_api_key || return 1
     fi
 
+    api_key_file="$(_claude_api_key_file)"
+    _claude_write_api_key_file "$api_key"
+
     echo ""
     log_info "Writing Claude config to $bashrc ..."
 
-    # Ensure bashrc exists and is owned by admin
-    touch "$bashrc"
-    chown "$ADMIN_USER:$ADMIN_USER" "$bashrc"
+    local quoted_base_url quoted_model quoted_api_key_file block_content
+    printf -v quoted_base_url '%q' "$base_url"
+    printf -v quoted_model '%q' "$model"
+    printf -v quoted_api_key_file '%q' "$api_key_file"
 
-    # Remove old block if exists (idempotent)
-    if grep -q "$CLAUDE_MARKER" "$bashrc" 2>/dev/null; then
-        backup_file "$bashrc" >/dev/null || true
-        sed -i "/^${CLAUDE_MARKER}$/,/^$/d" "$bashrc"
-    else
-        backup_file "$bashrc" >/dev/null || true
-    fi
-
-    # Append new config block
-    cat >> "$bashrc" <<EOF
-
-${CLAUDE_MARKER}
-export ANTHROPIC_BASE_URL=${base_url}
-export ANTHROPIC_API_KEY=${api_key}
-export ANTHROPIC_AUTH_TOKEN="\${ANTHROPIC_API_KEY}"
-export ANTHROPIC_MODEL="${model}"
-EOF
-
-    chown "$ADMIN_USER:$ADMIN_USER" "$bashrc"
+    block_content="${CLAUDE_MARKER}
+export ANTHROPIC_BASE_URL=${quoted_base_url}
+export ANTHROPIC_MODEL=${quoted_model}
+if [[ -f ${quoted_api_key_file} ]]; then
+    export ANTHROPIC_API_KEY=\"\$(tr -d '\\r\\n' < ${quoted_api_key_file})\"
+    export ANTHROPIC_AUTH_TOKEN=\"\${ANTHROPIC_API_KEY}\"
+else
+    unset ANTHROPIC_API_KEY
+    unset ANTHROPIC_AUTH_TOKEN
+fi
+${CLAUDE_MARKER_END}"
+    _claude_update_shell_block "$bashrc" "$CLAUDE_MARKER" "$CLAUDE_MARKER_END" "$block_content" || return 1
 
     _claude_set_state "CLAUDE_BASE_URL" "$base_url"
     _claude_set_state "CLAUDE_MODEL"    "$model"
@@ -203,38 +354,32 @@ test_claude_cli() {
     version=$(claude --version 2>/dev/null || echo "NOT FOUND")
     echo "  Version       : $version"
 
-    # Env vars (sourced from admin's bashrc for display)
-    local bashrc
-    bashrc="$(_claude_bashrc)"
-    local base_url api_key_masked model
+    local base_url api_key_status model
+    local api_key_file probe_url
 
-    # shellcheck disable=SC1090
-    if [[ -f "$bashrc" ]]; then
-        base_url=$(  grep "^export ANTHROPIC_BASE_URL="  "$bashrc" | tail -1 | cut -d= -f2- || echo "NOT SET")
-        model=$(     grep "^export ANTHROPIC_MODEL="     "$bashrc" | tail -1 | cut -d= -f2- | tr -d '"' || echo "NOT SET")
-        local raw_key
-        raw_key=$(   grep "^export ANTHROPIC_API_KEY="  "$bashrc" | tail -1 | cut -d= -f2- || echo "")
-        if [[ -n "$raw_key" ]]; then
-            api_key_masked="${raw_key:0:8}****"
-        else
-            api_key_masked="NOT SET"
-        fi
+    ops_load_conf claude-code.conf
+    base_url="${CLAUDE_BASE_URL:-NOT SET}"
+    model="${CLAUDE_MODEL:-NOT SET}"
+    api_key_file="$(_claude_api_key_file)"
+
+    if [[ -s "$api_key_file" ]]; then
+        api_key_status="SET"
     else
-        base_url="NOT SET"
-        model="NOT SET"
-        api_key_masked="NOT SET"
+        api_key_status="NOT SET"
     fi
 
     echo "  Base URL      : $base_url"
     echo "  Model         : $model"
-    echo "  API Key       : $api_key_masked"
+    echo "  API Key File  : $api_key_file"
+    echo "  API Key       : $api_key_status"
 
     # Connectivity check
-    local clean_url="${base_url%/}"
-    if [[ "$clean_url" != "NOT SET" ]]; then
+    if [[ "$base_url" != "NOT SET" ]]; then
         local http_code
+        probe_url="$(_claude_probe_url "$base_url")"
         http_code=$(curl -s -o /dev/null -w '%{http_code}' \
-            --max-time 5 "${clean_url}/models" 2>/dev/null || echo "ERR")
+            --max-time 5 "$probe_url" 2>/dev/null || echo "ERR")
+        echo "  Probe URL     : $probe_url"
         echo "  Endpoint HTTP : $http_code"
     fi
 
@@ -257,6 +402,12 @@ _tg_running_pids() {
 install_claude_telegram_bot() {
     print_section "Install Claude Code Telegram Bot"
     echo ""
+    print_warn "This action clones and installs third-party code from GitHub via pip."
+    print_warn "Review the repository before using it on a production host."
+    if ! prompt_confirm "Continue installing the Telegram bot?"; then
+        log_info "Telegram bot installation cancelled."
+        return 0
+    fi
 
     local repo_url="https://github.com/daotaolaixe-quangthang/claude-code-telegram"
     local tg_dir tg_env tg_venv python_bin
@@ -332,10 +483,9 @@ install_claude_telegram_bot() {
 }
 
 configure_claude_telegram_bot() {
-    local tg_dir tg_env bashrc
+    local tg_dir tg_env
     tg_dir="$(_tg_dir)"
     tg_env="$(_tg_env)"
-    bashrc="$(_claude_bashrc)"
 
     print_section "Configure Claude Code Telegram Bot"
     echo ""
@@ -343,6 +493,7 @@ configure_claude_telegram_bot() {
     echo "  Bot Token  : Nhắn tin @BotFather trên Telegram → /newbot"
     echo "  User ID    : Nhắn tin @userinfobot trên Telegram để lấy ID"
     echo "  API Key    : Tự động copy từ cấu hình Claude Code CLI"
+    echo "  Lưu ý      : Nên chọn thư mục hẹp hơn toàn bộ admin home cho production"
     echo "  ─────────────────────────────────────────────────────────────"
     echo ""
 
@@ -355,8 +506,9 @@ configure_claude_telegram_bot() {
     # ── User inputs ───────────────────────────────────────────
 
     # Bot Token
-    prompt_secret "  Telegram Bot Token (from @BotFather)"
-    local bot_token="$SECRET"
+    prompt_secret "  Telegram Bot Token (from @BotFather)" || return 1
+    local bot_token="${SECRET:-}"
+    unset SECRET
     if [[ -z "$bot_token" ]]; then
         log_error "Bot token cannot be empty"
         return 1
@@ -377,53 +529,45 @@ configure_claude_telegram_bot() {
         return 1
     fi
 
-    # Approved directory (default: admin home)
-    local admin_home
+    # Approved directory (default: OPS root if available)
+    local admin_home default_approved_dir approved_dir
     admin_home="$(_claude_admin_home)"
-    local approved_dir
-    printf "  Approved directory [${admin_home}]: " > /dev/tty
+    default_approved_dir="${OPS_ROOT:-${admin_home}}"
+    printf "  Approved directory [${default_approved_dir}]: " > /dev/tty
     read -r approved_dir < /dev/tty
-    approved_dir="${approved_dir:-${admin_home}}"
+    approved_dir="${approved_dir:-${default_approved_dir}}"
 
-    # ── Auto-copy ANTHROPIC_* from Claude Code CLI bashrc ─────
-    local api_key base_url model
-    if [[ -f "$bashrc" ]]; then
-        api_key=$(grep  "^export ANTHROPIC_API_KEY="  "$bashrc" | tail -1 | cut -d= -f2- | tr -d '"')
-        base_url=$(grep "^export ANTHROPIC_BASE_URL=" "$bashrc" | tail -1 | cut -d= -f2- | tr -d '"')
-        model=$(grep    "^export ANTHROPIC_MODEL="    "$bashrc" | tail -1 | cut -d= -f2- | tr -d '"')
-
-        if [[ "$api_key" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$ ]]; then
-            local api_key_ref api_key_resolved
-            api_key_ref="${BASH_REMATCH[1]}"
-            api_key_resolved=$(grep "^export ${api_key_ref}=" "$bashrc" | tail -1 | cut -d= -f2- | tr -d '"')
-            if [[ -n "$api_key_resolved" ]]; then
-                api_key="$api_key_resolved"
-            fi
-        fi
+    # ── Auto-copy ANTHROPIC_* from canonical Claude config ─────
+    local api_key="" base_url="" model=""
+    ops_load_conf claude-code.conf
+    base_url="${CLAUDE_BASE_URL:-}"
+    model="${CLAUDE_MODEL:-}"
+    if ! api_key="$(_claude_read_api_key 2>/dev/null)"; then
+        api_key=""
     fi
 
     echo ""
     log_info "Writing ${tg_env} ..."
-    if [[ -n "$api_key" ]];  then log_info "  ANTHROPIC_API_KEY  : ${api_key:0:8}****"; fi
     if [[ -n "$base_url" ]]; then log_info "  ANTHROPIC_BASE_URL : ${base_url}"; fi
     if [[ -n "$model" ]];    then log_info "  ANTHROPIC_MODEL    : ${model}"; fi
 
     mkdir -p "${tg_dir}"
+    chown "${ADMIN_USER}:${ADMIN_USER}" "${tg_dir}"
 
     # Build .env
-    cat > "${tg_env}" <<EOF
-TELEGRAM_BOT_TOKEN=${bot_token}
-TELEGRAM_BOT_USERNAME=${bot_username}
-APPROVED_DIRECTORY=${approved_dir}
-ALLOWED_USERS=${allowed_users}
-AGENTIC_MODE=true
-VERBOSE_LEVEL=1
+    write_file "${tg_env}" <<EOF
 EOF
+    _claude_env_append_line "${tg_env}" "TELEGRAM_BOT_TOKEN" "$bot_token"
+    _claude_env_append_line "${tg_env}" "TELEGRAM_BOT_USERNAME" "$bot_username"
+    _claude_env_append_line "${tg_env}" "APPROVED_DIRECTORY" "$approved_dir"
+    _claude_env_append_line "${tg_env}" "ALLOWED_USERS" "$allowed_users"
+    _claude_env_append_line "${tg_env}" "AGENTIC_MODE" "true"
+    _claude_env_append_line "${tg_env}" "VERBOSE_LEVEL" "1"
 
     # Append ANTHROPIC_* only if available from Claude Code CLI
-    if [[ -n "$api_key" ]];  then echo "ANTHROPIC_API_KEY=${api_key}"   >> "${tg_env}"; fi
-    if [[ -n "$base_url" ]]; then echo "ANTHROPIC_BASE_URL=${base_url}" >> "${tg_env}"; fi
-    if [[ -n "$model" ]];    then echo "ANTHROPIC_MODEL=${model}"       >> "${tg_env}"; fi
+    if [[ -n "$api_key" ]];  then _claude_env_append_line "${tg_env}" "ANTHROPIC_API_KEY" "$api_key"; fi
+    if [[ -n "$base_url" ]]; then _claude_env_append_line "${tg_env}" "ANTHROPIC_BASE_URL" "$base_url"; fi
+    if [[ -n "$model" ]];    then _claude_env_append_line "${tg_env}" "ANTHROPIC_MODEL" "$model"; fi
 
     chmod 600 "${tg_env}"
     chown "${ADMIN_USER}:${ADMIN_USER}" "${tg_env}"
@@ -441,12 +585,14 @@ start_claude_telegram_bot() {
     print_section "Start Claude Code Telegram Bot"
     echo ""
 
-    local tg_dir tg_env tg_venv log_file pid_file running_pids
+    local tg_dir tg_env tg_venv log_file pid_file running_pids launch_cmd
+    local quoted_tg_dir quoted_tg_binary quoted_log_file quoted_pid_file quoted_api_key_file api_key_file
     tg_dir="$(_tg_dir)"
     tg_env="$(_tg_env)"
     tg_venv="${tg_dir}/.venv"
     log_file="$(_claude_admin_home)/claude-telegram-bot.log"
     pid_file="${tg_dir}/claude-telegram-bot.pid"
+    api_key_file="$(_claude_api_key_file)"
 
     if [[ ! -f "${tg_env}" ]]; then
         log_error ".env not found. Run Configure first."
@@ -469,10 +615,27 @@ start_claude_telegram_bot() {
         return
     fi
 
+    touch "${log_file}"
+    chown "${ADMIN_USER}:${ADMIN_USER}" "${log_file}"
+    chmod 600 "${log_file}"
+
     log_info "Starting bot in background..."
-    sudo -u "${ADMIN_USER}" bash -c \
-        "cd '${tg_dir}' && nohup '${tg_venv}/bin/claude-telegram-bot' >> '${log_file}' 2>&1 < /dev/null & echo \$! > '${pid_file}'"
+    printf -v quoted_tg_dir '%q' "$tg_dir"
+    printf -v quoted_tg_binary '%q' "${tg_venv}/bin/claude-telegram-bot"
+    printf -v quoted_log_file '%q' "$log_file"
+    printf -v quoted_pid_file '%q' "$pid_file"
+    printf -v quoted_api_key_file '%q' "$api_key_file"
+    launch_cmd="umask 077 && cd ${quoted_tg_dir}"
+    if [[ -f "$api_key_file" ]]; then
+        launch_cmd+=" && export ANTHROPIC_API_KEY=\"\$(tr -d '\\r\\n' < ${quoted_api_key_file})\""
+    fi
+    launch_cmd+=" && nohup ${quoted_tg_binary} >> ${quoted_log_file} 2>&1 < /dev/null & echo \$! > ${quoted_pid_file}"
+    ops_run_as_user "$ADMIN_USER" bash -c "$launch_cmd"
     sleep 1
+    if [[ -f "${pid_file}" ]]; then
+        chmod 600 "${pid_file}"
+        chown "${ADMIN_USER}:${ADMIN_USER}" "${pid_file}"
+    fi
 
     running_pids="$(_tg_running_pids)"
     if [[ -n "$running_pids" ]]; then

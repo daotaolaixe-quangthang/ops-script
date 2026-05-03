@@ -3,6 +3,7 @@
 
 server {
     listen 80;
+    listen [::]:80;
     server_name {{DOMAIN}};
 
     access_log /var/log/nginx/cli-proxy-api.access.log;
@@ -33,5 +34,3 @@ server {
         proxy_buffering       off;
     }
 }
-
-{{SSL_HTTPS_BLOCK}}

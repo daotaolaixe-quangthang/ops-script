@@ -115,15 +115,20 @@ This document defines non-negotiable security rules for OPS. Any change that vio
   - Set `allow_url_include = Off`.
   - Set sensible `memory_limit`, `max_execution_time`, `post_max_size`, `upload_max_filesize`.
   - Enable and correctly tune opcache.
-  - If an app pool requires a function in `disable_functions`, add a `php_admin_value` override in that pool's `.conf` file only.
+  - Common performance tuning may apply to both CLI and FPM, but **security-sensitive hardening** (`disable_functions`, `allow_url_fopen`, `allow_url_include`, `display_errors`, `log_errors`, `expose_php`) must be applied to PHP-FPM by default, not forced onto CLI workloads.
+  - If an app pool requires a function in `disable_functions` or needs `allow_url_fopen = On`, add a `php_admin_value` override in that pool's `.conf` file only.
+  - `pm.status_path` and `ping.path` should stay disabled in the default pool baseline. If you enable them for debugging, expose them only through a localhost-only Nginx location.
 - PHP-FPM pools:
   - Run under non-root users.
   - Have file/directory permissions restricted to what applications need.
+  - Use one explicit pool identity for the pool file, socket path, and `/etc/ops/php-sites/<pool>.conf` state.
+  - Re-running pool configuration must refresh OPS-managed keys without deleting existing per-pool `env[]`, `php_admin_value`, or `php_admin_flag` overrides, including across PHP version migration.
 
 ### 7. Database security
 
-- Default DB engine: **MariaDB** (drop-in replacement; chosen for Ubuntu repo availability and performance).
-- MySQL is alternative; operator must explicitly choose MySQL over MariaDB.
+- Default and currently supported DB engine: **MariaDB**.
+- OPS baseline uses local `unix_socket` root auth. `/etc/ops/.db-root-password` is a legacy/fallback secret file only when password auth is explicitly in use; it must never be printed to terminal.
+- OPS-managed DB app credentials must live under `/etc/ops/db-credentials/<db>__<user>.conf` with mode `0600`, owned by the admin user.
 - Secure setup must:
   - Remove anonymous users.
   - Disable remote root login unless the user explicitly opts in.
@@ -131,7 +136,8 @@ This document defines non-negotiable security rules for OPS. Any change that vio
   - Require passwords for all non-local accounts.
 - Database users created by OPS:
   - Should have least privilege (e.g. per-database accounts).
-- DB root password stored in `/etc/ops/.db-root-password` (0600) — never printed to terminal.
+  - Must be created idempotently; OPS must not persist credentials that were never actually applied in MariaDB.
+- `db_secure()`, `db_apply_tuning()`, and reinstall/upgrade flows must validate MariaDB config before restart and require explicit operator acknowledgement before live downtime.
 
 **OPS MariaDB hardening baseline (enforced by `install_mariadb` / `db_install`):**
 
@@ -141,9 +147,9 @@ The following settings are written to `/etc/mysql/mariadb.conf.d/60-ops-tuning.c
 |---|---|---|
 | `bind-address` | `127.0.0.1` | Never expose DB to network |
 | `local_infile` | `OFF` | Blocks `LOAD DATA LOCAL` file exfiltration |
-| `secure_file_priv` | `NULL` | Disables `SELECT INTO OUTFILE` / `LOAD DATA INFILE` |
+| `secure_file_priv` | `/var/lib/mysql-files-disabled` (non-existent path) | Disables `SELECT INTO OUTFILE` / `LOAD DATA INFILE` without relying on MariaDB `NULL` parsing |
 | `skip_name_resolve` | `ON` | Eliminates per-connection DNS lookup latency |
-| `max_connect_errors` | `10` | Block hosts after 10 consecutive bad auth attempts |
+| `max_connect_errors` | `100` | Avoid self-DoS from noisy reconnect storms while still capping repeated bad auth attempts |
 | `wait_timeout` | `300` | Close idle connections after 5 min (was 8h default) |
 | `interactive_timeout` | `600` | Close idle interactive sessions after 10 min |
 
@@ -191,7 +197,8 @@ The following settings are written to `/etc/mysql/mariadb.conf.d/60-ops-tuning.c
 - Secret files must have restrictive permissions (`0600`, owned by admin or runtime service user as appropriate):
   - `/opt/cli-proxy-api/config.yaml` (local API keys and managed proxy settings)
   - `/etc/ops/.cli-proxy-api-key` (CLIProxyAPI local client key)
-  - `/etc/ops/.db-root-password` (MariaDB/MySQL root password)
+  - `/etc/ops/db-credentials/*.conf` (OPS-managed MariaDB app credentials)
+  - `/etc/ops/.db-root-password` (legacy/fallback MariaDB root password file when password auth is explicitly used)
   - `/etc/ops/.codex-api-key` (Codex CLI API key)
   - `~/.codex/config.toml` (Codex CLI config with API key)
 - When prompting for secrets, prefer:
@@ -284,7 +291,7 @@ The following settings are the minimum security posture that `_vs_check_mariadb(
 | `bind_address` | `127.0.0.1` or `localhost` | FAIL |
 | `local_infile` | `OFF` | FAIL |
 | `have_ssl` | `YES` | FAIL |
-| `secure_file_priv` | non-empty (NULL) | WARN |
+| `secure_file_priv` | non-empty disabled path (for OPS: `/var/lib/mysql-files-disabled`) | WARN |
 | `slow_query_log` | `ON` | WARN |
 | `skip_name_resolve` | `ON` | WARN |
 

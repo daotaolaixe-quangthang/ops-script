@@ -579,13 +579,11 @@ _cliproxyapi_render_vhost() {
         ssl_http_block="    return 301 https://\$host\$request_uri;"
     fi
 
-    # Step 1: Render HTTP server block from template.
-    # SSL_HTTPS_BLOCK passed as empty so the {{SSL_HTTPS_BLOCK}} placeholder renders blank.
+    # Step 1: Render HTTP server block from template (safe single-line vars only).
     render_template "$CLIPROXYAPI_VHOST_TEMPLATE" \
         "DOMAIN=${domain}" \
         "CLIPROXYAPI_PORT=${CLIPROXYAPI_PORT}" \
         "SSL_HTTP_BLOCK=${ssl_http_block}" \
-        "SSL_HTTPS_BLOCK=" \
         | write_file "$staged_file"
     chmod 0644 "$staged_file"
     chown root:root "$staged_file" 2>/dev/null || true
@@ -833,7 +831,7 @@ link_cliproxyapi_domain() {
         return 1
     fi
 
-    create_default_deny
+    create_default_deny || return 1
 
     # Create staged temp file on the same filesystem as sites-available so that
     # _nginx_commit_vhost can use mv -f (on-device, atomic) when committing.

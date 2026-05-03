@@ -22,7 +22,7 @@ server {
         allow ::1;
         deny all;
         include        snippets/fastcgi-php.conf;
-        fastcgi_pass   unix:/run/php/php{{PHP_VERSION}}-fpm.sock;
+        fastcgi_pass   unix:{{PHP_SOCKET}};
         fastcgi_param  SCRIPT_FILENAME $document_root$fastcgi_script_name;
         include        fastcgi_params;
     }
@@ -36,7 +36,7 @@ server {
     # PHP-FPM handler
     location ~ \.php$ {
         include        snippets/fastcgi-php.conf;
-        fastcgi_pass   unix:/run/php/php{{PHP_VERSION}}-fpm.sock;
+        fastcgi_pass   unix:{{PHP_SOCKET}};
         fastcgi_param  SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
         include        fastcgi_params;
 

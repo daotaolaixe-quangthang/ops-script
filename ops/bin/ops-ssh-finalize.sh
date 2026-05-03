@@ -31,7 +31,7 @@ source "$OPS_ROOT/core/system.sh"
 source "$OPS_ROOT/modules/security.sh"
 
 main() {
-    security_finalize_ssh_transition_apply
+    security_finalize_ssh_transition
 }
 
 main "$@"

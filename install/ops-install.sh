@@ -964,6 +964,7 @@ prepare_post_deploy_rollback_state() {
     snapshot_path_state "/etc/ops/setup.conf" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "setup-conf"
     snapshot_path_state "/etc/ops/capacity.conf" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "capacity-conf"
     snapshot_path_state "/etc/logrotate.d/ops" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "logrotate-ops"
+    snapshot_path_state "/etc/sudoers.d/99-ops-ssh-finalize" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "ssh-finalize-sudoers"
     snapshot_path_state "/usr/local/bin/ops" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "bin-ops"
     snapshot_path_state "/usr/local/bin/ops-dashboard" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "bin-ops-dashboard"
 
@@ -991,6 +992,7 @@ rollback_post_deploy_failure() {
     restore_path_snapshot "/etc/ops/setup.conf" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "setup-conf"
     restore_path_snapshot "/etc/ops/capacity.conf" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "capacity-conf"
     restore_path_snapshot "/etc/logrotate.d/ops" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "logrotate-ops"
+    restore_path_snapshot "/etc/sudoers.d/99-ops-ssh-finalize" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "ssh-finalize-sudoers"
     restore_path_snapshot "/usr/local/bin/ops" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "bin-ops"
     restore_path_snapshot "/usr/local/bin/ops-dashboard" "$OPS_POST_DEPLOY_SNAPSHOT_DIR" "bin-ops-dashboard"
 

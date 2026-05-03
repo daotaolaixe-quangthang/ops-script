@@ -104,7 +104,6 @@ setup_login_hook() {
     # Versioned marker: bump version when hook content changes so re-install
     # rewrites stale hooks from older OPS versions automatically.
     local hook_version="OPS_HOOK_V3"
-    local hook_version_marker="# ${hook_version}"
     local hook_code
 
     # The guard ensures ops-dashboard only runs for interactive SSH sessions.
@@ -137,11 +136,6 @@ BASHPROFILE
     if ! bash -n "$profile" 2>/dev/null; then
         log_error "Refusing to update OPS login hook: ${profile} has invalid bash syntax"
         return 1
-    fi
-
-    if grep -q "$hook_version_marker" "$profile" 2>/dev/null; then
-        log_info "Login hook ${hook_version} already present in ${profile} — skipping."
-        return 0
     fi
 
     local profile_backup="${profile}.bak.$(date +%Y%m%d_%H%M%S)"

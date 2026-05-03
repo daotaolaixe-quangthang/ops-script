@@ -49,6 +49,264 @@ php_get_socket_path() {
     echo "/run/php/php${ver}-fpm-${site}.sock"
 }
 
+php_get_site_state_file() {
+    local site="$1"
+    echo "${PHP_SITES_DIR}/${site}.conf"
+}
+
+php_load_site_state() {
+    local state_file="$1"
+    local line key val
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^(SITE_NAME|SITE_DIR|SITE_PHP_VERSION|SITE_FPM_POOL|SITE_FPM_SOCKET|SITE_DOMAIN|SITE_CREATED)=\"([^\"]*)\"$ ]]; then
+            key="${BASH_REMATCH[1]}"
+            val="${BASH_REMATCH[2]}"
+            printf '%s=%s\n' "$key" "$(printf '%q' "$val")"
+        fi
+    done < "$state_file"
+}
+
+php_conf_get_key() {
+    local file="$1"
+    local key="$2"
+    local line
+    [[ -f "$file" ]] || return 0
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^${key}=\"([^\"]*)\"$ ]]; then
+            printf '%s\n' "${BASH_REMATCH[1]}"
+            return 0
+        fi
+    done < "$file"
+}
+
+php_write_site_state() {
+    local site="$1"
+    local ver="$2"
+    local socket="$3"
+    local site_domain="${4:-}"
+    local site_dir="${5:-}"
+    local state_file existing_created=""
+
+    state_file="$(php_get_site_state_file "$site")"
+    if [[ -f "$state_file" ]]; then
+        local SITE_NAME SITE_DIR SITE_PHP_VERSION SITE_FPM_POOL SITE_FPM_SOCKET SITE_DOMAIN SITE_CREATED
+        eval "$(php_load_site_state "$state_file")"
+        existing_created="${SITE_CREATED:-}"
+        [[ -z "$site_domain" ]] && site_domain="${SITE_DOMAIN:-}"
+        [[ -z "$site_dir" ]] && site_dir="${SITE_DIR:-}"
+    fi
+
+    if [[ -z "$site_dir" ]]; then
+        if [[ -n "$site_domain" ]]; then
+            site_dir="/var/www/${site_domain}"
+        else
+            site_dir="/var/www/${site}"
+        fi
+    fi
+    [[ -n "$existing_created" ]] || existing_created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+    ensure_dir "$PHP_SITES_DIR"
+    write_file "$state_file" <<EOF_SITE
+SITE_NAME="${site}"
+SITE_DIR="${site_dir}"
+SITE_PHP_VERSION="${ver}"
+SITE_FPM_POOL="${site}"
+SITE_FPM_SOCKET="${socket}"
+SITE_DOMAIN="${site_domain}"
+SITE_CREATED="${existing_created}"
+EOF_SITE
+
+    chmod 0644 "$state_file"
+    chown root:root "$state_file" 2>/dev/null || true
+}
+
+php_write_pool_file_baseline() {
+    local pool_file="$1"
+    local site="$2"
+    local socket="$3"
+
+    write_file "$pool_file" <<EOF_POOL
+[${site}]
+user = www-data
+group = www-data
+listen = ${socket}
+listen.owner = www-data
+listen.group = www-data
+listen.mode = 0660
+; F-06: pm.status_path and ping.path intentionally omitted.
+; If you re-enable them, the Nginx vhost MUST include a location block
+; that restricts access to 127.0.0.1 only. See nginx.sh _render_php_vhost.
+chdir = /
+; P3-B: clear_env=yes prevents FPM workers inheriting parent env secrets.
+; If your app needs specific env vars, add explicit lines below this pool config, e.g.:
+;   env[DB_PASSWORD] = secret
+;   env[APP_ENV] = production
+clear_env = yes
+security.limit_extensions = .php .phtml
+EOF_POOL
+}
+
+php_apply_pool_baseline() {
+    local pool_file="$1"
+    local site="$2"
+    local socket="$3"
+    local key value
+
+    if [[ ! -f "$pool_file" ]]; then
+        php_write_pool_file_baseline "$pool_file" "$site" "$socket"
+    fi
+
+    php_set_ini_key "$pool_file" "user" "www-data"
+    php_set_ini_key "$pool_file" "group" "www-data"
+    php_set_ini_key "$pool_file" "listen" "$socket"
+    php_set_ini_key "$pool_file" "listen.owner" "www-data"
+    php_set_ini_key "$pool_file" "listen.group" "www-data"
+    php_set_ini_key "$pool_file" "listen.mode" "0660"
+    php_set_ini_key "$pool_file" "chdir" "/"
+    php_set_ini_key "$pool_file" "clear_env" "yes"
+    php_set_ini_key "$pool_file" "security.limit_extensions" ".php .phtml"
+
+    while IFS='=' read -r key value; do
+        [[ -z "$key" ]] && continue
+        php_set_ini_key "$pool_file" "$key" "$value"
+    done < <(php_pool_tuning_for_tier)
+
+    chmod 0644 "$pool_file"
+    chown root:root "$pool_file" 2>/dev/null || true
+}
+
+php_fpm_binary_exists() {
+    local ver="$1"
+    [[ -x "/usr/sbin/php-fpm${ver}" || -x "/usr/bin/php-fpm${ver}" ]]
+}
+
+php_socket_matches_contract() {
+    local socket="$1"
+    local ver="$2"
+    local pool="$3"
+
+    if [[ ! "$socket" =~ ^/run/php/php([0-9]+\.[0-9]+)-fpm-([A-Za-z0-9._-]+)\.sock$ ]]; then
+        return 1
+    fi
+
+    [[ "${BASH_REMATCH[1]}" == "$ver" && "${BASH_REMATCH[2]}" == "$pool" ]]
+}
+
+php_read_vhost_fastcgi_sockets() {
+    local vhost_file="$1"
+    [[ -f "$vhost_file" ]] || return 0
+
+    awk '
+        /fastcgi_pass[[:space:]]+unix:/ {
+            line=$0
+            sub(/.*unix:/, "", line)
+            sub(/;.*/, "", line)
+            print line
+        }
+    ' "$vhost_file" | sort -u
+}
+
+php_fpm_validate_config() {
+    local ver="$1"
+    php_fpm_binary_exists "$ver" || return 0
+    "php-fpm${ver}" -t
+}
+
+php_fpm_validate_and_apply() {
+    local ver="$1"
+    local svc="php${ver}-fpm"
+
+    php_fpm_binary_exists "$ver" || return 0
+    php_fpm_validate_config "$ver" || return 1
+
+    if service_active "$svc"; then
+        service_reload "$svc" 15
+    else
+        service_restart "$svc"
+    fi
+}
+
+php_verify_domain_contracts_for_version() {
+    local ver="$1"
+    local state_file domain type domain_ver domain_socket domain_pool expected_socket
+    local pool_file pool_listen site_state_file site_ver site_socket site_domain vhost_file fastcgi_sockets
+    local checked=0 issues=0
+
+    for state_file in "${OPS_CONFIG_DIR:-/etc/ops}/domains/"*.conf; do
+        [[ -f "$state_file" ]] || continue
+        type="$(php_conf_get_key "$state_file" "DOMAIN_BACKEND_TYPE")"
+        [[ "$type" == "php" ]] || continue
+
+        domain_ver="$(php_conf_get_key "$state_file" "DOMAIN_PHP_VERSION")"
+        [[ "$domain_ver" == "$ver" ]] || continue
+
+        checked=1
+        domain="$(php_conf_get_key "$state_file" "DOMAIN")"
+        domain_socket="$(php_conf_get_key "$state_file" "DOMAIN_PHP_SOCKET")"
+        domain_pool="$(php_conf_get_key "$state_file" "DOMAIN_PHP_POOL")"
+        if [[ -z "$domain_pool" && "$domain_socket" =~ ^/run/php/php[0-9]+\.[0-9]+-fpm-([A-Za-z0-9._-]+)\.sock$ ]]; then
+            domain_pool="${BASH_REMATCH[1]}"
+        fi
+        [[ -n "$domain_pool" ]] || domain_pool="$(php_conf_get_key "$state_file" "DOMAIN")"
+
+        if [[ -z "$domain_pool" ]] || ! php_socket_matches_contract "$domain_socket" "$domain_ver" "$domain_pool"; then
+            print_warn "PHP domain ${domain:-$(basename "$state_file" .conf)} has mismatched state: version=${domain_ver:-empty}, pool=${domain_pool:-empty}, socket=${domain_socket:-empty}."
+            issues=1
+            continue
+        fi
+
+        expected_socket="$(php_get_socket_path "$domain_pool" "$domain_ver")"
+        if [[ "$domain_socket" != "$expected_socket" ]]; then
+            print_warn "PHP domain ${domain} uses socket ${domain_socket}, expected ${expected_socket}."
+            issues=1
+        fi
+
+        pool_file="$(php_get_pool_file "$domain_pool" "$domain_ver")"
+        if [[ ! -f "$pool_file" ]]; then
+            print_warn "PHP domain ${domain} is missing pool file ${pool_file}."
+            issues=1
+        else
+            pool_listen="$(awk -F= '/^[[:space:]]*listen[[:space:]]*=/{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit}' "$pool_file")"
+            if [[ "$pool_listen" != "$expected_socket" ]]; then
+                print_warn "PHP domain ${domain} pool file ${pool_file} points listen=${pool_listen:-empty}, expected ${expected_socket}."
+                issues=1
+            fi
+        fi
+
+        site_state_file="$(php_get_site_state_file "$domain_pool")"
+        if [[ ! -f "$site_state_file" ]]; then
+            print_warn "PHP domain ${domain} is missing pool state ${site_state_file}."
+            issues=1
+        else
+            site_ver="$(php_conf_get_key "$site_state_file" "SITE_PHP_VERSION")"
+            site_socket="$(php_conf_get_key "$site_state_file" "SITE_FPM_SOCKET")"
+            site_domain="$(php_conf_get_key "$site_state_file" "SITE_DOMAIN")"
+            if [[ "$site_ver" != "$domain_ver" || "$site_socket" != "$expected_socket" || "$site_domain" != "$domain" ]]; then
+                print_warn "PHP domain ${domain} has drift between domain state and ${site_state_file}."
+                issues=1
+            fi
+        fi
+
+        vhost_file="/etc/nginx/sites-available/${domain}"
+        fastcgi_sockets="$(php_read_vhost_fastcgi_sockets "$vhost_file")"
+        if [[ -z "$fastcgi_sockets" ]]; then
+            print_warn "PHP domain ${domain} has no fastcgi_pass socket in ${vhost_file}."
+            issues=1
+        elif [[ "$fastcgi_sockets" != "$expected_socket" ]]; then
+            print_warn "PHP domain ${domain} fastcgi_pass drift in ${vhost_file}: ${fastcgi_sockets//$'\n'/, }."
+            issues=1
+        else
+            print_ok "PHP domain ${domain}: pool/socket/vhost contract OK (${domain_pool})."
+        fi
+    done
+
+    if (( checked == 0 )); then
+        echo "No managed PHP domains use PHP ${ver}."
+    elif (( issues == 0 )); then
+        print_ok "All managed PHP domains using PHP ${ver} passed pool/socket/vhost checks."
+    fi
+}
+
 php_pool_tuning_for_tier() {
     local tier="${OPS_TIER:-S}"
     case "$tier" in
@@ -79,7 +337,7 @@ php_pool_tuning_for_tier() {
     esac
 }
 
-php_ini_tuning_for_tier() {
+php_ini_common_tuning_for_tier() {
     local tier="${OPS_TIER:-S}"
     case "$tier" in
         S)
@@ -99,13 +357,18 @@ php_ini_tuning_for_tier() {
             ;;
     esac
     echo "opcache.enable=1"
-    echo "opcache.enable_cli=1"
     echo "opcache.interned_strings_buffer=16"
     echo "opcache.revalidate_freq=2"
     echo "opcache.validate_timestamps=1"
     echo "opcache.save_comments=1"
+}
 
-    # Security baseline — applied regardless of tier
+php_ini_cli_tuning() {
+    echo "opcache.enable_cli=1"
+}
+
+php_ini_fpm_security_tuning() {
+    # Security baseline — applied to FPM only.
     echo "expose_php=Off"
     echo "display_errors=Off"
     echo "log_errors=On"
@@ -132,7 +395,7 @@ php_ini_tuning_for_tier() {
 #
 # DO NOT change the ";?" part of the regex without understanding this contract.
 # If you need to preserve a deliberately commented-out key, remove it from
-# php_ini_tuning_for_tier / php_pool_tuning_for_tier instead.
+# php_ini_common_tuning_for_tier / php_ini_fpm_security_tuning / php_pool_tuning_for_tier instead.
 php_set_ini_key() {
     local file="$1"
     local key="$2"
@@ -210,11 +473,15 @@ install_php_version() {
     log_info "install_php_version: PHP ${ver} installed"
 }
 
-# configure_php_pool <site> <ver>
+# configure_php_pool <site> <ver> [site_domain] [site_dir] [skip_domain_sync]
 configure_php_pool() {
     local site="$1"
     local ver="$2"
-    local socket pool_file key value
+    local site_domain="${3:-}"
+    local site_dir="${4:-}"
+    local skip_domain_sync="${5:-0}"
+    local socket pool_file state_file snapshot_root old_ver="" old_pool_file="" dom_conf=""
+    local domain_backend_type="" domain_ssl_mode="none" domain_web_root=""
 
     php_require_root || return 1
     php_validate_site_name "$site" || return 1
@@ -229,103 +496,158 @@ configure_php_pool() {
 
     socket="$(php_get_socket_path "$site" "$ver")"
     pool_file="$(php_get_pool_file "$site" "$ver")"
+    state_file="$(php_get_site_state_file "$site")"
 
-    # P-02: idempotency guard — pool file already exists.
-    # configure_php_pool previously overwrote silently; now we prompt, consistent
-    # with add_domain (F-03) and node_add_app.
-    # FORCE_OVERWRITE=1 bypasses the prompt for scripted/unattended callers.
+    if [[ -f "$state_file" ]]; then
+        local SITE_NAME SITE_DIR SITE_PHP_VERSION SITE_FPM_POOL SITE_FPM_SOCKET SITE_DOMAIN SITE_CREATED
+        eval "$(php_load_site_state "$state_file")"
+        old_ver="${SITE_PHP_VERSION:-}"
+        [[ -z "$site_domain" ]] && site_domain="${SITE_DOMAIN:-}"
+        [[ -z "$site_dir" ]] && site_dir="${SITE_DIR:-}"
+    fi
+    if [[ -n "$old_ver" && "$old_ver" != "$ver" ]]; then
+        old_pool_file="$(php_get_pool_file "$site" "$old_ver")"
+    fi
+
+    if [[ -z "$site_domain" && -f "${OPS_CONFIG_DIR}/domains/${site}.conf" ]]; then
+        site_domain="$site"
+    fi
+    if [[ -n "$site_domain" ]]; then
+        dom_conf="${OPS_CONFIG_DIR}/domains/${site_domain}.conf"
+        if [[ -f "$dom_conf" ]]; then
+            domain_backend_type="$(php_conf_get_key "$dom_conf" "DOMAIN_BACKEND_TYPE")"
+            domain_ssl_mode="$(php_conf_get_key "$dom_conf" "DOMAIN_SSL_MODE")"
+            domain_web_root="$(php_conf_get_key "$dom_conf" "DOMAIN_WEB_ROOT")"
+            [[ -z "$site_dir" ]] && site_dir="$domain_web_root"
+        fi
+    fi
+    [[ -n "$domain_ssl_mode" ]] || domain_ssl_mode="none"
+    if [[ -z "$site_dir" ]]; then
+        if [[ -n "$site_domain" ]]; then
+            site_dir="/var/www/${site_domain}"
+        else
+            site_dir="/var/www/${site}"
+        fi
+    fi
+
+    # P-02: idempotency guard — existing pool config is updated in place so
+    # custom per-pool directives survive, but OPS-managed keys will be refreshed.
     if [[ -f "$pool_file" ]]; then
         if [[ "${FORCE_OVERWRITE:-0}" != "1" ]]; then
             print_warn "PHP-FPM pool '${site}' (PHP ${ver}) already exists: $pool_file"
-            print_warn "Re-running will overwrite any manual customisations (env vars, memory limits, security settings, etc)."
-            if ! prompt_confirm "Overwrite existing pool config for '${site}'?"; then
+            print_warn "Re-running will refresh OPS-managed keys but keep custom per-pool directives such as env[...], php_admin_value, and php_admin_flag entries."
+            if ! prompt_confirm "Refresh OPS-managed pool config for '${site}'?"; then
                 print_warn "Aborted. Existing pool config for '${site}' was NOT changed."
                 return 0
             fi
         fi
-        log_info "P-02: Overwriting existing PHP-FPM pool for '${site}' (FORCE_OVERWRITE=${FORCE_OVERWRITE:-0})."
+        log_info "P-02: Refreshing PHP-FPM pool for '${site}' (FORCE_OVERWRITE=${FORCE_OVERWRITE:-0})."
+    fi
+
+    snapshot_root=$(mktemp -d "/tmp/ops-php-pool.${site}.XXXXXX")
+    snapshot_path_state "$pool_file" "$snapshot_root" "pool-current"
+    snapshot_path_state "$state_file" "$snapshot_root" "site-state"
+    if [[ -n "$old_pool_file" && "$old_pool_file" != "$pool_file" ]]; then
+        snapshot_path_state "$old_pool_file" "$snapshot_root" "pool-previous"
+    fi
+    if [[ -n "$dom_conf" && -f "$dom_conf" ]]; then
+        snapshot_path_state "$dom_conf" "$snapshot_root" "domain-state"
+    fi
+
+    if [[ ! -f "$pool_file" && -n "$old_pool_file" && "$old_pool_file" != "$pool_file" && -f "$old_pool_file" ]]; then
+        ensure_dir "$(dirname "$pool_file")"
+        cp -a "$old_pool_file" "$pool_file"
+        log_info "configure_php_pool: seeded PHP ${ver} pool '${site}' from ${old_pool_file} to preserve custom overrides during version migration"
     fi
 
     backup_file "$pool_file" >/dev/null 2>&1 || true
-    write_file "$pool_file" <<EOF_POOL
-[${site}]
-user = www-data
-group = www-data
-listen = ${socket}
-listen.owner = www-data
-listen.group = www-data
-listen.mode = 0660
-; F-06: pm.status_path and ping.path intentionally omitted.
-; If you re-enable them, the Nginx vhost MUST include a location block
-; that restricts access to 127.0.0.1 only. See nginx.sh _render_php_vhost.
-chdir = /
-; P3-B: clear_env=yes prevents FPM workers inheriting parent env secrets.
-; If your app needs specific env vars, add explicit lines below this pool config, e.g.:
-;   env[DB_PASSWORD] = secret
-;   env[APP_ENV] = production
-clear_env = yes
-security.limit_extensions = .php .phtml
-EOF_POOL
+    php_apply_pool_baseline "$pool_file" "$site" "$socket"
 
-    while IFS='=' read -r key value; do
-        [[ -z "$key" ]] && continue
-        php_set_ini_key "$pool_file" "$key" "$value"
-    done < <(php_pool_tuning_for_tier)
-
-    chmod 0644 "$pool_file"
-    chown root:root "$pool_file" 2>/dev/null || true
-
-    ensure_dir "$PHP_SITES_DIR"
-    write_file "${PHP_SITES_DIR}/${site}.conf" <<EOF_SITE
-SITE_NAME="${site}"
-SITE_DIR=""
-SITE_PHP_VERSION="${ver}"
-SITE_FPM_POOL="${site}"
-SITE_FPM_SOCKET="${socket}"
-SITE_DOMAIN=""
-SITE_CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-EOF_SITE
-
-    chmod 0644 "${PHP_SITES_DIR}/${site}.conf"
-
-    if ! "php-fpm${ver}" -t; then
-        print_error "php-fpm${ver} config test failed."
+    if ! php_fpm_validate_and_apply "$ver"; then
+        restore_path_snapshot "$pool_file" "$snapshot_root" "pool-current"
+        restore_path_snapshot "$state_file" "$snapshot_root" "site-state"
+        if [[ -n "$old_pool_file" && "$old_pool_file" != "$pool_file" ]]; then
+            restore_path_snapshot "$old_pool_file" "$snapshot_root" "pool-previous"
+        fi
+        php_fpm_validate_and_apply "$ver" >/dev/null 2>&1 || true
+        if [[ -n "$old_ver" && "$old_ver" != "$ver" ]]; then
+            php_fpm_validate_and_apply "$old_ver" >/dev/null 2>&1 || true
+        fi
+        rm -rf "$snapshot_root"
+        print_error "php${ver}-fpm validation/restart failed. Restored the previous pool config."
         return 1
     fi
 
-    service_restart "php${ver}-fpm"
-    print_ok "Configured PHP-FPM pool '${site}' for PHP ${ver}."
-    log_info "configure_php_pool: pool '${site}' configured for PHP ${ver}"
-
-    # F-08: Sync domain state file + rebuild Nginx vhost when the PHP version changes.
-    # Without this, the Nginx vhost continues pointing to the OLD php socket path
-    # (e.g. php8.1-fpm-site.sock) after a PHP upgrade -> 502 Bad Gateway.
-    # The domain conf file uses the same slug as the site name.
-    local dom_conf="${OPS_CONFIG_DIR}/domains/${site}.conf"
-    if [[ -f "$dom_conf" ]]; then
-        local old_socket old_version
-        old_socket=$(grep '^DOMAIN_PHP_SOCKET=' "$dom_conf" 2>/dev/null | cut -d= -f2- | tr -d '"')
-        old_version=$(grep '^DOMAIN_PHP_VERSION=' "$dom_conf" 2>/dev/null | cut -d= -f2- | tr -d '"')
-
-        if [[ "$old_socket" != "$socket" || "$old_version" != "$ver" ]]; then
-            log_info "configure_php_pool: syncing domain state for ${site}: socket ${old_socket} -> ${socket}, version ${old_version} -> ${ver}"
-            sed -i "s|^DOMAIN_PHP_SOCKET=.*|DOMAIN_PHP_SOCKET=\"${socket}\"|"   "$dom_conf"
-            sed -i "s|^DOMAIN_PHP_VERSION=.*|DOMAIN_PHP_VERSION=\"${ver}\"|"    "$dom_conf"
-
-            # Rebuild Nginx vhost with updated socket — requires nginx.sh functions to be loaded.
-            if declare -f _rebuild_domain_vhost >/dev/null 2>&1; then
-                if _rebuild_domain_vhost "$site"; then
-                    if declare -f _nginx_test_and_reload >/dev/null 2>&1; then
-                        _nginx_test_and_reload || print_warn "Nginx reload failed after socket update for ${site}."
-                    fi
-                else
-                    print_warn "Vhost rebuild failed for ${site} — check /etc/nginx/sites-available/${site}"
-                fi
-            else
-                print_warn "nginx.sh not loaded — run 'Domains & Nginx → Rebuild vhost' for ${site} manually."
-            fi
+    if [[ -n "$old_pool_file" && "$old_pool_file" != "$pool_file" && -f "$old_pool_file" ]]; then
+        backup_file "$old_pool_file" >/dev/null 2>&1 || true
+        rm -f "$old_pool_file"
+        if ! php_fpm_validate_and_apply "$old_ver"; then
+            restore_path_snapshot "$pool_file" "$snapshot_root" "pool-current"
+            restore_path_snapshot "$state_file" "$snapshot_root" "site-state"
+            restore_path_snapshot "$old_pool_file" "$snapshot_root" "pool-previous"
+            php_fpm_validate_and_apply "$ver" >/dev/null 2>&1 || true
+            php_fpm_validate_and_apply "$old_ver" >/dev/null 2>&1 || true
+            rm -rf "$snapshot_root"
+            print_error "Failed to retire the old PHP ${old_ver} pool for '${site}'. Restored the previous pool layout."
+            return 1
         fi
     fi
+
+    php_write_site_state "$site" "$ver" "$socket" "$site_domain" "$site_dir"
+
+    if [[ "$skip_domain_sync" != "1" && -n "$dom_conf" && -f "$dom_conf" ]]; then
+        if [[ "$domain_backend_type" != "php" ]]; then
+            restore_path_snapshot "$pool_file" "$snapshot_root" "pool-current"
+            restore_path_snapshot "$state_file" "$snapshot_root" "site-state"
+            if [[ -n "$old_pool_file" && "$old_pool_file" != "$pool_file" ]]; then
+                restore_path_snapshot "$old_pool_file" "$snapshot_root" "pool-previous"
+            fi
+            restore_path_snapshot "$dom_conf" "$snapshot_root" "domain-state"
+            php_fpm_validate_and_apply "$ver" >/dev/null 2>&1 || true
+            if [[ -n "$old_ver" && "$old_ver" != "$ver" ]]; then
+                php_fpm_validate_and_apply "$old_ver" >/dev/null 2>&1 || true
+            fi
+            rm -rf "$snapshot_root"
+            print_error "Domain state for ${site_domain} is not a PHP backend. Pool update was rolled back."
+            return 1
+        fi
+        if ! declare -f _write_domain_state >/dev/null 2>&1 || ! declare -f _rebuild_domain_vhost >/dev/null 2>&1; then
+            restore_path_snapshot "$pool_file" "$snapshot_root" "pool-current"
+            restore_path_snapshot "$state_file" "$snapshot_root" "site-state"
+            if [[ -n "$old_pool_file" && "$old_pool_file" != "$pool_file" ]]; then
+                restore_path_snapshot "$old_pool_file" "$snapshot_root" "pool-previous"
+            fi
+            restore_path_snapshot "$dom_conf" "$snapshot_root" "domain-state"
+            php_fpm_validate_and_apply "$ver" >/dev/null 2>&1 || true
+            if [[ -n "$old_ver" && "$old_ver" != "$ver" ]]; then
+                php_fpm_validate_and_apply "$old_ver" >/dev/null 2>&1 || true
+            fi
+            rm -rf "$snapshot_root"
+            print_error "Nginx domain helpers are unavailable. Rolled back the PHP pool change for ${site_domain}."
+            return 1
+        fi
+
+        _write_domain_state "$site_domain" "php" "$socket" "$ver" "$socket" "$site" "$domain_ssl_mode" "${domain_web_root:-$site_dir}"
+        if ! _rebuild_domain_vhost "$site_domain"; then
+            restore_path_snapshot "$pool_file" "$snapshot_root" "pool-current"
+            restore_path_snapshot "$state_file" "$snapshot_root" "site-state"
+            if [[ -n "$old_pool_file" && "$old_pool_file" != "$pool_file" ]]; then
+                restore_path_snapshot "$old_pool_file" "$snapshot_root" "pool-previous"
+            fi
+            restore_path_snapshot "$dom_conf" "$snapshot_root" "domain-state"
+            php_fpm_validate_and_apply "$ver" >/dev/null 2>&1 || true
+            if [[ -n "$old_ver" && "$old_ver" != "$ver" ]]; then
+                php_fpm_validate_and_apply "$old_ver" >/dev/null 2>&1 || true
+            fi
+            rm -rf "$snapshot_root"
+            print_error "Failed to rebuild the Nginx PHP vhost for ${site_domain}. Rolled back the pool change."
+            return 1
+        fi
+    fi
+
+    rm -rf "$snapshot_root"
+    print_ok "Configured PHP-FPM pool '${site}' for PHP ${ver}."
+    log_info "configure_php_pool: pool '${site}' configured for PHP ${ver}"
 }
 
 # set_php_cli_default <ver>
@@ -350,7 +672,7 @@ set_php_cli_default() {
 # tune_php <ver>
 tune_php() {
     local ver="$1"
-    local ini_file key value
+    local ini_file key value snapshot_root
 
     php_require_root || return 1
     if ! php_is_supported_version "$ver"; then
@@ -358,37 +680,66 @@ tune_php() {
         return 1
     fi
 
+    snapshot_root=$(mktemp -d "/tmp/ops-php-ini.${ver}.XXXXXX")
     for ini_file in "/etc/php/${ver}/fpm/php.ini" "/etc/php/${ver}/cli/php.ini"; do
-        if [[ ! -f "$ini_file" ]]; then
-            continue
-        fi
+        [[ -f "$ini_file" ]] || continue
         backup_file "$ini_file" >/dev/null 2>&1 || true
+        snapshot_path_state "$ini_file" "$snapshot_root" "$(basename "$(dirname "$ini_file")")-php-ini"
+
         while IFS='=' read -r key value; do
             [[ -z "$key" ]] && continue
             php_set_ini_key "$ini_file" "$key" "$value"
-        done < <(php_ini_tuning_for_tier)
+        done < <(php_ini_common_tuning_for_tier)
+
+        if [[ "$ini_file" == *"/cli/php.ini" ]]; then
+            while IFS='=' read -r key value; do
+                [[ -z "$key" ]] && continue
+                php_set_ini_key "$ini_file" "$key" "$value"
+            done < <(php_ini_cli_tuning)
+        fi
+
+        if [[ "$ini_file" == *"/fpm/php.ini" ]]; then
+            while IFS='=' read -r key value; do
+                [[ -z "$key" ]] && continue
+                php_set_ini_key "$ini_file" "$key" "$value"
+            done < <(php_ini_fpm_security_tuning)
+        fi
     done
 
-    if [[ -x "/usr/sbin/php-fpm${ver}" || -x "/usr/bin/php-fpm${ver}" ]]; then
-        if ! "php-fpm${ver}" -t; then
-            print_error "php-fpm${ver} config test failed after tuning."
-            return 1
-        fi
-        service_restart "php${ver}-fpm"
+    if ! php_fpm_validate_and_apply "$ver"; then
+        restore_path_snapshot "/etc/php/${ver}/fpm/php.ini" "$snapshot_root" "fpm-php-ini"
+        restore_path_snapshot "/etc/php/${ver}/cli/php.ini" "$snapshot_root" "cli-php-ini"
+        php_fpm_validate_and_apply "$ver" >/dev/null 2>&1 || true
+        rm -rf "$snapshot_root"
+        print_error "php${ver}-fpm config test failed after tuning. Restored the previous php.ini files."
+        return 1
     fi
 
+    rm -rf "$snapshot_root"
     print_ok "Applied PHP tuning for version ${ver} (Tier: ${OPS_TIER:-S})."
-    print_warn "SECURITY: allow_url_fopen=Off is now enforced. PHP apps using file_get_contents() for remote URLs must use cURL instead."
-    print_warn "SECURITY: disable_functions blocks exec/shell_exec/system. Add php_admin_value overrides per-pool if your app requires them."
+    print_warn "SECURITY: PHP-FPM allow_url_fopen=Off is now enforced. Apps using file_get_contents() for remote URLs should use cURL or a per-pool override."
+    print_warn "SECURITY: PHP-FPM disable_functions blocks exec/shell_exec/system. Add php_admin_value overrides per-pool if your app requires them."
     log_info "tune_php: PHP ${ver} tuned (tier=${OPS_TIER:-S})"
 }
 
 php_verify_version() {
     local ver="$1"
+    local target_cli="/usr/bin/php${ver}"
     print_section "Verify PHP ${ver}"
-    php -v | head -n 1 || true
-    "php-fpm${ver}" -t || true
+
+    if command -v php >/dev/null 2>&1; then
+        printf 'Default CLI: '
+        php -v | head -n 1 || true
+    fi
+    if [[ -x "$target_cli" ]]; then
+        printf 'Target CLI : '
+        "$target_cli" -v | head -n 1 || true
+    fi
+    php_fpm_validate_config "$ver" || true
     service_status "php${ver}-fpm" || true
+    echo ""
+    echo "PHP domain contract checks:"
+    php_verify_domain_contracts_for_version "$ver"
 }
 
 php_is_installed_version() {
@@ -446,11 +797,46 @@ php_manage_version() {
             ;;
         remove)
             php_require_root || return 1
+            local state_file domain_name pool_name cli_target
+            local -a domain_blockers=() pool_blockers=()
+
+            for state_file in "${OPS_CONFIG_DIR:-/etc/ops}/domains/"*.conf; do
+                [[ -f "$state_file" ]] || continue
+                [[ "$(php_conf_get_key "$state_file" "DOMAIN_PHP_VERSION")" == "$ver" ]] || continue
+                domain_name="$(php_conf_get_key "$state_file" "DOMAIN")"
+                domain_blockers+=("${domain_name:-$(basename "$state_file" .conf)}")
+            done
+
+            for state_file in "${PHP_SITES_DIR:-/etc/ops/php-sites}/"*.conf; do
+                [[ -f "$state_file" ]] || continue
+                [[ "$(php_conf_get_key "$state_file" "SITE_PHP_VERSION")" == "$ver" ]] || continue
+                pool_name="$(php_conf_get_key "$state_file" "SITE_FPM_POOL")"
+                pool_blockers+=("${pool_name:-$(basename "$state_file" .conf)}")
+            done
+
+            cli_target="$(readlink -f "$(command -v php 2>/dev/null)" 2>/dev/null || true)"
+            if (( ${#domain_blockers[@]} > 0 || ${#pool_blockers[@]} > 0 )) || [[ "$cli_target" == "/usr/bin/php${ver}" ]]; then
+                print_error "Cannot remove PHP ${ver} while it is still referenced by OPS state."
+                if (( ${#domain_blockers[@]} > 0 )); then
+                    echo "  Domains using PHP ${ver}:"
+                    printf '    - %s\n' "${domain_blockers[@]}"
+                fi
+                if (( ${#pool_blockers[@]} > 0 )); then
+                    echo "  Pools using PHP ${ver}:"
+                    printf '    - %s\n' "${pool_blockers[@]}"
+                fi
+                if [[ "$cli_target" == "/usr/bin/php${ver}" ]]; then
+                    echo "  Default CLI currently points to /usr/bin/php${ver}"
+                fi
+                print_warn "Migrate the domains/pools to another PHP version and switch the CLI default before retrying removal."
+                return 1
+            fi
+
             apt_remove "php${ver}-cli" "php${ver}-fpm" "php${ver}-common" \
                 "php${ver}-mysql" "php${ver}-curl" "php${ver}-gd" "php${ver}-intl" \
                 "php${ver}-mbstring" "php${ver}-opcache" "php${ver}-xml" "php${ver}-zip" \
-                "php${ver}-soap" "php${ver}-bcmath" || true
-            print_ok "Requested removal for PHP ${ver} packages."
+                "php${ver}-soap" "php${ver}-bcmath" || return 1
+            print_ok "Removed PHP ${ver} packages."
             log_info "php_manage_version: PHP ${ver} removed"
             ;;
         *)

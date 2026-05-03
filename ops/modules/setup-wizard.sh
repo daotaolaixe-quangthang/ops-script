@@ -578,7 +578,7 @@ _wizard_run_final_verification() {
     fi
 
     if command -v logrotate >/dev/null 2>&1 && [[ -d "$ops_log_dir" && -f "$ops_log" && -f /etc/logrotate.d/ops ]]; then
-        if command -v nginx >/dev/null 2>&1 && [[ ! -f /etc/logrotate.d/nginx ]]; then
+        if command -v nginx >/dev/null 2>&1 && [[ ! -f /etc/logrotate.d/nginx-ops ]]; then
             print_error "Nginx logrotate config is missing. Re-run Step 6 to reconcile monitoring."
             ok=0
         elif systemctl list-unit-files 2>/dev/null | grep -Eq '^php(7\.4|8\.1|8\.2|8\.3)-fpm\.service' \
