@@ -564,17 +564,30 @@ security_reconcile_ufw_rules() {
     local transition_port=""
     local has_transition_arg="no"
     local desired_ports=()
-    local port status_output existing_ports=()
+    local active_ssh_ports=()
+    local existing_ports=()
+    local port desired status_output
     local ufw_errors=0
+    local managed_locked_port=""
+    local managed_state_ambiguous=0
 
     if [[ "${2+x}" == "x" ]]; then
         transition_port="$2"
         has_transition_arg="yes"
     fi
 
+    managed_locked_port="$(ops_conf_get "ops.conf" "OPS_SSH_PORT" 2>/dev/null || true)"
+    if [[ -z "${1:-}" && -z "$managed_locked_port" ]]; then
+        managed_state_ambiguous=1
+    fi
+
     if ! command -v ufw > /dev/null 2>&1; then
         apt_install ufw
     fi
+
+    while IFS= read -r port; do
+        [[ -n "$port" ]] && active_ssh_ports+=("$port")
+    done < <(ss -tlnp 2>/dev/null | awk '/sshd/ {print $4}' | grep -oP ':\K[0-9]+$' | sort -u)
 
     if [[ "$has_transition_arg" == "yes" ]]; then
         while IFS= read -r port; do
@@ -584,6 +597,23 @@ security_reconcile_ufw_rules() {
         while IFS= read -r port; do
             [[ -n "$port" ]] && desired_ports+=("$port")
         done < <(security_list_desired_ssh_ports "$locked_port")
+    fi
+
+    if [[ "$managed_state_ambiguous" -eq 1 ]]; then
+        for port in "${active_ssh_ports[@]}"; do
+            local seen=0
+            [[ -n "$port" ]] || continue
+            for desired in "${desired_ports[@]}"; do
+                if [[ "$desired" == "$port" ]]; then
+                    seen=1
+                    break
+                fi
+            done
+            if [[ "$seen" -eq 0 ]]; then
+                desired_ports+=("$port")
+                log_warn "UFW: preserving live SSH port ${port} during ambiguous bootstrap/rerun state"
+            fi
+        done
     fi
 
     # Abort if no SSH ports resolved — prevents lockout via 'default deny'
@@ -628,20 +658,7 @@ security_reconcile_ufw_rules() {
         return 1
     fi
 
-    # Read live SSH listen ports from kernel to protect ports sshd actively uses
-    local active_ssh_ports=()
-    while IFS= read -r port; do
-        [[ -n "$port" ]] && active_ssh_ports+=("$port")
-    done < <(ss -tlnp 2>/dev/null | awk '/sshd/ {print $4}' | grep -oP ':\K[0-9]+$' | sort -u)
-
-    # Bug A fix: load user-declared extra ports to preserve (OPS_UFW_SKIP_PORTS in ops.conf)
-    local skip_ports_csv skip_ports=()
-    skip_ports_csv="$(ops_conf_get "ops.conf" "OPS_UFW_SKIP_PORTS" 2>/dev/null || true)"
-    if [[ -n "$skip_ports_csv" ]]; then
-        IFS=',' read -ra skip_ports <<< "$skip_ports_csv"
-    fi
-
-    # Bug G fix: normalize UFW status to bare port numbers.
+    # Normalize UFW status to bare port numbers.
     # Handles both "22/tcp  ALLOW" and "22 (v6)  ALLOW" formats; deduplicates with sort -u.
     status_output="$(ufw status 2>/dev/null || true)"
     while IFS= read -r port; do
@@ -653,67 +670,35 @@ security_reconcile_ufw_rules() {
         | sort -u)
 
     for port in "${existing_ports[@]}"; do
-        # Always keep: standard web ports and OPS reserved deny port
-        if [[ "$port" == "80" || "$port" == "443" || "$port" == "8317" ]]; then
+        if [[ "$port" == "80" || "$port" == "443" ]]; then
             continue
         fi
 
         local keep=0
-
-        # Keep if in desired SSH ports (managed by ops.conf)
         for desired in "${desired_ports[@]}"; do
-            [[ "$desired" == "$port" ]] && keep=1 && break
+            if [[ "$desired" == "$port" ]]; then
+                keep=1
+                break
+            fi
         done
 
-        # Keep if sshd is actively listening on this port (transition / not yet in ops.conf)
         if [[ "$keep" -eq 0 ]]; then
-            for active in "${active_ssh_ports[@]}"; do
-                if [[ "$active" == "$port" ]]; then
-                    keep=1
-                    log_info "UFW: preserving active SSH port ${port} (not in ops.conf yet)"
-                    break
-                fi
-            done
-        fi
-
-        # Bug A fix (3a): keep if declared in OPS_UFW_SKIP_PORTS by user
-        if [[ "$keep" -eq 0 ]]; then
-            for skip in "${skip_ports[@]}"; do
-                skip="${skip// /}"
-                if [[ "$skip" == "$port" ]]; then
-                    keep=1
-                    log_info "UFW: preserving user-declared port ${port} (OPS_UFW_SKIP_PORTS)"
-                    break
-                fi
-            done
-        fi
-
-        # Bug A fix (3b): keep if the UFW rule has NO "ops:" comment.
-        # Rules created externally (cloud provider, manual) are never touched.
-        if [[ "$keep" -eq 0 ]]; then
-            if ! printf '%s\n' "$status_output" \
-                    | grep -qE "^[[:space:]]*${port}[^0-9].*ALLOW.*# ops:"; then
-                keep=1
-                log_info "UFW: preserving non-OPS rule for port ${port} (no 'ops:' comment)"
-            fi
-        fi
-
-        if [[ "$keep" -eq 0 ]]; then
+            local removed_any=0
             if yes | ufw delete allow "${port}/tcp" > /dev/null 2>&1; then
-                log_info "UFW: removed stale OPS-managed rule for port ${port}"
+                removed_any=1
+            fi
+            if yes | ufw delete allow "${port}/udp" > /dev/null 2>&1; then
+                removed_any=1
+            fi
+            if [[ "$removed_any" -eq 1 ]]; then
+                log_info "UFW: removed stale allow rule for port ${port}"
             else
-                print_warn "UFW: failed to remove stale OPS-managed rule for port ${port}"
+                print_warn "UFW: failed to remove stale allow rule for port ${port}"
                 ((ufw_errors++))
             fi
         fi
     done
 
-    if security_ufw_status_has_allow_port "$status_output" "8317"; then
-        if ! yes | ufw delete allow 8317/tcp > /dev/null 2>&1; then
-            print_warn "UFW: failed to remove public allow rule for 8317/tcp"
-            ((ufw_errors++))
-        fi
-    fi
     if grep -qi 'Status: active' <<< "$status_output"; then
         if ! ufw reload > /dev/null 2>&1; then
             print_warn "UFW: failed to reload ufw"

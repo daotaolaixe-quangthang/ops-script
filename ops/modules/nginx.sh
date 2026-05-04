@@ -562,6 +562,18 @@ _domain_cf_origin_cert_ready() {
     [[ -f "/etc/nginx/ssl/${domain}/cf-origin.pem" ]] && [[ -f "/etc/nginx/ssl/${domain}/cf-origin.key" ]]
 }
 
+_detect_domain_ssl_mode() {
+    local domain="$1"
+
+    if _domain_cf_origin_cert_ready "$domain"; then
+        echo "cloudflare_origin"
+    elif _domain_ssl_cert_ready "$domain"; then
+        echo "letsencrypt"
+    else
+        echo "none"
+    fi
+}
+
 # _nginx_commit_vhost <domain> <staged_file>
 # Transactional vhost commit: snapshot -> validate -> commit -> reload -> rollback.
 # REG-10: render helpers write to staged temp; this function owns the live commit.
@@ -1652,8 +1664,11 @@ add_domain() {
 
     [[ -n "$php_snapshot_root" ]] && rm -rf "$php_snapshot_root"
 
+    local initial_ssl_mode
+    initial_ssl_mode="$(_detect_domain_ssl_mode "$domain")"
+
     # Write domain state AFTER successful commit (OPS contract: state reflects live reality).
-    _write_domain_state "$domain" "$type" "$backend_target" "$php_version" "$php_socket" "$php_pool" "none" "$web_root"
+    _write_domain_state "$domain" "$type" "$backend_target" "$php_version" "$php_socket" "$php_pool" "$initial_ssl_mode" "$web_root"
 
     print_ok "Domain added: ${domain} (${type})"
     print_warn "SSL not issued here. Use SSL Management to issue certificate."
@@ -2062,9 +2077,31 @@ issue_ssl() {
             ;;
     esac
 
+    local state_file="${OPS_DOMAINS_DIR}/${domain}.conf"
+    local DOMAIN DOMAIN_BACKEND_TYPE DOMAIN_BACKEND_TARGET DOMAIN_PHP_VERSION DOMAIN_PHP_SOCKET DOMAIN_PHP_POOL DOMAIN_WEB_ROOT DOMAIN_SSL_MODE
+    local had_managed_state=0
+    local old_ssl_mode=""
+
+    if [[ -f "$state_file" ]]; then
+        eval "$(_load_domain_state "$state_file")"
+        if [[ -n "${DOMAIN_BACKEND_TYPE:-}" ]]; then
+            had_managed_state=1
+            old_ssl_mode="${DOMAIN_SSL_MODE:-}"
+            _write_domain_state "$domain" "${DOMAIN_BACKEND_TYPE}" "${DOMAIN_BACKEND_TARGET:-}" "${DOMAIN_PHP_VERSION:-}" "${DOMAIN_PHP_SOCKET:-}" "${DOMAIN_PHP_POOL:-}" "letsencrypt" "${DOMAIN_WEB_ROOT:-/var/www/${domain}}"
+        fi
+    fi
+
     log_info "issue_ssl: SSL issued for ${domain} — syncing managed vhosts"
     # _rebuild_domain_vhost calls _nginx_commit_vhost which reloads nginx internally.
-    _rebuild_domain_vhost "$domain"
+    if ! _rebuild_domain_vhost "$domain"; then
+        if [[ "$had_managed_state" -eq 1 ]]; then
+            _write_domain_state "$domain" "${DOMAIN_BACKEND_TYPE}" "${DOMAIN_BACKEND_TARGET:-}" "${DOMAIN_PHP_VERSION:-}" "${DOMAIN_PHP_SOCKET:-}" "${DOMAIN_PHP_POOL:-}" "${old_ssl_mode:-none}" "${DOMAIN_WEB_ROOT:-/var/www/${domain}}"
+        fi
+        print_error "Nginx vhost rebuild failed after SSL issuance for ${domain}."
+        print_warn "Certificate was issued, but managed domain state/vhost was rolled back."
+        log_error "issue_ssl: _rebuild_domain_vhost failed for ${domain}"
+        return 1
+    fi
 
     local cliproxyapi_domain
     cliproxyapi_domain=$(ops_conf_get "cli-proxy-api.conf" "CLIPROXYAPI_DOMAIN" || true)
@@ -2540,15 +2577,16 @@ ssl_issue_cf_origin_cert() {
     local cliproxyapi_vhost="/etc/nginx/sites-available/cli-proxy-api.${domain}"
 
     if [[ -f "$state_file" ]]; then
-        # Persist ssl_mode so future rebuilds keep using CF origin certs.
-        if grep -q '^DOMAIN_SSL_MODE=' "$state_file"; then
-            sed -i 's|^DOMAIN_SSL_MODE=.*|DOMAIN_SSL_MODE="cloudflare_origin"|' "$state_file"
-        else
-            printf 'DOMAIN_SSL_MODE="cloudflare_origin"\n' >> "$state_file"
-        fi
+        local DOMAIN DOMAIN_BACKEND_TYPE DOMAIN_BACKEND_TARGET DOMAIN_PHP_VERSION DOMAIN_PHP_SOCKET DOMAIN_PHP_POOL DOMAIN_WEB_ROOT DOMAIN_SSL_MODE
+        local old_ssl_mode=""
+
+        eval "$(_load_domain_state "$state_file")"
+        old_ssl_mode="${DOMAIN_SSL_MODE:-}"
+        _write_domain_state "$domain" "${DOMAIN_BACKEND_TYPE:-}" "${DOMAIN_BACKEND_TARGET:-}" "${DOMAIN_PHP_VERSION:-}" "${DOMAIN_PHP_SOCKET:-}" "${DOMAIN_PHP_POOL:-}" "cloudflare_origin" "${DOMAIN_WEB_ROOT:-/var/www/${domain}}"
         if ! _rebuild_domain_vhost "$domain"; then
+            _write_domain_state "$domain" "${DOMAIN_BACKEND_TYPE:-}" "${DOMAIN_BACKEND_TARGET:-}" "${DOMAIN_PHP_VERSION:-}" "${DOMAIN_PHP_SOCKET:-}" "${DOMAIN_PHP_POOL:-}" "${old_ssl_mode:-none}" "${DOMAIN_WEB_ROOT:-/var/www/${domain}}"
             print_error "  Vhost rebuild failed — cert installed but nginx not yet serving it."
-            print_error "  State updated. Retry: Domains & Nginx → Rebuild all vhosts."
+            print_error "  Managed domain state was rolled back. Retry after fixing nginx/domain state."
             log_error "ssl_issue_cf_origin_cert: _rebuild_domain_vhost failed for ${domain}"
         else
             print_ok "  Nginx vhost rebuilt transactionally (ssl_mode=cloudflare_origin)."

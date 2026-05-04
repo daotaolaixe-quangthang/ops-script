@@ -28,6 +28,7 @@ Model chung:
   - `/opt/ops`
   - `/usr/local/bin/ops`
   - `/usr/local/bin/ops-dashboard`
+  - `/usr/local/bin/ops-check` (compatibility symlink -> canonical `${OPS_ROOT}/bin/ops-check`)
   - `/etc/ops/ops.conf`
   - login shell rc hooks
 - **Verify**:
@@ -60,10 +61,10 @@ Model chung:
   - app directories
   - `.env` (0600)
   - PM2 process list and ecosystem config
-  - `/etc/ops/apps/*.conf` neu tao state file
+  - `/etc/ops/apps/*.conf` neu tao state file (OPS-managed registry de verify loopback-only bind)
 - **Runtime state - CLIProxyAPI specific**:
   - `/opt/cli-proxy-api/cli-proxy-api`
-  - `/opt/cli-proxy-api/config.yaml`
+  - `/opt/cli-proxy-api/config.yaml` (0600, runtime-user owned)
   - `~/.cli-proxy-api/`
   - `/etc/ops/cli-proxy-api.conf`
   - `/etc/ops/.cli-proxy-api-key`
@@ -76,6 +77,8 @@ Model chung:
   - `systemctl is-active cli-proxy-api`
   - `curl -s http://127.0.0.1:8317/v1/models`
   - `ufw status | grep 8317` (must return empty)
+  - `ss -tln | grep ':<app_port>$'` cho OPS-managed Node apps -> chi duoc thay loopback listeners
+  - neu `verify_stack` gap public bind tren `:8317` -> FAIL; neu `/v1/models` inconclusive -> WARN
   - domain proxy request
 - **Rollback**:
   - revert ecosystem/service config, rollback Nginx target
@@ -88,7 +91,7 @@ Model chung:
   - `/etc/nginx/nginx.conf`
   - `/etc/nginx/sites-available/*`
   - `/etc/nginx/sites-enabled/*`
-  - `/etc/ops/domains/*.conf` neu co domain manifest
+  - `/etc/ops/domains/*.conf` la canonical domain manifest/SSL state cho domain do OPS quan ly
 - **Verify**:
   - `nginx -t`
   - `systemctl reload nginx`
@@ -103,6 +106,7 @@ Model chung:
 - **Runtime state**:
   - certbot config
   - live cert paths
+  - `/etc/ops/domains/*.conf` ghi `DOMAIN_SSL_MODE` cho domain OPS-managed
   - Nginx ssl config snippets
 - **Verify**:
   - cert expiry/status
@@ -206,13 +210,15 @@ Model chung:
   - `/etc/ops/notifications.conf`
   - `/etc/ops/.telegram-bot-token`
   - `/etc/cron.d/ops-checks`
-  - `bin/ops-check`
+  - `${OPS_ROOT}/bin/ops-check` (canonical dispatcher)
+  - `/usr/local/bin/ops-check` (compatibility symlink only)
   - `/etc/ops/checks.conf`
   - `/var/log/ops/checks.log`
   - cooldown files `/tmp/ops-alert-<type>-<id>.cooldown`
 - **Verify**:
   - test notification
   - scheduler/cron file ton tai va khong duplicate
+  - cron + crash-alert systemd paths deu resolve qua canonical `${OPS_ROOT}/bin/ops-check`
   - generated check output/logs
 - **Rollback**:
   - disable checks
@@ -247,7 +253,7 @@ Model chung:
 | `/etc/nginx/sites-available/*` | Domains & Nginx, SSL |
 | PM2 app state | Node.js Services |
 | `cli-proxy-api.service` | CLIProxyAPI provider lifecycle |
-| `/opt/cli-proxy-api/config.yaml` | provider config rendered by `modules/cli-proxy-api.sh` |
+| `/opt/cli-proxy-api/config.yaml` | provider config rendered by `modules/cli-proxy-api.sh` (0600, runtime-user owned) |
 | `/etc/ops/.cli-proxy-api-key` | local client key for CLIProxyAPI (0600) |
 | `/etc/ops/db-credentials/<db>__<user>.conf` | database.sh create_db_user (0600, admin-owned) |
 | `/etc/ops/.db-root-password` | database.sh legacy/fallback root password file (0600 when present) |
@@ -258,6 +264,7 @@ Model chung:
 | `/etc/php/*/fpm/*` | PHP management |
 | **MariaDB** config (default) | Database management |
 | UFW/fail2ban/sshd config | Security module |
+| `${OPS_ROOT}/bin/ops-check` + `/usr/local/bin/ops-check` | checks.sh dispatcher + setup compatibility symlink |
 | `/var/log/ops/ops.log` | monitoring/audit flow |
 
 

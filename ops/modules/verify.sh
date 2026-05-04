@@ -154,7 +154,7 @@ _vs_check_ufw() {
     done
 
     if [[ "$found_stale" -eq 1 ]]; then
-        _vs_warn "UFW" "stale SSH allow rule detected" "reconcile UFW and finalize old SSH transition ports"
+        _vs_warn "UFW" "unexpected allow rule detected outside managed SSH/http/https ports" "reconcile UFW and remove non-managed public ports"
         _vs_set_result warn
         return 0
     fi
@@ -310,6 +310,79 @@ _vs_check_pm2() {
     return 0
 }
 
+_vs_check_node_bindings() {
+    local apps_dir="${OPS_CONFIG_DIR:-/etc/ops}/apps"
+    local found=0
+    local any_fail=0
+    local app_conf app_name app_port listeners local_listeners public_listeners non_loopback_listeners
+
+    if [[ ! -d "$apps_dir" ]]; then
+        _vs_pass "Node Apps" "no OPS-managed Node apps registered"
+        _vs_set_result pass
+        return 0
+    fi
+
+    shopt -s nullglob
+    for app_conf in "$apps_dir"/*.conf; do
+        found=1
+        APP_NAME=""
+        APP_PORT=""
+        # shellcheck source=/dev/null
+        source "$app_conf"
+        app_name="${APP_NAME:-$(basename "$app_conf" .conf)}"
+        app_port="${APP_PORT:-}"
+
+        if [[ ! "$app_port" =~ ^[0-9]+$ ]]; then
+            _vs_fail "Node ${app_name}" "registered port is missing or invalid" "rewrite ${app_conf} from OPS app registry"
+            any_fail=1
+            continue
+        fi
+
+        listeners="$(ss -tln 2>/dev/null | awk -v suffix=":${app_port}$" '$4 ~ suffix {print $4}')"
+        if [[ -z "$listeners" ]]; then
+            _vs_fail "Node ${app_name}" "not listening on expected port ${app_port}" "restart the app and inspect PM2 logs"
+            any_fail=1
+            continue
+        fi
+
+        local_listeners="$(printf '%s\n' "$listeners" | grep -E "(^127\.0\.0\.1:${app_port}$|^\[::1\]:${app_port}$)" | paste -sd, - || true)"
+        public_listeners="$(printf '%s\n' "$listeners" | grep -E "(^0\.0\.0\.0:${app_port}$|^\[::\]:${app_port}$)" | paste -sd, - || true)"
+        non_loopback_listeners="$(printf '%s\n' "$listeners" | grep -Ev "(^127\.0\.0\.1:${app_port}$|^\[::1\]:${app_port}$)" | paste -sd, - || true)"
+
+        if [[ -n "$public_listeners" ]]; then
+            _vs_fail "Node ${app_name}" "binding publicly on ${public_listeners}" "bind the app to 127.0.0.1 or ::1 only"
+            any_fail=1
+            continue
+        fi
+        if [[ -n "$non_loopback_listeners" ]]; then
+            _vs_fail "Node ${app_name}" "not loopback-only (${non_loopback_listeners})" "bind the app to 127.0.0.1 or ::1 only"
+            any_fail=1
+            continue
+        fi
+        if [[ -z "$local_listeners" ]]; then
+            _vs_fail "Node ${app_name}" "loopback listener missing on port ${app_port}" "bind the app to 127.0.0.1 or ::1 only"
+            any_fail=1
+            continue
+        fi
+
+        _vs_pass "Node ${app_name}" "loopback-only on ${local_listeners}"
+    done
+    shopt -u nullglob
+
+    if [[ "$found" -eq 0 ]]; then
+        _vs_pass "Node Apps" "no OPS-managed Node apps registered"
+        _vs_set_result pass
+        return 0
+    fi
+
+    if [[ "$any_fail" -eq 1 ]]; then
+        _vs_set_result fail
+    else
+        _vs_set_result pass
+    fi
+    return 0
+}
+
 _vs_check_cliproxyapi() {
     if ! systemctl list-unit-files 2>/dev/null | grep -q '^cli-proxy-api\.service'; then
         _vs_warn "CLIProxyAPI" "service cli-proxy-api is not installed" "deploy via OPS: CLIProxyAPI Management"
@@ -325,8 +398,8 @@ _vs_check_cliproxyapi() {
     case "$status" in
         active)
             if [[ -n "$listening_public" ]]; then
-                _vs_warn "CLIProxyAPI" "service is binding publicly on 8317 (${listening_public})" "verify UFW deny rule and keep nginx as sole public entrypoint"
-                _vs_set_result warn
+                _vs_fail "CLIProxyAPI" "service is binding publicly on 8317 (${listening_public})" "bind only to 127.0.0.1 and keep nginx as sole public entrypoint"
+                _vs_set_result fail
                 return 0
             fi
             if [[ -z "$listening_local" ]]; then
@@ -344,10 +417,11 @@ _vs_check_cliproxyapi() {
             response=$(curl -fsS --max-time 3 "${api_header[@]}" "http://127.0.0.1:8317/v1/models" 2>/dev/null || true)
             if [[ -n "$response" ]] && printf '%s' "$response" | grep -qE '^[[:space:]]*[\[{]'; then
                 _vs_pass "CLIProxyAPI" "active, loopback 8317 reachable, /v1/models returned JSON"
+                _vs_set_result pass
             else
                 _vs_warn "CLIProxyAPI" "active, loopback 8317 reachable, /v1/models probe inconclusive" "complete provider auth bootstrap and re-run verify"
+                _vs_set_result warn
             fi
-            _vs_set_result pass
             return 0
             ;;
         inactive|failed|activating|deactivating)
@@ -675,6 +749,7 @@ verify_stack() {
     _vs_run _vs_check_fail2ban
     _vs_run _vs_check_nginx
     _vs_run _vs_check_pm2
+    _vs_run _vs_check_node_bindings
     _vs_run _vs_check_runtime_user
     _vs_run _vs_check_cliproxyapi
     _vs_run _vs_check_php_fpm

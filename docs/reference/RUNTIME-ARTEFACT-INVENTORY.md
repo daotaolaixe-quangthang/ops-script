@@ -11,6 +11,7 @@ Luu y: day la inventory cho feature hien tai cua stable line; neu runtime tao th
 | `/opt/ops` | core install path |
 | `/usr/local/bin/ops` | main entrypoint symlink |
 | `/usr/local/bin/ops-dashboard` | dashboard symlink |
+| `/usr/local/bin/ops-check` | compatibility symlink -> canonical `${OPS_ROOT}/bin/ops-check` |
 | `/etc/ops/ops.conf` | global config |
 | `/etc/ops/capacity.conf` | VPS capacity profile (shell-sourceable key=value) |
 | `/var/log/ops/ops.log` | high-level operations log |
@@ -45,7 +46,7 @@ Node services follow the PM2 contract. CLIProxyAPI is a separate systemd-managed
 | Artefact | Path | Muc dich |
 |---|---|---|
 | Binary | `/opt/cli-proxy-api/cli-proxy-api` | Provider service executable |
-| Config | `/opt/cli-proxy-api/config.yaml` | Runtime config |
+| Config | `/opt/cli-proxy-api/config.yaml` | Runtime config (0600, runtime-user owned) |
 | Auth dir | `~/.cli-proxy-api/` | Provider auth state |
 | Logs dir | `/opt/cli-proxy-api/logs` | file logging dir khi request logging duoc bat |
 | systemd service | `cli-proxy-api.service` | Service supervision |
@@ -62,7 +63,7 @@ Node services follow the PM2 contract. CLIProxyAPI is a separate systemd-managed
 | `/etc/nginx/sites-enabled/*` | enabled site links |
 | `/etc/nginx/sites-available/00-default-deny` | default deny vhost for unknown hosts |
 | `/etc/logrotate.d/nginx-ops` | OPS-managed Nginx per-domain log rotation |
-| `/etc/ops/domains/<domain>.conf` | domain mapping source of truth neu OPS tao |
+| `/etc/ops/domains/<domain>.conf` | canonical domain/SSL state (`DOMAIN_SSL_MODE`, backend, web root) neu OPS tao |
 
 ## 5. SSL
 
@@ -79,12 +80,14 @@ Node services follow the PM2 contract. CLIProxyAPI is a separate systemd-managed
 | Artefact | Path | Source module | Verify | Permission |
 |---|---|---|---|---|
 | Cron file | `/etc/cron.d/ops-checks` | `modules/checks.sh` — `checks_install_cron` | `cat /etc/cron.d/ops-checks` | 0644 |
-| Check dispatcher | `bin/ops-check` | `modules/checks.sh` — `_checks_write_dispatcher` | `bash -n bin/ops-check` | 0755 |
+| Check dispatcher | `${OPS_ROOT}/bin/ops-check` | `modules/checks.sh` — `_checks_write_dispatcher` | `bash -n ${OPS_ROOT}/bin/ops-check` | 0755 |
 | Alert cooldown | `/tmp/ops-alert-<type>-<id>.cooldown` | runtime (per check run) | `ls /tmp/ops-alert-*` | 0644 |
 | Check log | `/var/log/ops/checks.log` | cron redirect | `tail /var/log/ops/checks.log` | 0644 |
 | Checks config override | `/etc/ops/checks.conf` | operator-created (optional) | `cat /etc/ops/checks.conf` | 0600 |
 | Telegram token | `/etc/ops/.telegram-bot-token` | `modules/monitoring.sh` | exists + 0600 | 0600 |
 | Telegram config | `/etc/ops/notifications.conf` (TELEGRAM_ENABLED, TELEGRAM_CHAT_ID) | `modules/monitoring.sh` | `grep TELEGRAM /etc/ops/notifications.conf` | 0640 |
+
+**Note:** `/usr/local/bin/ops-check` exists only as a managed compatibility symlink; cron/systemd generators must point to canonical `${OPS_ROOT}/bin/ops-check`.
 
 **Rollback:** `checks_remove_cron` removes `/etc/cron.d/ops-checks`; delete cooldown files manually if needed.
 

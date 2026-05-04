@@ -100,13 +100,16 @@ chown -R ${ADMIN_USER}:${ADMIN_USER} /home/${ADMIN_USER}/.ssh
 - **Pre-check**:
   - xac dinh backend type: Node, PHP, hay static
   - backup file Nginx lien quan
+  - neu domain da duoc OPS quan ly, inspect `/etc/ops/domains/<domain>.conf` truoc khi sua
 - **Change**:
   - tao/sua/remove site config
   - enable/disable symlink neu dung sites-enabled
+  - neu doi SSL/backend state, OPS phai cap nhat `/etc/ops/domains/<domain>.conf` truoc khi rebuild vhost
 - **Verify**:
   - `nginx -t`
   - `systemctl reload nginx`
   - `curl -I` voi host dung
+  - `/etc/ops/domains/<domain>.conf` phan anh dung backend + `DOMAIN_SSL_MODE` sau thay doi
 - **Rollback**:
   - khoi phuc config cu
   - disable broken site
@@ -125,6 +128,8 @@ chown -R ${ADMIN_USER}:${ADMIN_USER} /home/${ADMIN_USER}/.ssh
   - `pm2 status`
   - log process khong crash loop
   - health endpoint localhost
+  - `ss -tln | grep ':<APP_PORT>$'` chi duoc tra ve loopback listener (`127.0.0.1`/`::1`)
+  - `verify_stack` phan `Node Apps` PASS neu app OPS-managed dang loopback-only
   - domain proxy request neu co
 - **Rollback**:
   - `pm2 stop/delete` process moi
@@ -139,13 +144,15 @@ chown -R ${ADMIN_USER}:${ADMIN_USER} /home/${ADMIN_USER}/.ssh
   - xac nhan runtime user co HOME hop le de login providers
 - **Change**:
   - tai binary release vao `/opt/cli-proxy-api`
-  - ghi `config.yaml`, tao `cli-proxy-api.service`, start bang systemd
+  - ghi `config.yaml` (0600, runtime-user owned), tao `cli-proxy-api.service`, start bang systemd
   - bootstrap auth bang `--antigravity-login`, `--login`, `--claude-login`, hoac `--codex-login`
   - wire Nginx route toi `127.0.0.1:8317`
 - **Verify**:
   - `systemctl status cli-proxy-api --no-pager`
+  - `ls -l /opt/cli-proxy-api/config.yaml` -> mode `600`
   - `curl http://127.0.0.1:8317/v1/models`
   - direct external access vao `:8317` that bai
+  - `verify_stack`: public bind tren `:8317` phai la FAIL; `/v1/models` inconclusive phai la WARN
   - domain proxy hoat dong qua Nginx
 - **Rollback**:
   - `systemctl stop cli-proxy-api`
@@ -272,6 +279,7 @@ chown -R ${ADMIN_USER}:${ADMIN_USER} /home/${ADMIN_USER}/.ssh
 - **Change (qua menu OPS)**:
   - `ops -> 9) System & Monitoring -> 16) Update OPS from git`
   - OPS tai tarball tu GitHub (khong dung git pull), verify archive, extract vao tmp dir, syntax-check tung `.sh`, roi copy vao `/opt/ops`.
+  - Sau khi copy xong, OPS rerun `ops-setup.sh` de reconcile managed symlink/hook state tren host upgrade.
   - Sau khi update: thoat va chay lai `ops` de load version moi.
 - **Change (thu cong / idempotent installer)**:
   - `bash <(curl -fsSL https://raw.githubusercontent.com/daotaolaixe-quangthang/ops-script/main/install/ops-install.sh)`
@@ -280,6 +288,7 @@ chown -R ${ADMIN_USER}:${ADMIN_USER} /home/${ADMIN_USER}/.ssh
   - `bash -n /opt/ops/bin/ops` — syntax check
   - Chay `ops` -> menu hien thi dung va khong bi broken
   - `cat /etc/ops/ops.conf | grep OPS_VERSION` — version da cap nhat
+  - `ls -l /usr/local/bin/ops-check` — compatibility symlink duoc reconcile ve `/opt/ops/bin/ops-check`
 - **Rollback**:
   - `/opt/ops` la directory thuong, khong phai git working tree tren VPS.
   - Restore tu backup: `cp -a /backup/opt-ops /opt/ops`
@@ -418,10 +427,13 @@ Notes:
   - Neu Telegram chua setup, alerts se chi ghi vao `/var/log/ops/checks.log`
 - **Change (enable)**:
   - OPS menu: `System & Monitoring -> Notifications & scheduled checks -> Install scheduled checks`
-  - Tao `/etc/cron.d/ops-checks` va `bin/ops-check` dispatcher
+  - Tao `/etc/cron.d/ops-checks` va canonical dispatcher `${OPS_ROOT}/bin/ops-check`
+  - `/usr/local/bin/ops-check` chi ton tai nhu managed compatibility symlink
 - **Verify**:
   - `cat /etc/cron.d/ops-checks` -> 5 cron entries dung lich
   - `bash -n <OPS_ROOT>/bin/ops-check` -> no errors
+  - `systemctl cat ops-alert-crash@.service 2>/dev/null | grep '<OPS_ROOT>/bin/ops-check alert-crash'` neu crash-alert unit da duoc cai
+  - `ls -l /usr/local/bin/ops-check` -> symlink toi `<OPS_ROOT>/bin/ops-check`
   - `ls /var/log/ops/checks.log` -> file exists (created by cron)
   - Sau 5 phut: `tail /var/log/ops/checks.log` -> check output
 - **Change (disable)**:

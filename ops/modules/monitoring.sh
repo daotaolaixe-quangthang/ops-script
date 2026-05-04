@@ -1035,24 +1035,41 @@ ops_self_update() {
     # ── Step 7: Cleanup
     rm -rf "$tmp_dir"
 
-    echo ""
-    if [[ "$any_fail" -eq 1 ]]; then
-        print_error "Syntax errors found after update — please review the files above."
-        print_warn "Restore from backup: ops menu → Backup helpers → Archive configs (run before update)"
-    else
-        print_ok "Update complete. All syntax checks passed."
-        print_warn "Restart OPS (exit and re-run) to load the new version."
-    fi
-
     # Bug-4 fix: sync OPS_VERSION in ops.conf to match the actual deployed VERSION file.
     # Self-update replaces bin/modules/VERSION but never updated ops.conf, causing
     # OPS_VERSION to remain at the install-time value indefinitely after updates.
-    local _new_ver
+    local _new_ver _setup_admin _install_date _setup_version _setup_rc=0
     _new_ver=$(cat "${ops_root}/VERSION" 2>/dev/null | tr -d '[:space:]' || true)
     if [[ -n "$_new_ver" ]]; then
         ops_conf_set "ops.conf" "OPS_VERSION" "$_new_ver" 2>/dev/null || true
         log_info "ops_self_update: synced OPS_VERSION=${_new_ver} to ops.conf"
     fi
 
-    log_info "ops_self_update: applied from ${tarball_url} any_fail=${any_fail}"
+    if [[ "$any_fail" -eq 0 ]]; then
+        echo ""
+        print_warn "Re-running ops-setup.sh to reconcile managed symlinks..."
+        _setup_admin="$(ops_conf_get "ops.conf" "OPS_ADMIN_USER" 2>/dev/null || true)"
+        _install_date="$(ops_conf_get "ops.conf" "OPS_INSTALL_DATE" 2>/dev/null || true)"
+        _setup_version="${_new_ver:-$(ops_conf_get "ops.conf" "OPS_VERSION" 2>/dev/null || true)}"
+
+        if ADMIN_USER="${_setup_admin}" OPS_VERSION="${_setup_version:-0.1.0}" OPS_INSTALL_DATE="${_install_date}" bash "${ops_root}/bin/ops-setup.sh"; then
+            print_ok "Post-update setup reconciliation complete."
+        else
+            print_error "Post-update setup reconciliation failed."
+            any_fail=1
+            _setup_rc=1
+        fi
+    fi
+
+    echo ""
+    if [[ "$any_fail" -eq 1 ]]; then
+        print_error "Update completed with follow-up required."
+        print_warn "Review syntax/setup errors above before relying on this deployment."
+        print_warn "Restore from backup: ops menu → Backup helpers → Archive configs (run before update)"
+    else
+        print_ok "Update complete. All syntax checks passed."
+        print_warn "Restart OPS (exit and re-run) to load the new version."
+    fi
+
+    log_info "ops_self_update: applied from ${tarball_url} any_fail=${any_fail} setup_rc=${_setup_rc}"
 }

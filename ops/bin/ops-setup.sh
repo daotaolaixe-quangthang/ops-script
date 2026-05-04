@@ -78,10 +78,20 @@ setup_symlinks() {
     print_ok "Symlink ready: $bin_dash → $src_dash"
     ops_conf_set "setup.conf" "SETUP_SYMLINK_DASHBOARD" "$bin_dash"
 
+    # /usr/local/bin/ops-check → /opt/ops/bin/ops-check
+    # Compatibility bridge for upgraded hosts; ${OPS_ROOT}/bin/ops-check remains canonical.
+    local bin_check="/usr/local/bin/ops-check"
+    local src_check="${OPS_ROOT}/bin/ops-check"
+
+    safe_symlink "$src_check" "$bin_check"
+    print_ok "Symlink ready: $bin_check → $src_check"
+    ops_conf_set "setup.conf" "SETUP_SYMLINK_CHECKS" "$bin_check"
+
     # Ensure executables are marked +x
     chmod +x "${OPS_ROOT}/bin/ops"
     chmod +x "${OPS_ROOT}/bin/ops-dashboard"
     chmod +x "${OPS_ROOT}/bin/ops-setup.sh"
+    [[ -f "${OPS_ROOT}/bin/ops-check" ]] && chmod +x "${OPS_ROOT}/bin/ops-check"
     ops_conf_set "setup.conf" "SETUP_BIN_EXECUTABLES" "yes"
 }
 

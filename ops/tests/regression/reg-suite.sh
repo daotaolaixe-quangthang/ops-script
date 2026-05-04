@@ -75,6 +75,7 @@ _vs_check_ufw() { _vs_warn "UFW" "warn" "review"; _vs_set_result warn; return 0;
 _vs_check_fail2ban() { _vs_fail "Fail2ban" "fail" "fix"; _vs_set_result fail; return 0; }
 _vs_check_nginx() { _vs_pass "Nginx" "ok"; _vs_set_result pass; return 0; }
 _vs_check_pm2() { _vs_pass "PM2" "ok"; _vs_set_result pass; return 0; }
+_vs_check_node_bindings() { _vs_pass "Node Apps" "ok"; _vs_set_result pass; return 0; }
 _vs_check_runtime_user() { _vs_pass "Runtime User" "ok"; _vs_set_result pass; return 0; }
 _vs_check_cliproxyapi() { _vs_pass "CLIProxyAPI" "ok"; _vs_set_result pass; return 0; }
 _vs_check_php_fpm() { _vs_pass "PHP-FPM" "ok"; _vs_set_result pass; return 0; }
@@ -118,7 +119,8 @@ case_reg_06_cliproxyapi_posture_contract_present() {
     local content
     content="$(<"${OPS_ROOT}/modules/verify.sh")"
     test::assert_contains "$content" '8317/tcp' 'verify must check public exposure of 8317' || return 1
-    test::assert_contains "$content" 'remove allow rule and keep only nginx public' 'verify hint for 8317 exposure missing' || return 1
+    test::assert_contains "$content" 'bind only to 127.0.0.1 and keep nginx as sole public entrypoint' 'verify fail hint for public 8317 exposure missing' || return 1
+    test::assert_contains "$content" '/v1/models probe inconclusive' 'verify must downgrade inconclusive CLIProxyAPI model probes to WARN' || return 1
 }
 
 case_reg_07_pm2_startup_not_root_contract_present() {
@@ -457,6 +459,8 @@ case_ins_05_rerun_setup_contract_present() {
     test::assert_contains "$content" 'chmod 640 "$OPS_LOG_FILE"' 'setup must enforce root-owned ops log permissions' || return 1
     test::assert_contains "$content" 'cmp -s "$tmp" "$lr_file"' 'logrotate reconcile must be content-aware' || return 1
     test::assert_contains "$content" 'write_file "$lr_file" < "$tmp"' 'logrotate reconcile must rewrite managed content atomically' || return 1
+    test::assert_contains "$content" '/usr/local/bin/ops-check' 'ops-setup rerun must install the ops-check compatibility symlink' || return 1
+    test::assert_contains "$content" 'SETUP_SYMLINK_CHECKS' 'ops-setup rerun must persist ops-check symlink reconciliation state' || return 1
     test::assert_contains "$content" 'detect_admin_user' 'ops-setup rerun must reuse shared persisted admin-user resolution' || return 1
     test::assert_contains "$content" 'if [[ ${OPS_SSH_PORT+x} ]]; then' 'ops-setup rerun must preserve OPS_SSH_PORT when env is absent' || return 1
     test::assert_contains "$content" 'if [[ ${OPS_SSH_TRANSITION_PORT+x} ]]; then' 'ops-setup rerun must preserve OPS_SSH_TRANSITION_PORT when env is absent' || return 1
@@ -540,7 +544,8 @@ case_web_07_ssl_issue_contract_present() {
     content="$(<"${OPS_ROOT}/modules/nginx.sh")"
     test::assert_contains "$content" 'certbot' 'certbot integration missing' || return 1
     test::assert_contains "$content" '_rebuild_domain_vhost "$domain"' 'SSL issuance must rebuild managed vhosts from OPS state' || return 1
-    test::assert_contains "$content" 'DOMAIN_SSL_MODE="cloudflare_origin"' 'Cloudflare origin cert flow must persist ssl mode in OPS domain state' || return 1
+    test::assert_contains "$content" '_write_domain_state "$domain" "${DOMAIN_BACKEND_TYPE}" "${DOMAIN_BACKEND_TARGET:-}" "${DOMAIN_PHP_VERSION:-}" "${DOMAIN_PHP_SOCKET:-}" "${DOMAIN_PHP_POOL:-}" "letsencrypt" "${DOMAIN_WEB_ROOT:-/var/www/${domain}}"' 'LetsEncrypt flow must persist ssl mode in OPS domain state before rebuild' || return 1
+    test::assert_contains "$content" '"cloudflare_origin"' 'Cloudflare origin cert flow must persist ssl mode in OPS domain state' || return 1
 }
 
 case_web_08_ssl_status_contract_present() {
@@ -650,12 +655,17 @@ case_node_02_pm2_not_root_contract_present() {
 }
 
 case_node_03_04_05_06_07_node_menu_contract_present() {
-    local content
+    local content verify_content
     content="$(<"${OPS_ROOT}/modules/node.sh")"
+    verify_content="$(<"${OPS_ROOT}/modules/verify.sh")"
     test::assert_contains "$content" 'pm2 list' 'node service list helper missing' || return 1
     test::assert_contains "$content" 'pm2 restart' 'node restart helper missing' || return 1
     test::assert_contains "$content" 'pm2 logs' 'node logs helper missing' || return 1
     test::assert_contains "$content" 'pm2 delete' 'node remove helper missing' || return 1
+    test::assert_contains "$content" 'started, but port ${app_port} is PUBLIC' 'node add flow must warn when the app binds publicly' || return 1
+    test::assert_contains "$content" 'registered and listening on ${local_listeners} using runtime user' 'node add flow must report the verified loopback listener instead of hardcoding 127.0.0.1' || return 1
+    test::assert_contains "$verify_content" '_vs_check_node_bindings' 'verify_stack must audit OPS-managed Node apps for loopback-only binding' || return 1
+    test::assert_contains "$verify_content" 'bind the app to 127.0.0.1 or ::1 only' 'verify_stack must fail Node apps that are not loopback-only' || return 1
 }
 
 case_node_08_09_10_pm2_template_contract_present() {
@@ -797,6 +807,8 @@ case_cpa_01_02_03_04_05_06_07_08_09_cliproxyapi_contracts_present() {
     test::assert_contains "$content" 'CLIProxyAPI/releases/latest' 'CLIProxyAPI release install contract missing' || return 1
     test::assert_contains "$content" 'host: "127.0.0.1"' 'CLIProxyAPI loopback bind contract missing' || return 1
     test::assert_contains "$content" '.cli-proxy-api-key' 'CLIProxyAPI secret file contract missing' || return 1
+    test::assert_contains "$content" 'chown "$runtime_user:$runtime_user" "$CLIPROXYAPI_CONFIG_FILE"' 'CLIProxyAPI runtime config must stay runtime-user owned' || return 1
+    test::assert_contains "$content" 'chmod 600 "$CLIPROXYAPI_CONFIG_FILE"' 'CLIProxyAPI runtime config must stay 0600' || return 1
     test::assert_contains "$content" 'proxy_buffering       off' 'CLIProxyAPI nginx proxy contract missing' || return 1
     test::assert_contains "$content" 'create_default_deny || return 1' 'CLIProxyAPI domain link must fail closed if default deny refresh fails' || return 1
     test::assert_not_contains "$content" '"SSL_HTTPS_BLOCK="' 'CLIProxyAPI vhost render must not pass dead SSL_HTTPS_BLOCK placeholder' || return 1
@@ -878,7 +890,10 @@ case_mon_01_02_03_04_05_monitoring_contracts_present() {
     test::assert_contains "$verify_content" 'return 0   # verify action never exits the menu due to WARN/FAIL counts' 'MON-01 verify exit-zero contract missing' || return 1
     test::assert_contains "$monitoring_content" 'Quick logs' 'monitoring quick logs contract missing' || return 1
     test::assert_contains "$monitoring_content" '_monitoring_menu_run()' 'monitoring menu wrapper missing' || return 1
+    test::assert_contains "$monitoring_content" 'Re-running ops-setup.sh to reconcile managed symlinks...' 'self-update must rerun ops-setup to reconcile managed compatibility symlinks' || return 1
     test::assert_contains "$checks_content" 'checks_install_cron()' 'scheduled checks install contract missing' || return 1
+    test::assert_contains "$checks_content" 'local dispatcher="${OPS_ROOT}/bin/ops-check"' 'scheduled checks must use the canonical ops-check dispatcher path' || return 1
+    test::assert_contains "$checks_content" 'ExecStart=${dispatcher} alert-crash %i' 'scheduled crash alerts must use the canonical ops-check dispatcher path' || return 1
     test::assert_contains "$checks_content" '_checks_send_telegram' 'notification disable/test path contract missing' || return 1
 }
 

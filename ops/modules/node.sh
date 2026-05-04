@@ -616,7 +616,23 @@ EOF
     done
 
     if (( _port_bound )); then
-        print_ok "App '${app_name}' registered and started on 127.0.0.1:${app_port} using runtime user $(_node_runtime_user)"
+        local listeners local_listeners public_listeners non_loopback_listeners
+        listeners="$(ss -tln 2>/dev/null | awk -v suffix=":${app_port}$" '$4 ~ suffix {print $4}')"
+        local_listeners="$(printf '%s\n' "$listeners" | grep -E "(^127\.0\.0\.1:${app_port}$|^\[::1\]:${app_port}$)" | paste -sd, - || true)"
+        public_listeners="$(printf '%s\n' "$listeners" | grep -E "(^0\.0\.0\.0:${app_port}$|^\[::\]:${app_port}$)" | paste -sd, - || true)"
+        non_loopback_listeners="$(printf '%s\n' "$listeners" | grep -Ev "(^127\.0\.0\.1:${app_port}$|^\[::1\]:${app_port}$)" | paste -sd, - || true)"
+
+        if [[ -n "$public_listeners" ]]; then
+            print_warn "App '${app_name}' started, but port ${app_port} is PUBLIC (${public_listeners})."
+            print_warn "Bind the app to 127.0.0.1 or ::1 before exposing it through Nginx."
+        elif [[ -n "$non_loopback_listeners" ]]; then
+            print_warn "App '${app_name}' started, but port ${app_port} is not loopback-only (${non_loopback_listeners})."
+            print_warn "Bind the app to 127.0.0.1 or ::1 before exposing it through Nginx."
+        elif [[ -n "$local_listeners" ]]; then
+            print_ok "App '${app_name}' registered and listening on ${local_listeners} using runtime user $(_node_runtime_user)"
+        else
+            print_ok "App '${app_name}' registered and started with port ${app_port} bound using runtime user $(_node_runtime_user)"
+        fi
     else
         print_warn "App '${app_name}' started via PM2 but port ${app_port} is NOT yet bound after 6s."
         print_warn "Check PM2 logs: sudo -u $(_node_runtime_user) pm2 logs ${pm2_name} --lines 30"

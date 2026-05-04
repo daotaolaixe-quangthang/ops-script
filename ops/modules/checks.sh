@@ -836,6 +836,7 @@ checks_remove_cron() {
 # This provides <1 second crash-to-Telegram latency vs the previous 5-minute polling gap.
 _checks_install_systemd_dropins() {
     local dropin_svc="/etc/systemd/system/ops-alert-crash@.service"
+    local dispatcher="${OPS_ROOT}/bin/ops-check"
     local svcs_to_watch=(nginx mariadb fail2ban)
     local php_ver
     for php_ver in 8.3 8.2 8.1 7.4; do
@@ -843,9 +844,9 @@ _checks_install_systemd_dropins() {
         systemctl list-unit-files 2>/dev/null | grep -q "^${fpm_unit}\.service" && svcs_to_watch+=("$fpm_unit")
     done
 
-    # Write the generic crash alert service template
-    # ExecStart uses /usr/local/bin/ops-check — the standard install path (set by ops installer).
-    cat > "$dropin_svc" <<'DROPIN_EOF'
+    # Write the generic crash alert service template.
+    # ${OPS_ROOT}/bin/ops-check is canonical; /usr/local/bin/ops-check is only a compatibility symlink.
+    cat > "$dropin_svc" <<DROPIN_EOF
 [Unit]
 Description=OPS crash alert for %i
 DefaultDependencies=no
@@ -853,7 +854,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/ops-check alert-crash %i
+ExecStart=${dispatcher} alert-crash %i
 DROPIN_EOF
     chmod 644 "$dropin_svc"
     systemctl daemon-reload 2>/dev/null || true

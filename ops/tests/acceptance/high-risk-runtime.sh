@@ -55,6 +55,7 @@ case_accept_runtime_01_verify_stack_reports_all_high_risk_layers() {
     test::assert_eq '0' "$status" 'verify_stack must exit 0 during runtime acceptance' || return 1
     test::assert_contains "$summary" 'SSH' 'runtime acceptance must render SSH verify output' || return 1
     test::assert_contains "$summary" 'Nginx' 'runtime acceptance must render Nginx verify output' || return 1
+    test::assert_contains "$summary" 'Node Apps' 'runtime acceptance must render Node app binding verify output' || return 1
     test::assert_contains "$summary" 'PHP-FPM' 'runtime acceptance must render PHP-FPM verify output' || return 1
     test::assert_contains "$summary" 'Database' 'runtime acceptance must render database verify output' || return 1
     test::assert_contains "$summary" 'CLIProxyAPI' 'runtime acceptance must render CLIProxyAPI verify output' || return 1

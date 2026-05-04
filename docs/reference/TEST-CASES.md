@@ -112,7 +112,7 @@ Khuyen nghi:
 | SEC-02 | Co key moi cho disable password auth | Da co it nhat 1 public key | Chay Security Baseline | Co prompt va disable thanh cong neu user xac nhan; neu `sshd -t` hoac reload fail thi phai revert include va giu state cu |
 | SEC-03 | SSH transition mo ca 2 port | Dang doi port SSH | Chay flow doi port | Port moi va port transition cung hoat dong truoc khi finalize; neu host dang co nhieu live SSH port thi bootstrap phai preserve tat ca live port do trong UFW, khong collapse ve 1 port guessed, va khong rewrite `OPS_SSH_PORT` / `OPS_SSH_TRANSITION_PORT` khi state managed chua unambiguous |
 | SEC-04 | Finalize SSH khong lockout | Da dang nhap duoc qua port moi | Dong 22/finalize | Van SSH duoc bang port moi; port cu bi go khoi effective sshd config; UFW va fail2ban duoc reconcile theo single-port state; neu fail2ban chua co thi installer/menu phai cai va reconcile no; fail2ban policy phai duoc sinh tu desired OPS SSH state (`OPS_SSH_PORT` va `OPS_SSH_TRANSITION_PORT` neu con), khong suy doan tu runtime listener scan; `OPS_SSH_TRANSITION_PORT` chi duoc clear sau khi `sshd -t`, reload/restart SSH, UFW finalize, va fail2ban apply deu thanh cong; neu fail2ban restart/status fail thi transition state van phai duoc giu; rollback OPS state phai gom ca `OPS_SSH_TCP_FORWARDING` |
-| SEC-05 | UFW baseline mo dung port | Da harden xong | Kiem tra `ufw status` | Chi mo SSH managed port, `80`, `443`, va transition port neu con |
+| SEC-05 | UFW baseline mo dung port | Da harden xong | Kiem tra `ufw status` | Steady state chi mo SSH managed port(s), `80`, `443`, va transition port neu con; chi preserve them live SSH port ngoai state trong bootstrap/rerun ambiguous case |
 | SEC-06 | 8317 khong public allow | CLIProxyAPI da cai | Kiem tra UFW | Khong co `ALLOW 8317` |
 | SEC-07 | fail2ban sshd jail dung port | Doi SSH port | Chay verify | jail `sshd` map dung port theo OPS state |
 | SEC-08 | Root login bi khoa | Hardening xong | Kiem tra `sshd -T` | `PermitRootLogin no` |
@@ -128,7 +128,7 @@ Khuyen nghi:
 | WEB-04 | Add static domain | Nginx active | Tao static site | Web root duoc tao, ownership dung |
 | WEB-05 | Remove domain khong xoa web root | Domain ton tai | Remove domain | Xoa state + nginx config, giu `/var/www/<domain>` |
 | WEB-06 | Reload bi chan khi config loi | Co vhost loi cu phap | Chay test/reload | `nginx -t` fail thi khong reload |
-| WEB-07 | SSL issue thanh cong | Domain tro dung DNS | Issue cert | Cert duoc tao, vhost SSL hoat dong |
+| WEB-07 | SSL issue thanh cong | Domain tro dung DNS | Issue cert | Cert duoc tao, `/etc/ops/domains/<domain>.conf` ghi `DOMAIN_SSL_MODE="letsencrypt"` truoc khi rebuild, vhost SSL hoat dong |
 | WEB-08 | SSL status hien dung domain het han/khong co cert | Co domain co va khong co cert | Chay status | Hien du expiry/status ro rang |
 | WEB-09 | CLIProxyAPI vhost giu `proxy_buffering off` | CLIProxyAPI domain da link | Inspect vhost | Co `proxy_buffering off`, proxy toi `127.0.0.1:8317` |
 | WEB-10 | Nginx van la public entrypoint duy nhat | CLIProxyAPI/Node app da chay | Test public va local binding | Backend bind localhost, public truy cap qua Nginx |
@@ -141,7 +141,7 @@ Khuyen nghi:
 | NODE-01 | Install Node LTS + PM2 | Host chua co Node | Chay wizard/module | Node LTS va PM2 cai thanh cong |
 | NODE-02 | PM2 startup khong chay duoi root | PM2 da cai | Kiem tra unit | Co `pm2-<runtime_user>.service`, khong co `pm2-root.service` |
 | NODE-03 | `pm2 list` trong OPS dung runtime user | Co app da chay | List app tu menu | Hien dung app, khong false empty |
-| NODE-04 | Add Node app | Co source app | Add app qua menu | Tao state file, ecosystem, PM2 process online; pre-create `/var/log/ops/pm2-<pm2_name>-out.log` va `...-err.log` owned by runtime user |
+| NODE-04 | Add Node app | Co source app | Add app qua menu | Tao state file, ecosystem, PM2 process online; pre-create `/var/log/ops/pm2-<pm2_name>-out.log` va `...-err.log` owned by runtime user; output phai phan anh listener that va khong duoc claim `127.0.0.1` neu app dang bind public |
 | NODE-05 | Restart app | Co app trong PM2 | Restart qua menu | App restart thanh cong, khong mat state |
 | NODE-06 | Show logs | Co app co log | Xem logs qua menu | Hien log dung app, khong crash |
 | NODE-07 | Remove app | Co app da register | Remove qua menu | Xoa process + state, backup conf neu co |
@@ -155,9 +155,9 @@ Khuyen nghi:
 |---|---|---|---|---|
 | CPA-01 | Install CLIProxyAPI | Host co curl/tar, systemd san sang | Chay install CLIProxyAPI | Binary vao `/opt/cli-proxy-api`, service online |
 | CPA-02 | CLIProxyAPI bind localhost only | CLIProxyAPI da cai | Kiem tra port listen | Chi bind `127.0.0.1:8317` |
-| CPA-03 | Secret files dung permission | CLIProxyAPI da cai | Kiem tra `/etc/ops/.cli-proxy-api-key` | File `0600`, owner admin user |
+| CPA-03 | Secret files dung permission | CLIProxyAPI da cai | Kiem tra `/etc/ops/.cli-proxy-api-key` va `/opt/cli-proxy-api/config.yaml` | Client key file `0600`, owner admin user; `config.yaml` `0600`, owner runtime user |
 | CPA-04 | Link CLIProxyAPI vao domain | Domain san DNS | Chay link domain | Nginx proxy `127.0.0.1:8317`, `proxy_buffering off`, HTTP vhost co ca `listen 80;` va `listen [::]:80;` |
-| CPA-05 | Verify CLIProxyAPI khi local ok, public qua nginx | CLIProxyAPI va nginx active | Chay verify + curl local/public | `/v1/models` tra JSON local, public di qua Nginx |
+| CPA-05 | Verify CLIProxyAPI khi local ok, public qua nginx | CLIProxyAPI va nginx active | Chay verify + curl local/public | `/v1/models` tra JSON local -> PASS; neu service bind public tren `:8317` -> FAIL; neu probe `/v1/models` inconclusive -> WARN; public di qua Nginx |
 | CPA-06 | Toggle API key requirement | CLIProxyAPI da cai | Enable/Disable API key requirement | `config.yaml` va `/etc/ops/cli-proxy-api.conf` cap nhat dung, service restart |
 | CPA-07 | Update CLIProxyAPI giu config va state | CLIProxyAPI da co du lieu | Chay update | Binary duoc cap nhat, config/state duoc preserve |
 | CPA-08 | SSL re-render vhost | Domain CLIProxyAPI da co SSL | Link/reissue SSL | Vhost duoc re-render, Nginx tiep tuc proxy HTTPS -> localhost |
@@ -197,7 +197,7 @@ Khuyen nghi:
 | MON-01 | Verify stack tra PASS/WARN/FAIL nhung exit 0 | Tao 1 issue co kiem soat | Chay verify tu menu va shell | Output dung format, command/menu boundary khong vo |
 | MON-02 | Quick logs path ton tai | Services da chay | Xem quick logs | Khong crash khi file rong/thieu, thong bao hop ly |
 | MON-03 | Monitoring menu khong thoat khi 1 check fail | Gia lap service down | Vao System & Monitoring | Menu van song |
-| MON-04 | Scheduler/check scripts idempotent | Cron/timer da ton tai | Rerun install checks | Khong duplicate job |
+| MON-04 | Scheduler/check scripts idempotent | Cron/timer da ton tai | Rerun install checks | Khong duplicate job; cron/systemd generators dung canonical `${OPS_ROOT}/bin/ops-check`; `/usr/local/bin/ops-check` chi la compatibility symlink |
 | MON-05 | Notification disable path an toan | Telegram chưa config | Chay test notification / disable | Khong crash, thong bao ro missing config |
 | MON-06 | Monitoring baseline reconcile dung log path + rotation | `logrotate` da co; co/khong co Nginx, PHP-FPM, PM2 | Chay `Setup Wizard -> Install Logging & Monitoring` | `/var/log/ops/ops.log` duoc bootstrap, `/etc/logrotate.d/ops` duoc reconcile; neu Nginx da cai thi `/etc/logrotate.d/nginx-ops` phai san sang; neu PM2 da cai thi per-app log files duoi `/var/log/ops/pm2-<app>-*.log` phai duoc reconcile cho runtime user; neu chua san sang thi step tra non-zero va khong duoc mark done |
 

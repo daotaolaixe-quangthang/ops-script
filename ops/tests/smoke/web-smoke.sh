@@ -64,6 +64,7 @@ case_web_smoke_02_verify_stack_emits_web_summary() {
     IFS=$'\037' read -r status summary <<< "$output"
     test::assert_eq '0' "$status" 'verify_stack must exit 0 in web smoke flow' || return 1
     test::assert_contains "$summary" 'Nginx' 'web smoke must render Nginx verify output' || return 1
+    test::assert_contains "$summary" 'Node Apps' 'web smoke must render Node app binding verify output' || return 1
     test::assert_contains "$summary" 'CLIProxyAPI' 'web smoke must render CLIProxyAPI verify output' || return 1
     test::assert_contains "$summary" 'SSL' 'web smoke must render SSL verify output' || return 1
 }

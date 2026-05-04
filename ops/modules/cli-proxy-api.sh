@@ -480,7 +480,7 @@ payload:
         - "tools.#.input_schema.patternProperties"
 EOF
     chown "$runtime_user:$runtime_user" "$CLIPROXYAPI_CONFIG_FILE"
-    chmod 640 "$CLIPROXYAPI_CONFIG_FILE"
+    chmod 600 "$CLIPROXYAPI_CONFIG_FILE"
 }
 
 _cliproxyapi_write_service() {
