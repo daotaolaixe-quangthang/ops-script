@@ -237,6 +237,9 @@ Day la nhom bug phai retest moi khi co thay doi lien quan, vi da xuat hien hoac 
 | REG-32 | CF DNS-01 credentials file format bi overwrite: `cloudflare.conf` bi ghi de bang INI format sau DNS-01 issuance, pha shell-sourceability | sua `nginx.sh` `_issue_ssl_dns01_cloudflare`, `ssl_set_cf_token`, hoac bat ky code nao ghi `CF_CREDS_FILE` |
 | REG-33 | AI shell secret drift: raw API key bi ghi thang vao managed `.bashrc`/`.bash_profile`, hoac profile path bi hardcode `/home/$ADMIN_USER` | sua `ai-agent.sh`, `codex-cli.sh`, docs/tests lien quan |
 | REG-34 | AI runtime docs drift: Claude/Codex secret path, Telegram PID/log path, hoac local endpoint mode docs lech runtime | sua `ai-agent.sh`, `codex-cli.sh`, docs/tests lien quan |
+| REG-35 | Rollback helper drift: `snapshot_path_state` / `restore_path_snapshot` khong phuc hoi dung file da snapshot hoac khong xoa path von absent | sua `core/utils.sh`, helper rollback transaction, regression/docs lien quan |
+| REG-36 | Template renderer drift: `render_template` lam hong gia tri chua `&` hoac `\` khi ghi config/template | sua `core/utils.sh`, template writers, regression/docs lien quan |
+| REG-37 | `ops.conf` drift: `ops_conf_unset` xoa nham key khac hoac lam troi permission/metadata cua file config | sua `core/env.sh`, config writers, regression/docs lien quan |
 
 ## 6. Quy trinh test khi them/chinh sua 1 chuc nang moi
 
@@ -355,8 +358,8 @@ Repo hien co shell regression harness contract-level tai:
 Pham vi cover hien tai:
 
 - `TUI-01..TUI-10`
-- `REG-01..REG-32`
-- contract/static coverage cho `SEC-01..SEC-09`, `INS-01..INS-09`, `WEB-01..WEB-11`, `NODE-01..NODE-10`, `PHP-01..PHP-06`, `DB-01..DB-06`, `CPA-01..CPA-13`, `MON-01..MON-05`, `FILE-01..FILE-04`
+- `REG-01..REG-37`
+- contract/static + unit-like coverage cho `SEC-01..SEC-09.4`, `INS-01..INS-09`, `WEB-01..WEB-11`, `NODE-01..NODE-10`, `PHP-01..PHP-06`, `DB-01..DB-06`, `CPA-01..CPA-14`, `MON-01..MON-06`, `FILE-01..FILE-05`
 
 Muc dich:
 
@@ -379,6 +382,41 @@ bash ops/tests/regression/run-all.sh
 Gioi han hien tai:
 
 - day la contract/regression harness muc shell-level, uu tien bat drift va bug tai phat
-- nhieu case ngoai `TUI-*`/`REG-*` dang la static-contract assertions, khong thay the verify runtime that
-- chua thay the full end-to-end runtime acceptance tren VPS test
+- nhieu case ngoai `TUI-*`/`REG-*` van la static-contract assertions, nhung runner da duoc mo rong them unit-like coverage cho helper rollback/config/template quan trong
+- regression harness khong thay the full runtime acceptance tren VPS snapshot
 - cac case can TTY that, SSH that, UFW/Nginx/PM2 runtime that van phai duoc chay theo smoke/integration suite trong release gate
+
+## 12. Repo-local smoke va acceptance harness
+
+Repo hien co them 2 lop runner repo-local de lap day Gate 3 / Gate 4:
+
+- `ops/tests/smoke/run-all.sh`
+- `ops/tests/smoke/tui-smoke.sh`
+- `ops/tests/smoke/security-smoke.sh`
+- `ops/tests/smoke/web-smoke.sh`
+- `ops/tests/smoke/node-smoke.sh`
+- `ops/tests/smoke/php-db-monitoring-smoke.sh`
+- `ops/tests/acceptance/run-all.sh`
+- `ops/tests/acceptance/fresh-install.sh`
+- `ops/tests/acceptance/rerun-idempotence.sh`
+- `ops/tests/acceptance/high-risk-runtime.sh`
+- `ops/tests/acceptance/report-template.md`
+
+Muc dich:
+
+- Gate 3: smoke theo impact layer, uu tien passive/runtime summary checks tren host hien tai
+- Gate 4: scaffold cho acceptance tren Ubuntu 22.04/24.04 snapshot, co report mau va profile ro rang
+
+Lenh chay:
+
+```bash
+bash ops/tests/smoke/run-all.sh
+bash ops/tests/smoke/run-all.sh --layer web
+bash ops/tests/acceptance/run-all.sh --profile high-risk-runtime
+```
+
+Luu y:
+
+- `fresh-install` va `rerun-idempotence` la profile co the mutate host, mac dinh se `SKIP` neu chua set `OPS_ACCEPT_CONFIRM_MUTATION=YES`
+- Smoke suites duoc thiet ke de tai su dung `verify_stack` va cac command passive nhu `sshd -t`, `nginx -t`, `logrotate -d`
+- Gate 4 van phai chay tren disposable snapshot; runner repo-local chi scaffold quy trinh, khong thay the judgement cua tester

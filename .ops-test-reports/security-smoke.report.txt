@@ -1,0 +1,9 @@
+Suite: security-smoke
+Total: 2
+Passed: 1
+Failed: 0
+Skipped: 1
+
+Cases:
+[PASS] SEC-SMOKE-01 - verify_stack emits security summary on live host
+[SKIP] SEC-SMOKE-02 - sshd config validates on live host

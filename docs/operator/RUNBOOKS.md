@@ -316,10 +316,12 @@ Muc tieu: moi release, update function, hoac fix bug deu phai chay qua cung 1 ga
 - **Gate 2 - shell regression**:
   - `bash ops/tests/regression/run-all.sh`
 - **Gate 3 - smoke suite theo impact layer**:
-  - chay test IDs duoc map trong `docs/reference/TEST-CASES.md`
+  - chay `bash ops/tests/smoke/run-all.sh`
+  - hoac chay tung layer: `bash ops/tests/smoke/run-all.sh --layer <tui|security|web|node|php-db-monitoring>`
 - **Gate 4 - runtime acceptance**:
-  - chay tren VM snapshot Ubuntu 22.04 hoac 24.04
+  - chay tren VM snapshot Ubuntu 22.04 hoac 24.04 bang `bash ops/tests/acceptance/run-all.sh --profile <fresh-install|rerun-idempotence|high-risk-runtime>`
   - verify file, service, port, permissions, rollback minimum
+  - profile mutate host (`fresh-install`, `rerun-idempotence`) phai duoc chay tren snapshot disposable va set `OPS_ACCEPT_CONFIRM_MUTATION=YES`
 
 ### Cach dung theo loai thay doi
 
@@ -328,22 +330,29 @@ Muc tieu: moi release, update function, hoac fix bug deu phai chay qua cung 1 ga
   - chay them `TUI-*`, `REG-*`, `MON-01` neu co verify action
 - **Update function trong module**:
   - chay harness regression
-  - chay smoke suite cua module do theo `docs/reference/TEST-CASES.md`
+  - chay smoke suite cua module do theo `docs/reference/TEST-CASES.md` bang `ops/tests/smoke/run-all.sh --layer ...`
 - **Release**:
   - chay harness regression
   - chay full smoke suite cua cac module bi anh huong trong release note
-  - chay it nhat 1 fresh install snapshot + 1 rerun/idempotence snapshot
+  - chay it nhat 1 fresh install snapshot + 1 rerun/idempotence snapshot bang `ops/tests/acceptance/run-all.sh`
 
 ### Lenh khuyen nghi
 
 ```bash
 # 1) Static syntax
+bash -n install/ops-install.sh
 bash -n ops/bin/ops
 
 # 2) Regression harness
 bash ops/tests/regression/run-all.sh
 
-# 3) Sau do chay smoke/integration theo module thay doi
+# 3) Smoke gate theo impact layer
+bash ops/tests/smoke/run-all.sh
+bash ops/tests/smoke/run-all.sh --layer web
+
+# 4) Runtime acceptance tren snapshot disposable
+OPS_ACCEPT_CONFIRM_MUTATION=YES bash ops/tests/acceptance/run-all.sh --profile fresh-install
+bash ops/tests/acceptance/run-all.sh --profile high-risk-runtime
 ```
 
 ### Mau report PASS/FAIL chuan

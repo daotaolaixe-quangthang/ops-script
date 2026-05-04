@@ -1,0 +1,11 @@
+Suite: acceptance-high-risk-runtime
+Total: 4
+Passed: 2
+Failed: 0
+Skipped: 2
+
+Cases:
+[PASS] ACCEPT-RUNTIME-01 - verify_stack reports all high-risk layers
+[SKIP] ACCEPT-RUNTIME-02 - sshd config validates during runtime acceptance
+[SKIP] ACCEPT-RUNTIME-03 - nginx config validates during runtime acceptance
+[PASS] ACCEPT-RUNTIME-04 - CLIProxyAPI stays loopback-only when listening

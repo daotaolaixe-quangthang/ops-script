@@ -41,23 +41,7 @@ PY
 }
 
 reg_menu_boundary_failures() {
-    local module_list
-    module_list="$(printf '%s\n' "${REG_MENU_MODULES[@]}")"
-    OPS_ROOT_ENV="$OPS_ROOT" REG_MENU_MODULES_ENV="$module_list" python3 - <<'PY'
-import os
-from pathlib import Path
-
-files = [line for line in os.environ['REG_MENU_MODULES_ENV'].splitlines() if line]
-root = Path(os.environ['OPS_ROOT_ENV'])
-for rel in files:
-    path = root / rel
-    lines = path.read_text().splitlines()
-    for idx, line in enumerate(lines):
-        if line.startswith('menu_') and line.rstrip().endswith('{'):
-            window = '\n'.join(lines[idx + 1:idx + 12])
-            if '_menu_run() {' not in window or 'return 0' not in window:
-                print(f'{rel}:{idx + 1}:{line.split("(")[0]}')
-PY
+    test::menu_boundary_failures "$OPS_ROOT" "${REG_MENU_MODULES[@]}"
 }
 
 case_reg_01_tty_prompt_antipattern_absent() {
@@ -73,11 +57,44 @@ case_reg_02_menu_boundary_wrapper_present() {
 }
 
 case_reg_03_verify_exit_zero_contract_documented_in_code() {
-    local content
+    local content output status summary
     content="$(<"${OPS_ROOT}/modules/verify.sh")"
     test::assert_contains "$content" 'return 0' 'verify functions must return 0' || return 1
     test::assert_contains "$content" '_vs_fail' 'verify fail formatter missing' || return 1
     test::assert_contains "$content" '_vs_warn' 'verify warn formatter missing' || return 1
+
+    output="$(OPS_ROOT_ENV="$OPS_ROOT" TEST_TMP="$TEST_ENV_DIR" bash -c '
+set -euo pipefail
+work_dir="$TEST_TMP/verify-stack"
+mkdir -p "$work_dir"
+print_section() { printf "%s\n" "$1"; }
+log_info() { :; }
+source "$OPS_ROOT_ENV/modules/verify.sh"
+_vs_check_ssh() { _vs_pass "SSH" "ok"; _vs_set_result pass; return 0; }
+_vs_check_ufw() { _vs_warn "UFW" "warn" "review"; _vs_set_result warn; return 0; }
+_vs_check_fail2ban() { _vs_fail "Fail2ban" "fail" "fix"; _vs_set_result fail; return 0; }
+_vs_check_nginx() { _vs_pass "Nginx" "ok"; _vs_set_result pass; return 0; }
+_vs_check_pm2() { _vs_pass "PM2" "ok"; _vs_set_result pass; return 0; }
+_vs_check_runtime_user() { _vs_pass "Runtime User" "ok"; _vs_set_result pass; return 0; }
+_vs_check_cliproxyapi() { _vs_pass "CLIProxyAPI" "ok"; _vs_set_result pass; return 0; }
+_vs_check_php_fpm() { _vs_pass "PHP-FPM" "ok"; _vs_set_result pass; return 0; }
+_vs_check_mariadb() { _vs_pass "MariaDB" "ok"; _vs_set_result pass; return 0; }
+_vs_check_ssl() { _vs_pass "SSL" "ok"; _vs_set_result pass; return 0; }
+_vs_check_sysctl_swap() { _vs_pass "Sysctl/Swap" "ok"; _vs_set_result pass; return 0; }
+_vs_check_patch_state() { _vs_pass "Patch State" "ok"; _vs_set_result pass; return 0; }
+_vs_check_monitoring() { return 0; }
+set +e
+verify_stack > "$work_dir/output.txt"
+status=$?
+set -e
+summary="$(tr "\n" "\f" < "$work_dir/output.txt")"
+printf "%s\037%s" "$status" "$summary"
+')"
+    IFS=$'\037' read -r status summary <<< "$output"
+    test::assert_eq '0' "$status" 'verify_stack must exit 0 even when checks warn/fail' || return 1
+    test::assert_contains "$summary" 'Summary:' 'verify_stack summary missing' || return 1
+    test::assert_contains "$summary" '1 WARN' 'verify_stack warn tally missing' || return 1
+    test::assert_contains "$summary" '1 FAIL' 'verify_stack fail tally missing' || return 1
 }
 
 case_reg_04_security_guard_present_before_disable_password_auth() {
@@ -255,7 +272,7 @@ case_sec_02_disable_password_auth_requires_key_contract_present() {
 }
 
 case_sec_03_transition_keeps_two_ports_contract_present() {
-    local content installer_content
+    local content installer_content output keep_transition no_transition keep_yes
     content="$(<"${OPS_ROOT}/modules/security.sh")"
     installer_content="$(<"${REPO_ROOT}/install/ops-install.sh")"
     test::assert_contains "$content" 'OPS_SSH_TRANSITION_PORT' 'transition port state missing' || return 1
@@ -264,6 +281,28 @@ case_sec_03_transition_keeps_two_ports_contract_present() {
     test::assert_contains "$installer_content" 'SSH_BOOTSTRAP_MODE="ambiguous"' 'installer must model ambiguous multi-port bootstrap state explicitly' || return 1
     test::assert_contains "$installer_content" 'SSH_BOOTSTRAP_PORTS=("${SSH_CURRENT_PORTS[@]}")' 'installer must preserve all detected live SSH ports during bootstrap' || return 1
     test::assert_contains "$installer_content" 'Bootstrap will preserve all live SSH access and will not rewrite OPS_SSH_PORT / OPS_SSH_TRANSITION_PORT on this run.' 'installer multi-port preservation contract missing' || return 1
+
+    output="$(OPS_ROOT_ENV="$OPS_ROOT" TEST_TMP="$TEST_ENV_DIR" bash -c '
+set -euo pipefail
+work_dir="$TEST_TMP/security-transition"
+mkdir -p "$work_dir/conf"
+export OPS_ROOT="$OPS_ROOT_ENV"
+export OPS_CONFIG_DIR="$work_dir/conf"
+export OPS_LOG_FILE="$work_dir/test.log"
+export ADMIN_USER="nobody"
+export SUDO_USER="nobody"
+export USER="nobody"
+source "$OPS_ROOT_ENV/core/env.sh"
+source "$OPS_ROOT_ENV/modules/security.sh"
+printf "%s\037%s\037%s" \
+    "$(security_effective_password_auth no 2222 22)" \
+    "$(security_effective_password_auth no 2222 2222)" \
+    "$(security_effective_password_auth yes 2222 '')"
+')"
+    IFS=$'\037' read -r keep_transition no_transition keep_yes <<< "$output"
+    test::assert_eq 'yes' "$keep_transition" 'transition port must force PasswordAuthentication=yes until finalize' || return 1
+    test::assert_eq 'no' "$no_transition" 'steady-state port must honor desired password auth after transition closes' || return 1
+    test::assert_eq 'yes' "$keep_yes" 'desired yes state must remain yes without a transition port' || return 1
 }
 
 case_sec_04_finalize_transition_contract_present() {
@@ -521,7 +560,7 @@ case_web_09_web_10_cliproxyapi_nginx_boundary_contract_present() {
 }
 
 case_web_11_transactional_vhost_commit_contract_present() {
-    local content real_ip_tpl arch_content inventory_content menu_content
+    local content real_ip_tpl arch_content inventory_content menu_content output parsed_ok parsed_bad valid_state invalid_state
     content="$(<"${OPS_ROOT}/modules/nginx.sh")"
     real_ip_tpl="$(<"${OPS_ROOT}/modules/templates/nginx/cloudflare-real-ip.conf.tpl")"
     arch_content="$(<"${REPO_ROOT}/docs/reference/ARCHITECTURE.md")"
@@ -541,6 +580,58 @@ case_web_11_transactional_vhost_commit_contract_present() {
     test::assert_contains "$arch_content" 'HTTP base `server {}` block only' 'Architecture docs must describe HTTP-only nginx templates with TLS appended at render time' || return 1
     test::assert_contains "$inventory_content" '/etc/nginx/ssl/ops-default.crt' 'Runtime inventory must document default deny self-signed cert artefact' || return 1
     test::assert_contains "$menu_content" 'explicit `include` snippet' 'Operator docs must state that nginx snippets need explicit include lines' || return 1
+
+    output="$(OPS_ROOT_ENV="$OPS_ROOT" TEST_TMP="$TEST_ENV_DIR" bash -c '
+set -euo pipefail
+work_dir="$TEST_TMP/nginx-domain-state"
+mkdir -p "$work_dir/conf"
+state_ok="$work_dir/example.com.conf"
+state_bad="$work_dir/injected.conf"
+cat > "$state_ok" <<'"'"'EOF_STATE_OK'"'"'
+DOMAIN="example.com"
+DOMAIN_BACKEND_TYPE="php"
+DOMAIN_PHP_VERSION="8.2"
+DOMAIN_PHP_SOCKET="/run/php/php8.2-fpm-example.sock"
+DOMAIN_PHP_POOL="example"
+DOMAIN_WEB_ROOT="/var/www/example.com"
+EOF_STATE_OK
+cat > "$state_bad" <<'"'"'EOF_STATE_BAD'"'"'
+DOMAIN="example.com"
+DOMAIN_BACKEND_TYPE="php"
+DOMAIN_PHP_VERSION="8.2"; touch /tmp/pwned
+EOF_STATE_BAD
+export OPS_ROOT="$OPS_ROOT_ENV"
+export OPS_CONFIG_DIR="$work_dir/conf"
+export OPS_LOG_FILE="$work_dir/test.log"
+export ADMIN_USER="nobody"
+export SUDO_USER="nobody"
+export USER="nobody"
+source "$OPS_ROOT_ENV/core/env.sh"
+source "$OPS_ROOT_ENV/core/ui.sh"
+source "$OPS_ROOT_ENV/core/utils.sh"
+source "$OPS_ROOT_ENV/modules/php.sh"
+source "$OPS_ROOT_ENV/modules/nginx.sh"
+parsed_ok="$(_load_domain_state "$state_ok" | tr "\n" "\f")"
+parsed_bad="$(_load_domain_state "$state_bad" | tr "\n" "\f")"
+if _validate_domain_state "example.com" "php" "8.2" "/run/php/php8.2-fpm-example.sock" "example" "/var/www/example.com" >/dev/null 2>&1; then
+    valid_state=pass
+else
+    valid_state=fail
+fi
+if _validate_domain_state "bad/host" "php" "8.2" "/run/php/php8.2-fpm-example.sock" "example" "/var/www/example.com" >/dev/null 2>&1; then
+    invalid_state=pass
+else
+    invalid_state=fail
+fi
+printf "%s\037%s\037%s\037%s" "$parsed_ok" "$parsed_bad" "$valid_state" "$invalid_state"
+')"
+    IFS=$'\037' read -r parsed_ok parsed_bad valid_state invalid_state <<< "$output"
+    test::assert_contains "$parsed_ok" 'DOMAIN=example.com' '_load_domain_state must parse known keys from valid state' || return 1
+    test::assert_contains "$parsed_bad" 'DOMAIN_BACKEND_TYPE=php' '_load_domain_state may keep valid whitelisted assignments before malformed lines' || return 1
+    test::assert_not_contains "$parsed_bad" 'touch /tmp/pwned' '_load_domain_state must never emit malformed or injectable payload text' || return 1
+    test::assert_not_contains "$parsed_bad" 'DOMAIN_PHP_VERSION' '_load_domain_state must drop malformed assignments instead of forwarding them' || return 1
+    test::assert_eq 'pass' "$valid_state" '_validate_domain_state must accept coherent PHP domain state' || return 1
+    test::assert_eq 'fail' "$invalid_state" '_validate_domain_state must reject invalid domains before render/commit' || return 1
 }
 
 case_node_01_node_lts_install_contract_present() {
@@ -733,26 +824,42 @@ case_cpa_10_11_12_13_quota_helper_contracts_present() {
     test::assert_contains "$cpa_content" 'cpa-quota-inspector' 'Quota shortcut binary name contract missing' || return 1
     test::assert_contains "$cpa_content" '--summary-only' 'Quota shortcut summary flag contract missing' || return 1
     test::assert_contains "$cpa_content" '--no-progress' 'Quota shortcut no-progress flag contract missing' || return 1
+    test::assert_contains "$cpa_content" 'echo "  14) Check quota"' 'CLIProxyAPI menu quota entry missing' || return 1
+    test::assert_contains "$cpa_content" 'export CPA_MANAGEMENT_KEY' 'Quota management key warning contract missing' || return 1
+
+    test::assert_contains "$user_guide_content" '| 14) Check quota |' 'USER_GUIDE check quota menu doc missing' || return 1
+    test::assert_contains "$user_guide_content" 'cpaq()' 'USER_GUIDE quota shortcut doc missing' || return 1
+
+    test::assert_contains "$menu_reference_content" '14. **Check quota**' 'MENU-REFERENCE quota menu doc missing' || return 1
+    test::assert_contains "$menu_reference_content" 'cpaq()' 'MENU-REFERENCE quota shortcut doc missing' || return 1
+}
+
+case_cpa_14_bootstrap_auth_submenu_contract_present() {
+    local cpa_content user_guide_content menu_reference_content
+    cpa_content="$(<"${OPS_ROOT}/modules/cli-proxy-api.sh")"
+    user_guide_content="$(<"${REPO_ROOT}/USER_GUIDE.md")"
+    menu_reference_content="$(<"${REPO_ROOT}/docs/operator/MENU-REFERENCE.md")"
+
     test::assert_contains "$cpa_content" 'menu_cliproxyapi_bootstrap_auth()' 'CLIProxyAPI bootstrap submenu function missing' || return 1
     test::assert_contains "$cpa_content" 'echo "  1) Antigravity"' 'CLIProxyAPI bootstrap submenu missing Antigravity entry' || return 1
     test::assert_contains "$cpa_content" 'echo "  2) Gemini"' 'CLIProxyAPI bootstrap submenu missing Gemini entry' || return 1
     test::assert_contains "$cpa_content" 'echo "  3) Claude Code"' 'CLIProxyAPI bootstrap submenu missing Claude Code entry' || return 1
     test::assert_contains "$cpa_content" 'echo "  4) Codex"' 'CLIProxyAPI bootstrap submenu missing Codex entry' || return 1
+    test::assert_contains "$cpa_content" 'bootstrap_cliproxyapi_auth antigravity' 'CLIProxyAPI bootstrap submenu must dispatch Antigravity auth' || return 1
+    test::assert_contains "$cpa_content" 'bootstrap_cliproxyapi_auth gemini' 'CLIProxyAPI bootstrap submenu must dispatch Gemini auth' || return 1
+    test::assert_contains "$cpa_content" 'bootstrap_cliproxyapi_auth claude-code' 'CLIProxyAPI bootstrap submenu must dispatch Claude Code auth' || return 1
+    test::assert_contains "$cpa_content" 'bootstrap_cliproxyapi_auth codex' 'CLIProxyAPI bootstrap submenu must dispatch Codex auth' || return 1
     test::assert_contains "$cpa_content" '--antigravity-login' 'CLIProxyAPI Antigravity auth flag contract missing' || return 1
     test::assert_contains "$cpa_content" 'Launching Gemini provider login' 'CLIProxyAPI Gemini auth label contract missing' || return 1
     test::assert_contains "$cpa_content" '--login' 'CLIProxyAPI Gemini auth flag contract missing' || return 1
     test::assert_contains "$cpa_content" 'Launching Claude Code provider login' 'CLIProxyAPI Claude Code auth label contract missing' || return 1
     test::assert_contains "$cpa_content" '--claude-login' 'CLIProxyAPI Claude Code auth flag contract missing' || return 1
     test::assert_contains "$cpa_content" '--codex-login' 'CLIProxyAPI Codex auth flag contract missing' || return 1
-    test::assert_contains "$cpa_content" 'echo "  14) Check quota"' 'CLIProxyAPI menu quota entry missing' || return 1
-    test::assert_contains "$cpa_content" 'export CPA_MANAGEMENT_KEY' 'Quota management key warning contract missing' || return 1
 
     test::assert_contains "$user_guide_content" '| 13) Bootstrap auth providers |' 'USER_GUIDE bootstrap auth menu doc missing' || return 1
     test::assert_contains "$user_guide_content" 'Antigravity / Gemini / Claude Code / Codex' 'USER_GUIDE bootstrap auth submenu doc missing' || return 1
     test::assert_contains "$user_guide_content" '--antigravity-login' 'USER_GUIDE Antigravity auth flag doc missing' || return 1
     test::assert_contains "$user_guide_content" '--claude-login' 'USER_GUIDE Claude Code auth flag doc missing' || return 1
-    test::assert_contains "$user_guide_content" '| 14) Check quota |' 'USER_GUIDE check quota menu doc missing' || return 1
-    test::assert_contains "$user_guide_content" 'cpaq()' 'USER_GUIDE quota shortcut doc missing' || return 1
 
     test::assert_contains "$menu_reference_content" '13. **Bootstrap auth providers**' 'MENU-REFERENCE bootstrap auth doc missing' || return 1
     test::assert_contains "$menu_reference_content" 'Antigravity' 'MENU-REFERENCE bootstrap auth submenu missing Antigravity' || return 1
@@ -761,8 +868,6 @@ case_cpa_10_11_12_13_quota_helper_contracts_present() {
     test::assert_contains "$menu_reference_content" 'Codex' 'MENU-REFERENCE bootstrap auth submenu missing Codex' || return 1
     test::assert_contains "$menu_reference_content" '--antigravity-login' 'MENU-REFERENCE Antigravity auth flag doc missing' || return 1
     test::assert_contains "$menu_reference_content" '--claude-login' 'MENU-REFERENCE Claude Code auth flag doc missing' || return 1
-    test::assert_contains "$menu_reference_content" '14. **Check quota**' 'MENU-REFERENCE quota menu doc missing' || return 1
-    test::assert_contains "$menu_reference_content" 'cpaq()' 'MENU-REFERENCE quota shortcut doc missing' || return 1
 }
 
 case_mon_01_02_03_04_05_monitoring_contracts_present() {
@@ -775,6 +880,23 @@ case_mon_01_02_03_04_05_monitoring_contracts_present() {
     test::assert_contains "$monitoring_content" '_monitoring_menu_run()' 'monitoring menu wrapper missing' || return 1
     test::assert_contains "$checks_content" 'checks_install_cron()' 'scheduled checks install contract missing' || return 1
     test::assert_contains "$checks_content" '_checks_send_telegram' 'notification disable/test path contract missing' || return 1
+}
+
+case_mon_06_monitoring_baseline_contract_present() {
+    local monitoring_content wizard_content
+    monitoring_content="$(<"${OPS_ROOT}/modules/monitoring.sh")"
+    wizard_content="$(<"${OPS_ROOT}/modules/setup-wizard.sh")"
+    test::assert_contains "$monitoring_content" 'monitoring_apply_baseline()' 'monitoring baseline helper missing' || return 1
+    test::assert_contains "$monitoring_content" '_monitoring_reconcile_ops_log_path' 'monitoring baseline must reconcile the OPS log path' || return 1
+    test::assert_contains "$monitoring_content" '_monitoring_reconcile_ops_logrotate' 'monitoring baseline must reconcile OPS logrotate state' || return 1
+    test::assert_contains "$monitoring_content" '/etc/logrotate.d/nginx-ops' 'monitoring baseline must check nginx logrotate readiness' || return 1
+    test::assert_contains "$monitoring_content" '/etc/logrotate.d/php*-fpm' 'monitoring baseline must check PHP-FPM logrotate readiness' || return 1
+    test::assert_contains "$monitoring_content" '_monitoring_ensure_pm2_logrotate' 'monitoring baseline must ensure PM2 logrotate when PM2 is present' || return 1
+    test::assert_contains "$monitoring_content" '_monitoring_reconcile_pm2_app_logs' 'monitoring baseline must reconcile PM2 app log files' || return 1
+    test::assert_contains "$monitoring_content" 'Monitoring baseline completed with follow-up required.' 'monitoring baseline must fail closed when follow-up is required' || return 1
+    test::assert_contains "$monitoring_content" 'return 1' 'monitoring baseline must return non-zero when baseline reconciliation is incomplete' || return 1
+    test::assert_contains "$wizard_content" 'monitoring_apply_baseline || return 1' 'setup wizard monitoring step must fail closed when baseline apply fails' || return 1
+    test::assert_contains "$wizard_content" '_wizard_mark_done "MONITORING"' 'setup wizard monitoring step must mark done only after baseline success' || return 1
 }
 
 case_file_01_02_03_04_file_contracts_present() {
@@ -795,6 +917,15 @@ case_file_01_02_03_04_file_contracts_present() {
     test::assert_contains "$codex_content" 'bash -n "$file"' 'Codex managed shell rewrites must validate bash syntax' || return 1
     test::assert_contains "$claude_content" 'cp -a -- "$file" "$backup_path"' 'Claude managed shell rewrites must create backups' || return 1
     test::assert_contains "$claude_content" 'bash -n "$file"' 'Claude managed shell rewrites must validate bash syntax' || return 1
+}
+
+case_file_05_web_root_ownership_contract_present() {
+    local nginx_content
+    nginx_content="$(<"${OPS_ROOT}/modules/nginx.sh")"
+    test::assert_contains "$nginx_content" 'if [[ "$type" == "static" || "$type" == "php" ]]; then' 'web root ownership contract must apply to static and PHP domains only' || return 1
+    test::assert_contains "$nginx_content" 'ensure_dir "$web_root"' 'web root ownership contract must create the web root before applying permissions' || return 1
+    test::assert_contains "$nginx_content" 'chown "$ADMIN_USER":"www-data" "$web_root"' 'web root ownership contract must set admin:www-data ownership' || return 1
+    test::assert_contains "$nginx_content" 'chmod 755 "$web_root"' 'web root ownership contract must enforce 0755 mode' || return 1
 }
 
 case_reg_17_admin_user_resolution_prefers_persisted_then_sudo_user() {
@@ -1233,6 +1364,95 @@ case_reg_34_ai_runtime_docs_aligned() {
     test::assert_contains "$user_guide_content" '~/.claude-api-key' 'User guide must document the canonical Claude key path' || return 1
 }
 
+case_reg_35_snapshot_restore_helpers_roundtrip() {
+    local output restored missing_state
+    output="$(OPS_ROOT_ENV="$OPS_ROOT" TEST_TMP="$TEST_ENV_DIR" bash -c '
+set -euo pipefail
+work_dir="$TEST_TMP/snapshot-restore"
+mkdir -p "$work_dir/conf" "$work_dir/snap"
+target="$work_dir/target.conf"
+missing="$work_dir/missing.conf"
+printf "before\n" > "$target"
+chmod 640 "$target"
+export OPS_ROOT="$OPS_ROOT_ENV"
+export OPS_CONFIG_DIR="$work_dir/conf"
+export OPS_LOG_FILE="$work_dir/test.log"
+export ADMIN_USER="nobody"
+export SUDO_USER="nobody"
+export USER="nobody"
+source "$OPS_ROOT_ENV/core/env.sh"
+source "$OPS_ROOT_ENV/core/utils.sh"
+snapshot_path_state "$target" "$work_dir/snap" "target"
+printf "after\n" > "$target"
+restore_path_snapshot "$target" "$work_dir/snap" "target"
+snapshot_path_state "$missing" "$work_dir/snap" "missing"
+printf "ghost\n" > "$missing"
+restore_path_snapshot "$missing" "$work_dir/snap" "missing"
+printf "%s\037%s" "$(tr -d "\n" < "$target")" "$(if [[ -e "$missing" ]]; then printf present; else printf removed; fi)"
+')"
+    IFS=$'\037' read -r restored missing_state <<< "$output"
+    test::assert_eq 'before' "$restored" 'restore_path_snapshot must restore previous file content' || return 1
+    test::assert_eq 'removed' "$missing_state" 'restore_path_snapshot must remove paths that were absent at snapshot time' || return 1
+}
+
+case_reg_36_render_template_escapes_special_replacements() {
+    local output rendered
+    output="$(OPS_ROOT_ENV="$OPS_ROOT" TEST_TMP="$TEST_ENV_DIR" bash -c '
+set -euo pipefail
+work_dir="$TEST_TMP/render-template"
+mkdir -p "$work_dir/conf"
+tpl="$work_dir/sample.tpl"
+cat > "$tpl" <<'"'"'EOF_TPL'"'"'
+value={{VALUE}}|path={{PATH}}
+EOF_TPL
+export OPS_ROOT="$OPS_ROOT_ENV"
+export OPS_CONFIG_DIR="$work_dir/conf"
+export OPS_LOG_FILE="$work_dir/test.log"
+export ADMIN_USER="nobody"
+export SUDO_USER="nobody"
+export USER="nobody"
+source "$OPS_ROOT_ENV/core/env.sh"
+source "$OPS_ROOT_ENV/core/utils.sh"
+rendered="$(render_template "$tpl" "VALUE=A&B\\C" "PATH=/srv/app&logs")"
+printf "%s" "$rendered"
+')"
+    rendered="$output"
+    test::assert_eq 'value=A&B\C|path=/srv/app&logs' "$rendered" 'render_template must preserve ampersands and backslashes in replacement values' || return 1
+}
+
+case_reg_37_ops_conf_unset_preserves_other_keys_and_mode() {
+    local output keep_value drop_value mode contents
+    output="$(OPS_ROOT_ENV="$OPS_ROOT" TEST_TMP="$TEST_ENV_DIR" bash -c '
+set -euo pipefail
+work_dir="$TEST_TMP/ops-conf-unset"
+mkdir -p "$work_dir/conf"
+conf_file="$work_dir/conf/test.conf"
+cat > "$conf_file" <<'"'"'EOF_CONF'"'"'
+KEEP=alpha
+DROP=beta
+EOF_CONF
+chmod 640 "$conf_file"
+export OPS_ROOT="$OPS_ROOT_ENV"
+export OPS_CONFIG_DIR="$work_dir/conf"
+export OPS_LOG_FILE="$work_dir/test.log"
+export ADMIN_USER="nobody"
+export SUDO_USER="nobody"
+export USER="nobody"
+source "$OPS_ROOT_ENV/core/env.sh"
+ops_conf_unset test.conf DROP
+printf "%s\037%s\037%s\037%s" \
+    "$(ops_conf_get test.conf KEEP)" \
+    "$(ops_conf_get test.conf DROP)" \
+    "$(stat -c "%a" "$conf_file")" \
+    "$(tr "\n" "\f" < "$conf_file")"
+')"
+    IFS=$'\037' read -r keep_value drop_value mode contents <<< "$output"
+    test::assert_eq 'alpha' "$keep_value" 'ops_conf_unset must preserve unrelated keys' || return 1
+    test::assert_eq '' "$drop_value" 'ops_conf_unset must remove the requested key' || return 1
+    test::assert_eq '640' "$mode" 'ops_conf_unset must preserve file mode metadata' || return 1
+    test::assert_not_contains "$contents" 'DROP=' 'ops_conf_unset must remove the deleted key from file contents' || return 1
+}
+
 test::run_case 'REG-01' 'tty prompt anti-pattern absent' case_reg_01_tty_prompt_antipattern_absent
 test::run_case 'REG-02' 'menu boundary wrapper present' case_reg_02_menu_boundary_wrapper_present
 test::run_case 'REG-03' 'verify exit-zero contract present' case_reg_03_verify_exit_zero_contract_documented_in_code
@@ -1268,6 +1488,9 @@ test::run_case 'REG-31' 'setup wizard flow stays fail closed' case_reg_31_setup_
 test::run_case 'REG-32' 'Cloudflare credentials split contract present' case_reg_32_cf_credentials_split_contract_present
 test::run_case 'REG-33' 'AI shell secret contract present' case_reg_33_ai_shell_secret_contracts_present
 test::run_case 'REG-34' 'AI runtime docs stay aligned' case_reg_34_ai_runtime_docs_aligned
+test::run_case 'REG-35' 'snapshot/restore helpers round-trip state' case_reg_35_snapshot_restore_helpers_roundtrip
+test::run_case 'REG-36' 'template rendering preserves special replacement values' case_reg_36_render_template_escapes_special_replacements
+test::run_case 'REG-37' 'ops_conf_unset preserves other keys and file mode' case_reg_37_ops_conf_unset_preserves_other_keys_and_mode
 test::run_case 'SEC-01' 'password auth guard without key present' case_sec_01_password_auth_guard_without_key_present
 test::run_case 'SEC-02' 'disable password auth requires key contract present' case_sec_02_disable_password_auth_requires_key_contract_present
 test::run_case 'SEC-03' 'SSH transition keeps two ports contract present' case_sec_03_transition_keeps_two_ports_contract_present
@@ -1336,14 +1559,17 @@ test::run_case 'CPA-10' 'Quota shortcut helper contract present' case_cpa_10_11_
 test::run_case 'CPA-11' 'Quota shortcut defaults contract present' case_cpa_10_11_12_13_quota_helper_contracts_present
 test::run_case 'CPA-12' 'Quota management key warning contract present' case_cpa_10_11_12_13_quota_helper_contracts_present
 test::run_case 'CPA-13' 'CLIProxyAPI quota menu doc contract present' case_cpa_10_11_12_13_quota_helper_contracts_present
+test::run_case 'CPA-14' 'CLIProxyAPI bootstrap auth submenu contract present' case_cpa_14_bootstrap_auth_submenu_contract_present
 test::run_case 'MON-01' 'verify exit-zero contract present' case_mon_01_02_03_04_05_monitoring_contracts_present
 test::run_case 'MON-02' 'quick logs contract present' case_mon_01_02_03_04_05_monitoring_contracts_present
 test::run_case 'MON-03' 'monitoring menu boundary contract present' case_mon_01_02_03_04_05_monitoring_contracts_present
 test::run_case 'MON-04' 'scheduled checks idempotence contract present' case_mon_01_02_03_04_05_monitoring_contracts_present
 test::run_case 'MON-05' 'notification disable-path contract present' case_mon_01_02_03_04_05_monitoring_contracts_present
+test::run_case 'MON-06' 'monitoring baseline contract present' case_mon_06_monitoring_baseline_contract_present
 test::run_case 'FILE-01' 'secret file contract present' case_file_01_02_03_04_file_contracts_present
 test::run_case 'FILE-02' 'no-secret-output contract present' case_file_01_02_03_04_file_contracts_present
 test::run_case 'FILE-03' 'shell-sourceable config contract present' case_file_01_02_03_04_file_contracts_present
 test::run_case 'FILE-04' 'backup-before-rewrite contract present' case_file_01_02_03_04_file_contracts_present
+test::run_case 'FILE-05' 'web root ownership contract present' case_file_05_web_root_ownership_contract_present
 
 test::finish

@@ -78,41 +78,27 @@ PY
 
 case_tui_05_menu_calls_not_masked_with_true() {
     local file content failures
+    local menu_modules=(
+        'modules/setup-wizard.sh'
+        'modules/security.sh'
+        'modules/nginx.sh'
+        'modules/node.sh'
+        'modules/cli-proxy-api.sh'
+        'modules/php.sh'
+        'modules/database.sh'
+        'modules/monitoring.sh'
+        'modules/checks.sh'
+        'modules/backup.sh'
+        'modules/codex-cli.sh'
+        'modules/ai-agent.sh'
+    )
     file="${OPS_ROOT}/bin/ops"
     content="$(<"$file")"
     test::assert_not_contains "$content" 'menu_setup_wizard || true' 'menu must not be shielded with || true' || return 1
     test::assert_not_contains "$content" 'menu_monitoring || true' 'menu must not be shielded with || true' || return 1
     test::assert_not_contains "$content" 'menu_security || true' 'menu must not be shielded with || true' || return 1
 
-    failures="$(OPS_ROOT_ENV="$OPS_ROOT" python3 - <<'PY'
-import os
-from pathlib import Path
-
-files = [
-    'modules/setup-wizard.sh',
-    'modules/security.sh',
-    'modules/nginx.sh',
-    'modules/node.sh',
-    'modules/cli-proxy-api.sh',
-    'modules/php.sh',
-    'modules/database.sh',
-    'modules/monitoring.sh',
-    'modules/checks.sh',
-    'modules/backup.sh',
-    'modules/codex-cli.sh',
-    'modules/ai-agent.sh',
-]
-root = Path(os.environ['OPS_ROOT_ENV'])
-for rel in files:
-    path = root / rel
-    lines = path.read_text().splitlines()
-    for idx, line in enumerate(lines):
-        if line.startswith('menu_') and line.rstrip().endswith('{'):
-            window = '\n'.join(lines[idx + 1:idx + 12])
-            if '_menu_run() {' not in window or 'return 0' not in window:
-                print(f'{rel}:{idx + 1}:{line.split("(")[0]}')
-PY
-)"
+    failures="$(test::menu_boundary_failures "$OPS_ROOT" "${menu_modules[@]}")"
     test::assert_eq "" "$failures" "public menu_* functions must absorb soft failures with a local wrapper" || return 1
 }
 

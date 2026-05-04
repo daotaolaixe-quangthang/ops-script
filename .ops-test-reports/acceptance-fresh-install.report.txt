@@ -1,0 +1,10 @@
+Suite: acceptance-fresh-install
+Total: 3
+Passed: 1
+Failed: 0
+Skipped: 2
+
+Cases:
+[SKIP] ACCEPT-FRESH-01 - fresh-install acceptance requires explicit confirmation
+[SKIP] ACCEPT-FRESH-02 - repo installer runs on a clean Ubuntu snapshot when confirmed
+[PASS] ACCEPT-FRESH-03 - expected OPS artefacts exist after fresh install
