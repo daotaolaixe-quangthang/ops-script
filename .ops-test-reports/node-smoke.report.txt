@@ -1,9 +1,0 @@
-Suite: node-smoke
-Total: 2
-Passed: 2
-Failed: 0
-Skipped: 0
-
-Cases:
-[PASS] NODE-SMOKE-01 - verify_stack emits PM2/runtime-user summary
-[PASS] NODE-SMOKE-02 - pm2-root service stays absent when PM2 is installed

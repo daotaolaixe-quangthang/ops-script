@@ -1,9 +1,0 @@
-Suite: tui-smoke
-Total: 2
-Passed: 2
-Failed: 0
-Skipped: 0
-
-Cases:
-[PASS] TUI-SMOKE-01 - ops rejects non-interactive launch on live entrypoint
-[PASS] TUI-SMOKE-02 - ops rejects redirected stdin even with controlling tty
